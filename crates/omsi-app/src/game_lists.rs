@@ -449,7 +449,7 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
             let step = matches!(mv, Move::Next);
             match verb {
                 // (the preset, the clouds and the precipitation are picked from a drop-down: `App::chooser_pick`)
-                "weather" | "cloudkind" | "precipkind" => {}
+                "weather" | "cloudkind" | "precipkind" | "metar_src" => {}
                 // the exact time: Enter starts typing it, and sets it when typed
                 "time_edit" if step => {
                     if app.menu_edit.is_some() {
@@ -881,6 +881,7 @@ fn toggle_now(app: &App, id: &str) -> Option<bool> {
         "fps" => s.show_fps,
         "get_up" => s.get_up,
         "time_sync" => s.time_sync,
+        "metar_sync" => s.metar_sync,
         "camcoll" => s.camera_collision,
         "steer_look" => s.steer_look,
         "hands_in_cab" => s.hands_in_cab,
@@ -957,6 +958,18 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
             app.sync_real_time();
             Some(("time_sync", bit))
         }
+        // the METAR sync: the weather goes over to the report of the nearest airport and
+        // cannot be changed while it is on (the cycle and a hand-made weather end with it)
+        "metar_sync" => {
+            app.settings.metar_sync = on;
+            app.metar_rx = None;
+            app.metar_next = 0.0;
+            if on {
+                app.weather_cycle = None;
+                app.weather_blend = None;
+            }
+            Some(("metar_sync", bit))
+        }
         "fps" => {
             app.settings.show_fps = on;
             Some(("show_fps", bit))
@@ -1006,6 +1019,11 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
 
 /// Change the setting `verb` (a switch or a slider) as `mv` says; false when it is neither.
 fn option_do(app: &mut App, verb: &str, arg: &str, mv: Move) -> bool {
+    // (the weather is the METAR report's while the sync is on)
+    if app.metar_locked() && matches!(verb, "visibility" | "rain_amt" | "wet" | "temp" | "wind_speed" | "wind_dir") {
+        app.service_msg = Some(("The weather cannot be changed while the METAR sync is on".into(), 3.0));
+        return true;
+    }
     if let Some(cur) = toggle_now(app, verb) {
         let on = match mv {
             Move::Next => !cur,
@@ -1064,6 +1082,9 @@ pub(crate) struct Dropdown {
 /// The drop-down of the row `row` whose action is `id`, if that row has one.
 pub(crate) fn dropdown_for(app: &App, row: usize, id: &str) -> Option<Dropdown> {
     let tr = |t: &str| omsi_ui::tr(t).into_owned();
+    if app.metar_locked() && matches!(id, "weather" | "cloudkind" | "precipkind") {
+        return None;
+    }
     let mut current: Option<usize> = None;
     let items: Vec<(String, String)> = match id {
         "weather" => {
@@ -1079,6 +1100,18 @@ pub(crate) fn dropdown_for(app: &App, row: usize, id: &str) -> Option<Dropdown> 
                     (stem, format!("wx {f}"))
                 })
                 .collect()
+        }
+        "metar_src" if app.metar_locked() => {
+            let mut v = vec![(tr("Automatic (nearest the map)"), "metar_src ".to_string())];
+            let own = &app.settings.metar_station;
+            current = Some(0);
+            for (i, (code, label)) in crate::weather_setup::metar_airports(&app.args.root).into_iter().enumerate() {
+                if code.eq_ignore_ascii_case(own) {
+                    current = Some(i + 1);
+                }
+                v.push((label, format!("metar_src {code}")));
+            }
+            v
         }
         "cloudkind" => {
             current = app.weather.as_ref().and_then(|w| cloud_index(&w.clouds.0));
@@ -1100,6 +1133,10 @@ pub(crate) fn dropdown_for(app: &App, row: usize, id: &str) -> Option<Dropdown> 
 /// Do an entry of a drop-down.
 pub(crate) fn dropdown_apply(app: &mut App, action: &str) {
     let (verb, arg) = action.split_once(' ').unwrap_or((action, ""));
+    if app.metar_locked() && matches!(verb, "wx" | "cloud" | "precip") {
+        app.service_msg = Some(("The weather cannot be changed while the METAR sync is on".into(), 3.0));
+        return;
+    }
     match verb {
         "wx" => {
             if app.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
@@ -1107,6 +1144,14 @@ pub(crate) fn dropdown_apply(app: &mut App, action: &str) {
             } else {
                 app.change_weather(Some(arg.to_string()), true, 1.0);
             }
+        }
+        "metar_src" if app.metar_locked() => {
+            let code: String = arg.trim().chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>().to_ascii_uppercase();
+            app.settings.metar_station = code.clone();
+            remember_setting("metar_station", &code);
+            // (the report of the new airport at once)
+            app.metar_rx = None;
+            app.metar_next = 0.0;
         }
         "cloud" => {
             if let Some(i) = arg.trim().parse::<usize>().ok().filter(|i| *i < CLOUD_TYPES.len()) {
@@ -1283,6 +1328,11 @@ fn world_pages(app: &App) -> Vec<Page> {
                 time.extend(slider_row(app, "speed", "Time speed", "How fast the world's clock runs", &|v| format!("x{v}")));
             }
         }
+        weather.extend(switch_row(app, "metar_sync", "METAR sync", "The weather follows the real METAR report; it cannot be changed while this is on"));
+        if app.metar_locked() {
+            let src = if app.settings.metar_station.is_empty() { format!("{} ({})", app.metar_station(), omsi_ui::tr("automatic")) } else { app.metar_station() };
+            weather.push((row("METAR source", 'o', &src, "The airport whose METAR report the weather follows.", None), "metar_src".to_string()));
+        }
         weather.push((row("Preset", 'o', &weather_name(app), "A ready-made weather. It blends in over a few minutes; everything below adjusts it.", None), "weather".to_string()));
         let cloud = app.weather.as_ref().and_then(|w| cloud_index(&w.clouds.0)).map(|i| CLOUD_TYPES[i].1.to_string()).or_else(|| app.weather.as_ref().map(|w| w.clouds.0.trim().to_string())).unwrap_or_default();
         weather.push((row("Clouds", 'o', &cloud, "The kind of clouds in the sky.", None), "cloudkind".to_string()));
@@ -1294,6 +1344,11 @@ fn world_pages(app: &App) -> Vec<Page> {
         climate.extend(slider_row(app, "temp", "Temperature", "The air temperature.", &|v| format!("{} °C", v as i64)));
         climate.extend(slider_row(app, "wind_speed", "Wind speed", "How fast the wind blows; it drives the clouds.", &|v| format!("{} m/s", v as i64)));
         climate.extend(slider_row(app, "wind_dir", "Wind direction", "The direction of the wind in degrees (0 is north).", &|v| format!("{}°", v as i64)));
+        // the METAR sync on: only its own rows stay (the weather is the report's)
+        if app.metar_locked() {
+            weather.retain(|r| r.1 == "metar_sync" || r.1 == "metar_src");
+            climate.clear();
+        }
         tools.push(button("Object editor", "Open", "Place and move objects in the world.", "editor"));
     }
     let mut people: Vec<(String, String)> = Vec::new();

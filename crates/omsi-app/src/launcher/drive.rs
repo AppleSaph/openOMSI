@@ -245,11 +245,11 @@ fn step_bus(l: &mut Launcher, r: Rect) {
             ui.text_in(&model.name, title, 13.0, Weight::Medium, TEXT, Align::Left);
             ui.tooltip(title, &model.name);
             let subtitle = if model.variants.len() == 1 { omsi_ui::tr(&model.variants[0].variant).into_owned() }
-                else if let Some(v) = selected { format!("{} · {} {}", omsi_ui::tr(&v.variant), model.variants.len(), omsi_ui::tr("models")) }
-                else { format!("{} {}", model.variants.len(), omsi_ui::tr("models")) };
+            else if let Some(v) = selected { format!("{} · {} {}", omsi_ui::tr(&v.variant), model.variants.len(), omsi_ui::tr("models")) }
+            else { format!("{} {}", model.variants.len(), omsi_ui::tr("models")) };
             let subtitle = if selected.is_some_and(|v| v.incomplete) { format!("{subtitle} · {}", omsi_ui::tr("PARTS MISSING")) }
-                else if selected.is_some_and(|v| v.fresh) { format!("{subtitle} · {}", omsi_ui::tr("NEW")) }
-                else if selected.is_some_and(|v| v.installed) { format!("{subtitle} · {}", omsi_ui::tr("MOD")) } else { subtitle };
+            else if selected.is_some_and(|v| v.fresh) { format!("{subtitle} · {}", omsi_ui::tr("NEW")) }
+            else if selected.is_some_and(|v| v.installed) { format!("{subtitle} · {}", omsi_ui::tr("MOD")) } else { subtitle };
             ui.text_in(&subtitle, Rect::new(title.x, row.y + 29.0, title.w, 17.0), 11.5, Weight::Regular, TEXT_DIM, Align::Left);
             ui.icon(if model.variants.len() == 1 { if selected.is_some() { "check" } else { "chevron_right" } } else if open { "expand_less" } else { "expand_more" }, Vec2::new(row.right() - 18.0, row.center().y), 18.0, if selected.is_some() { ACCENT } else { TEXT_DIM });
             y += 58.0;
@@ -975,7 +975,7 @@ fn start(l: &mut Launcher) {
 
 /// The airport of OMSI's METAR list (`Weather/ICAO.txt`) nearest to where map `map` lies
 /// (its `timezone.txt`), else Berlin's; read once per map.
-fn nearest_airport(root: &str, map: &str) -> String {
+pub(crate) fn nearest_airport(root: &str, map: &str) -> String {
     static CACHE: std::sync::Mutex<Option<hashbrown::HashMap<String, String>>> = std::sync::Mutex::new(None);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(Default::default);

@@ -388,9 +388,36 @@ pub(crate) fn initial_wetness(w: &omsi_content::weather::Weather) -> f32 {
 }
 
 
+/// The airports OMSI's METAR list (`Weather/ICAO.txt`) offers: (ICAO, "ICAO - name").
+pub(crate) fn metar_airports(root: &std::path::Path) -> Vec<(String, String)> {
+    let text = std::fs::read(omsi_cfg::resolve_path(root, "Weather/ICAO.txt"))
+        .map(|b| omsi_cfg::codepage::decode(&b))
+        .unwrap_or_default();
+    let mut v: Vec<(String, String)> = text
+        .lines()
+        .filter_map(|l| l.split_once(" - ").map(|(c, n)| (c.trim().to_ascii_uppercase(), format!("{} - {}", c.trim(), n.trim()))))
+        .filter(|(c, _)| c.len() == 4)
+        .collect();
+    if !v.iter().any(|a| a.0 == "EDDB") {
+        v.insert(0, ("EDDB".into(), "EDDB - Berlin Brandenburg".into()));
+    }
+    v
+}
+
 /// The weather of an airport's METAR report (aviationweather.gov), or a clear day when it
 /// cannot be had (no network, an unknown station).
 pub(crate) fn fetch_metar(icao: &str) -> omsi_content::weather::Weather {
+    match try_metar(icao) {
+        Some(w) => w,
+        None => {
+            log::warn!("current weather at {icao}: no METAR report could be had; a clear day instead");
+            omsi_content::weather::from_metar(icao, "CAVOK")
+        }
+    }
+}
+
+/// The weather of an airport's METAR report, None when it cannot be had.
+pub(crate) fn try_metar(icao: &str) -> Option<omsi_content::weather::Weather> {
     // (Tegel, OMSI's Berlin default, closed in 2020: Berlin's airport now reports)
     let icao = match icao.to_ascii_uppercase().as_str() {
         "EDDT" | "EDDI" | "" => "EDDB".to_string(),
@@ -404,16 +431,9 @@ pub(crate) fn fetch_metar(icao: &str) -> omsi_content::weather::Weather {
         .and_then(|r| r.into_string().ok())
         .map(|t| t.lines().next().unwrap_or("").trim().to_string())
         .filter(|t| !t.is_empty());
-    match text {
-        Some(t) => {
-            log::info!("current weather at {icao}: {t}");
-            let mut w = omsi_content::weather::from_metar(&icao, &t);
-            w.path = std::path::PathBuf::from(format!("metar:{icao}"));
-            w
-        }
-        None => {
-            log::warn!("current weather at {icao}: no METAR report could be had; a clear day instead");
-            omsi_content::weather::from_metar(&icao, "CAVOK")
-        }
-    }
+    let t = text?;
+    log::info!("current weather at {icao}: {t}");
+    let mut w = omsi_content::weather::from_metar(&icao, &t);
+    w.path = std::path::PathBuf::from(format!("metar:{icao}"));
+    Some(w)
 }

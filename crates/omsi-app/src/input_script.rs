@@ -1532,6 +1532,10 @@ impl App {
             self.service_msg = Some(("In a LAN session the host sets the weather".into(), 3.0));
             return;
         }
+        if self.metar_locked() {
+            self.service_msg = Some(("The weather cannot be changed while the METAR sync is on".into(), 3.0));
+            return;
+        }
         let mut w = self.weather.clone().unwrap_or_default();
         if w.precip.len() < 5 {
             w.precip.resize(5, 0.0);
@@ -2410,6 +2414,10 @@ impl App {
     /// The player's own choice comes at once, as in Omsi.exe (the weather dialog loads the
     /// .owt and applies it straight away, 0x6828e0 -> 0x754c80); the cycle blends it in.
     pub(crate) fn change_weather(&mut self, file: Option<String>, share: bool, secs: f32) {
+        if self.metar_locked() {
+            self.service_msg = Some(("The weather cannot be changed while the METAR sync is on".into(), 3.0));
+            return;
+        }
         let from = self.weather.clone().unwrap_or_default();
         self.args.weather = file.clone();
         let to = load_weather(&self.args);
@@ -2445,6 +2453,9 @@ impl App {
         }
         let follows = self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client);
         if follows || self.weather_blend.is_some() {
+            return;
+        }
+        if self.metar_locked() {
             return;
         }
         let Some(c) = self.weather_cycle.as_mut() else { return };
@@ -2494,6 +2505,77 @@ impl App {
         self.player = Some(next);
         self.look = (0.0, 0.0);
         self.service_msg = Some((format!("Now driving: {}", name.trim()), 4.0));
+    }
+
+    /// The weather follows the METAR report and cannot be changed (the `metar_sync` setting).
+    /// In a LAN session as a client the host's weather counts: the host syncs, not us.
+    pub(crate) fn metar_locked(&self) -> bool {
+        self.settings.metar_sync && !self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client)
+    }
+
+    /// The airport whose report the sync follows: the one chosen, else the one of the weather
+    /// in force, else the one nearest the map.
+    pub(crate) fn metar_station(&self) -> String {
+        if !self.settings.metar_station.is_empty() {
+            return self.settings.metar_station.to_ascii_uppercase();
+        }
+        match self.args.weather.as_deref().and_then(|w| w.strip_prefix("metar:")) {
+            Some(code) if !code.trim().is_empty() => code.trim().to_ascii_uppercase(),
+            _ => crate::launcher::drive::nearest_airport(&self.args.root.to_string_lossy(), &self.args.map),
+        }
+    }
+
+    /// The METAR sync: with it on, the report is downloaded in the background (at once, then
+    /// every ten minutes) and the weather goes over to it; `dt` is real seconds.
+    pub(crate) fn tick_metar(&mut self, dt: f32) {
+        if !self.metar_locked() {
+            self.metar_rx = None;
+            self.metar_next = 0.0;
+            return;
+        }
+        if let Some(rx) = self.metar_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(report) => {
+                    self.metar_rx = None;
+                    if let Some(w) = report {
+                        self.apply_metar(w);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.metar_rx = None,
+            }
+            return;
+        }
+        self.metar_next -= dt as f64;
+        if self.metar_next > 0.0 {
+            return;
+        }
+        // (a failed download is tried again in a minute)
+        self.metar_next = 60.0;
+        let icao = self.metar_station();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.metar_rx = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::weather_setup::try_metar(&icao));
+        });
+    }
+
+    /// Go over to the weather of a METAR report that came in.
+    fn apply_metar(&mut self, to: omsi_content::weather::Weather) {
+        self.metar_next = 600.0;
+        let file = to.path.to_string_lossy().to_string();
+        let name = to.name.clone();
+        let from = self.weather.clone().unwrap_or_default();
+        crate::scene::SNOW_WEATHER.store(to.snow, std::sync::atomic::Ordering::Relaxed);
+        omsi_sim::host::set_ambient_weather(to.temp.0, to.temp.1);
+        self.args.weather = Some(file.clone());
+        self.weather_cycle = None;
+        self.weather_blend = Some(crate::weather_cycle::Blend::new(from, to, 60.0));
+        if let Some(l) = self.lan.as_mut().filter(|l| l.role == omsi_net::Role::Host) {
+            l.set_weather(&file);
+        }
+        log::info!("weather: METAR sync, going over to {file} ({name})");
+        self.service_msg = Some((format!("Weather: {name}"), 4.0));
     }
 
     /// The clock follows the real time and cannot be changed (the `time_sync` setting). In a

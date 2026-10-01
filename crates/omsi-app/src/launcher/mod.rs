@@ -8,7 +8,7 @@
 //! lists, timetables, profiles, installs, running games) is `omsi-launcher-core`, the same
 //! functions `omsi-launcher --cli` offers a terminal.
 
-mod drive;
+pub(crate) mod drive;
 pub mod mobile;
 pub mod phone;
 mod multiplayer;

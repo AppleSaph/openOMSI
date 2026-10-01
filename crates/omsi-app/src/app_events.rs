@@ -1517,6 +1517,8 @@ impl ApplicationHandler for App {
                         cam.pitch = (cam.pitch - 40.0 * dt).max(-89.0);
                     }
                 }
+                // (the METAR sync: the report's weather, in real time)
+                self.tick_metar(dt);
                 if !self.paused {
                     // (the time speed: the settings', or the session's in LAN play)
                     let speed = self.time_speed();

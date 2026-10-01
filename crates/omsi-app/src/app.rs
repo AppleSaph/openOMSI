@@ -256,6 +256,9 @@ pub(crate) struct App {
     pub(crate) weather_blend: Option<crate::weather_cycle::Blend>,
     /// The weather cycle, when the weather chosen is `cycle`.
     pub(crate) weather_cycle: Option<crate::weather_cycle::Cycle>,
+    /// The METAR sync's download under way (see `tick_metar`), and the seconds to the next one.
+    pub(crate) metar_rx: Option<std::sync::mpsc::Receiver<Option<omsi_content::weather::Weather>>>,
+    pub(crate) metar_next: f64,
     /// The mouse cursor currently shows the hand (it is over a switch).
     pub(crate) cursor_kind: u8,
     pub(crate) settings: settings::Settings,

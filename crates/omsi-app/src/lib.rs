@@ -548,6 +548,8 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         menu_kbd: true,
         weather_blend: None,
         weather_cycle: None,
+        metar_rx: None,
+        metar_next: 0.0,
         cursor_kind: 0,
         settings,
         lan: None,
