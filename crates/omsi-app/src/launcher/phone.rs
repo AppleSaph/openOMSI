@@ -189,7 +189,7 @@ fn play(l: &mut Launcher, body: Rect) {
     l.ui.text_in(&name, Rect::new(shade.x + 14.0, shade.y + 22.0, shade.w - 150.0, 26.0), 17.0, Weight::Bold, TEXT, Align::Left);
     let paints = l.state.bus().map(|b| b.paints.len()).unwrap_or(0);
     if paints > 0 {
-        let label = if l.state.choice.paint.is_empty() { "Default paint".to_string() } else { l.state.choice.paint.clone() };
+        let label = if l.state.choice.paint.is_empty() { l.state.bus().map(super::drive::default_livery_label).unwrap_or("Default paint").to_string() } else { l.state.choice.paint.clone() };
         let cw = (l.ui.width(&label, 12.0, Weight::Medium) + 40.0).min(170.0);
         let chip = Rect::new(shade.right() - cw - 10.0, shade.y + 13.0, cw, 32.0);
         let (_, down, clicked) = l.ui.interact(id_of("p-livery"), chip);
@@ -404,13 +404,14 @@ fn bus_sheet(l: &mut Launcher, r: Rect) -> bool {
 
 fn livery_sheet(l: &mut Launcher, r: Rect) -> bool {
     let paints: Vec<String> = l.state.bus().map(|b| b.paints.clone()).unwrap_or_default();
+    let default_paint = l.state.bus().map(super::drive::default_livery_label).unwrap_or("Default paint").to_string();
     let chosen = l.state.choice.paint.clone();
     let mut pick: Option<String> = None;
     l.ui.scroll_area("ps-paints", r, &mut |ui, v| {
         let all: Vec<String> = std::iter::once(String::new()).chain(paints.iter().cloned()).collect();
         for (k, p) in all.iter().enumerate() {
             let rr = Rect::new(v.x, v.y + k as f32 * (ROW_H + 6.0), v.w - 8.0, ROW_H);
-            let name = if p.is_empty() { "Default paint" } else { p.as_str() };
+            let name = if p.is_empty() { default_paint.as_str() } else { p.as_str() };
             if big_row(ui, &format!("pp-{k}"), rr, name, "", *p == chosen, None) {
                 pick = Some(p.clone());
             }

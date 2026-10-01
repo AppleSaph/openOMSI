@@ -48,7 +48,7 @@ pub enum Purpose {
     Root,
     /// A mod as a folder.
     ModFolder,
-    /// A mod as a .zip.
+    /// A mod archive (.zip, .7z or .rar).
     ModZip,
 }
 
@@ -113,8 +113,8 @@ impl Browser {
                         continue;
                     }
                     let Ok(m) = e.metadata() else { continue };
-                    let zip = name.to_ascii_lowercase().ends_with(".zip");
-                    if m.is_dir() || (zip && self.purpose == Purpose::ModZip) {
+                    let archive = [".zip", ".7z", ".rar"].iter().any(|ext| name.to_ascii_lowercase().ends_with(ext));
+                    if m.is_dir() || (archive && self.purpose == Purpose::ModZip) {
                         self.entries.push((name, m.is_dir(), m.len()));
                     }
                 }
@@ -136,7 +136,7 @@ impl Browser {
         match self.purpose {
             Purpose::Root => "Choose the OMSI 2 folder",
             Purpose::ModFolder => "Choose the mod folder",
-            Purpose::ModZip => "Choose a mod archive (.zip)",
+            Purpose::ModZip => "Choose a mod archive (.zip, .7z, .rar)",
         }
     }
 }
@@ -299,7 +299,7 @@ impl Launcher {
                 }
             }
             Purpose::ModZip => {
-                self.ui.text_in("Tap a .zip to install it", Rect::new(foot.x, foot.y, foot.w, foot.h), 12.5, Weight::Regular, TEXT_DIM, Align::Left);
+                self.ui.text_in("Tap a .zip, .7z or .rar to install it", Rect::new(foot.x, foot.y, foot.w, foot.h), 12.5, Weight::Regular, TEXT_DIM, Align::Left);
             }
         }
         // the folder's contents

@@ -16,6 +16,10 @@ struct RuntimeSound {
     /// Since when the conditions hold (triggered entries: since the trigger last fired) -
     /// what a `[volcurve] -1` reads, see [`SoundSet::curve_input`].
     active_since: Option<std::time::Instant>,
+    /// The loudest a triggered entry has been since its trigger fired: Omsi.exe never lets
+    /// such a sound get quieter while it plays (`TSound` +0x2c, reset when the trigger fires,
+    /// peak hold @0x7507bc) - a door sound whose curve follows the door kept its tail.
+    peak: f32,
 }
 
 pub struct SoundSet {
@@ -116,6 +120,7 @@ impl SoundSet {
                     voice: None,
                     held: false,
                     active_since: None,
+                    peak: 0.0,
                 }
             })
             .collect();
@@ -384,6 +389,17 @@ impl SoundSet {
         }
     }
 
+    /// A triggered entry's volume this frame: never below what it has been since its
+    /// trigger fired (`fired`: this frame). None (heard from the wrong view) stays None.
+    fn peak_hold(peak: &mut f32, vol: Option<f32>, fired: bool) -> Option<f32> {
+        if fired {
+            *peak = 0.0;
+        }
+        let v = vol?.max(*peak);
+        *peak = v;
+        Some(v)
+    }
+
     /// Per-frame update. `triggers` are the sound triggers fired by the scripts this frame.
     pub fn update(
         &mut self,
@@ -440,7 +456,14 @@ impl SoundSet {
                 }
                 _ => 1.0,
             };
-            let vol = Self::volume(&s.def, var, view, active, facing);
+            let mut vol = Self::volume(&s.def, var, view, active, facing);
+            let fired = triggered
+                && triggers
+                    .iter()
+                    .any(|t| s.def.triggers.iter().any(|d| d.eq_ignore_ascii_case(t)));
+            if triggered {
+                vol = Self::peak_hold(&mut s.peak, vol, fired);
+            }
             let (pitch, fast_enough) = Self::pitch_of(&s.def, var, &clip);
             let audible = vol.map(|v| v > 0.001).unwrap_or(false) && fast_enough;
             let params = |looping: bool| VoiceParams {
@@ -473,11 +496,7 @@ impl SoundSet {
                 continue;
             }
             // one-shot: started by its trigger or by its conditions starting to hold; the
-            // volume follows the curves while it plays
-            let fired = triggered
-                && triggers
-                    .iter()
-                    .any(|t| s.def.triggers.iter().any(|d| d.eq_ignore_ascii_case(t)));
+            // volume follows the curves while it plays (a triggered one only gets louder)
             let params = params(false);
             if (fired || rising) && audible {
                 if let Some(id) = s.voice {
@@ -625,5 +644,17 @@ mod tests {
         assert_eq!(SoundSet::volume(&cab, &none, 1, 0.0, 1.0), None, "a cab sound stays in");
         set_outside_open(None);
         assert_eq!(SoundSet::volume(&engine, &none, 2, 0.0, 1.0), None);
+    }
+
+    #[test]
+    fn a_triggered_sound_keeps_its_peak_while_it_plays() {
+        // a door sound whose volcurve follows the door: fired with the door at 1, the door
+        // closed the next frame - Omsi.exe holds the peak (0x7507bc)
+        let mut peak = 0.7;
+        assert_eq!(SoundSet::peak_hold(&mut peak, Some(1.0), true), Some(1.0));
+        assert_eq!(SoundSet::peak_hold(&mut peak, Some(0.0), false), Some(1.0));
+        assert_eq!(SoundSet::peak_hold(&mut peak, None, false), None, "wrong view: silent");
+        // fired again quieter: the old peak is forgotten
+        assert_eq!(SoundSet::peak_hold(&mut peak, Some(0.3), true), Some(0.3));
     }
 }

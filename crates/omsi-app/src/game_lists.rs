@@ -508,6 +508,16 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
             "line" => Some(ListKind::Tours(arg.to_string())),
             "free" => {
                 app.duty = None;
+                // unscheduled: the GetTT* callbacks answer ""/0/-1 again, as in Omsi.exe
+                if let Some(p) = app.player.as_mut() {
+                    let h = &mut p.vehicle.host;
+                    h.tt_line.clear();
+                    h.tt_stops.clear();
+                    h.tt_stop_ids.clear();
+                    h.tt_busstop_index = -1;
+                    h.tt_terminus_index = -1;
+                    h.tt_delay = 0.0;
+                }
                 app.service_msg = Some(("Free drive: no duty".into(), 4.0));
                 None
             }
@@ -563,7 +573,7 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
                 let named = |t: &&omsi_vehicle::hof::Terminus| t.strings.first().is_some_and(|s| !s.trim().is_empty());
                 let term = hof.as_ref().and_then(|h| h.termini.iter().filter(named).find(|t| t.code == code).or_else(|| h.termini.iter().find(named)));
                 let name = term.and_then(|t| t.strings.first().cloned()).unwrap_or_default();
-                crate::schedule::set_player_destination_directly(&mut p.vehicle, hof.as_deref(), line, &name);
+                crate::schedule::set_player_destination_directly(&mut p.vehicle, hof.as_deref(), line, &name, &[]);
                 log::info!("route number set by hand: {line} (IBIS_LinieKurs {:?})", p.vehicle.var("IBIS_LinieKurs"));
                 app.service_msg = Some((format!("Route {line}"), 3.0));
             }
@@ -577,7 +587,7 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
                     // (the line on the IBIS stays; only the destination changes)
                     let line = p.vehicle.var("IBIS_LinieKurs").filter(|l| *l > 0.0).map(|l| format!("{}", l as i64)).unwrap_or_default();
                     let name = t.strings.first().cloned().unwrap_or_default();
-                    crate::schedule::set_player_destination_directly(&mut p.vehicle, hof.as_deref(), &line, &name);
+                    crate::schedule::set_player_destination_directly(&mut p.vehicle, hof.as_deref(), &line, &name, &[]);
                     log::info!("destination display set by hand: {code} {} (terminus code now {:?})", name.trim(), p.vehicle.var("IBIS_TerminusCode"));
                     app.service_msg = Some((format!("Destination: {}", name.trim()), 3.0));
                 }

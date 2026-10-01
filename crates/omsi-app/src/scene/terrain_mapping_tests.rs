@@ -134,6 +134,7 @@ fn mapped_splines_and_objects_use_uncut_base_while_ground_keeps_paint() {
             var_parent: None,
             parked: false,
             editable: false,
+            script: None,
         }],
         trees: Vec::new(),
         origin: DVec3::ZERO,

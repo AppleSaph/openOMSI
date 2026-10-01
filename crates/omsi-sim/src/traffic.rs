@@ -76,10 +76,13 @@ pub struct Lane {
     /// without one takes its default there (Berlin-Spandau's GDR cars only drive where
     /// the Falkensee paths ask for them).
     pub group_density: Vec<(u16, f32)>,
-    /// `[rule] no_cars` / `bus`: cars keep off this lane; only the timetable's buses use it.
+    /// `[rule] no_cars`: cars keep off this lane.
     pub no_cars: bool,
-    /// `[rule] trucks 0`: no lorries here.
-    pub no_trucks: bool,
+    /// `[rule] bus` / `[rule] trucks` on the path: it is open to the AI vehicles of
+    /// `[ai_veh_type]` 2 / 3 (see [`Lane::allows`]). The rules are switches: the value
+    /// after them is not read (Grundorf's 110 `trucks` rules all say 0).
+    pub rule_bus: bool,
+    pub rule_trucks: bool,
     /// The spline this lane belongs to is editor-only: OMSI's invisible service roads at
     /// the edge of a map, where AI traffic drives with no road drawn under it.
     pub invisible: bool,
@@ -120,6 +123,20 @@ pub fn pool_density(rules: &[(u16, f32)], defaults: &[i32], pool: usize) -> f32 
 }
 
 impl Lane {
+    /// May an AI vehicle of `[ai_veh_type]` `veh_type` drive here (Omsi.exe 0x71d714, by
+    /// the path's rules): a car (0) where there is no `no_cars`, a taxi (1) also where
+    /// `bus` or `trucks` opens a no_cars path, a bus (2) only where `bus` and a truck (3)
+    /// only where `trucks` is set. Other values (and the timetable's buses, -1) anywhere.
+    pub fn allows(&self, veh_type: i32) -> bool {
+        match veh_type {
+            0 => !self.no_cars,
+            1 => !self.no_cars || self.rule_bus || self.rule_trucks,
+            2 => self.rule_bus,
+            3 => self.rule_trucks,
+            _ => true,
+        }
+    }
+
     /// How much of `unsched_vehgroups.txt` group `pool`'s traffic the lane carries (see
     /// [`pool_density`]).
     pub fn pool_density(&self, defaults: &[i32], pool: usize) -> f32 {
@@ -266,7 +283,7 @@ impl LaneBuilder {
     pub fn curve(points: Vec<DVec3>, headings: Vec<f32>, curvature: Vec<f32>, kind: LaneKind, width: f32) -> Lane {
         let dist = cumulative(&points);
         let speed_limit_kmh = if kind == LaneKind::Air { AIR_NO_LIMIT_KMH } else { 50.0 };
-        Lane { key: None, reversed: false, kind, width, points, headings, curvature, dist, speed_limit_kmh, next: Vec::new(), traffic_light: None, turn: 0, source: 0, offset: 0.0, name: String::new(), invisible: false, density: 1.0, group_density: Vec::new(), no_cars: false, no_trucks: false, left: None, right: None, priority: DEFAULT_PRIORITY, blocks: Vec::new() }
+        Lane { key: None, reversed: false, kind, width, points, headings, curvature, dist, speed_limit_kmh, next: Vec::new(), traffic_light: None, turn: 0, source: 0, offset: 0.0, name: String::new(), invisible: false, density: 1.0, group_density: Vec::new(), no_cars: false, rule_bus: false, rule_trucks: false, left: None, right: None, priority: DEFAULT_PRIORITY, blocks: Vec::new() }
     }
 
     /// Lane from bare points: headings from the neighbouring points on both sides (the
@@ -1723,6 +1740,9 @@ const SIGNAL_BEFORE_CHANGE: f32 = 1.2;
 #[derive(Debug, Clone)]
 pub struct AiState {
     pub traffic_pool: Option<(usize, std::sync::Arc<Vec<i32>>)>,
+    /// The vehicle's `[ai_veh_type]` (0 car, 1 taxi, 2 bus, 3 truck; -1 a timetable bus):
+    /// which lanes it may take, see [`Lane::allows`].
+    pub veh_type: i32,
     pub lane: usize,
     pub s: f32,
     pub speed: f32,
@@ -1950,7 +1970,7 @@ impl LaneSeq {
 
 impl AiState {
     pub fn new(lane: usize, s: f32, seed: u64) -> AiState {
-        AiState { traffic_pool: None, lane, s, speed: 0.0, max_speed_kmh: 50.0, accel: 1.2, decel: 3.0, length: 5.0, rng: seed | 1, blinker: 0, braking: false, odometer: 0.0, planned_next: None, ahead: Vec::new(), change_plan: Vec::new(), prev_lane: None, yield_time: 0.0, route: Vec::new(), route_index: 0, change: None, change_cooldown: 5.0, lateral: 0.0, lateral_target: 0.0, lateral_ramp: (0.0, 0.0, 0.0, 1.0), turn_wish: 0, signal: 0, signal_time: 0.0, lat_accel: 2.8, desire: 1.0, headway: 1.4, min_gap: 2.0, accept_gap: 4.0, reaction: 0.7, front: 2.5, rear: 2.5, held: false, start_timer: 0.0, acc: 0.0, accel_cap: None }
+        AiState { traffic_pool: None, veh_type: 0, lane, s, speed: 0.0, max_speed_kmh: 50.0, accel: 1.2, decel: 3.0, length: 5.0, rng: seed | 1, blinker: 0, braking: false, odometer: 0.0, planned_next: None, ahead: Vec::new(), change_plan: Vec::new(), prev_lane: None, yield_time: 0.0, route: Vec::new(), route_index: 0, change: None, change_cooldown: 5.0, lateral: 0.0, lateral_target: 0.0, lateral_ramp: (0.0, 0.0, 0.0, 1.0), turn_wish: 0, signal: 0, signal_time: 0.0, lat_accel: 2.8, desire: 1.0, headway: 1.4, min_gap: 2.0, accept_gap: 4.0, reaction: 0.7, front: 2.5, rear: 2.5, held: false, start_timer: 0.0, acc: 0.0, accel_cap: None }
     }
 
     fn rand(&mut self) -> u64 {
@@ -1967,8 +1987,8 @@ impl AiState {
         self.planned_next.into_iter().chain(self.ahead.iter().copied())
     }
 
-    /// A random way on from the end of `lane`. Lanes the map closes to cars ([rule]
-    /// no_cars, or a bus-only road) and lanes whose traffic density is zero are not driven
+    /// A random way on from the end of `lane`. Lanes the map closes to this vehicle ([rule]
+    /// no_cars, bus, trucks: `Lane::allows`) and lanes whose traffic density is zero are not driven
     /// into - filtering them only at spawn still let cars turn into a pedestrian street or a
     /// depot yard from next door. A car that has taken a turn lane takes the turn.
     fn choose_after(&mut self, net: &Network, lane: usize) -> Option<usize> {
@@ -1986,7 +2006,7 @@ impl AiState {
                         Some((p, defaults)) => nl.pool_density(defaults, *p),
                         None => nl.density,
                     };
-                    !nl.no_cars && d > 0.0
+                    nl.allows(self.veh_type) && d > 0.0
                 })
                 .collect()
         };
@@ -2551,6 +2571,21 @@ mod tests {
         let mut net = Network { lanes: vec![a, bend, c], ..Default::default() };
         net.link(1.5);
         net
+    }
+
+    #[test]
+    fn path_rules_open_lanes_by_vehicle_type() {
+        let mut l = LaneBuilder::polyline(vec![DVec3::ZERO, DVec3::new(0.0, 50.0, 0.0)], LaneKind::Street, 3.0);
+        // no rules: cars and taxis, no AI buses or trucks (Omsi.exe 0x71d714)
+        assert!(l.allows(0) && l.allows(1) && !l.allows(2) && !l.allows(3) && l.allows(-1));
+        l.rule_trucks = true;
+        assert!(l.allows(0) && l.allows(3) && !l.allows(2));
+        l.no_cars = true;
+        assert!(!l.allows(0) && l.allows(1) && l.allows(3));
+        l.rule_trucks = false;
+        assert!(!l.allows(0) && !l.allows(1));
+        l.rule_bus = true;
+        assert!(!l.allows(0) && l.allows(1) && l.allows(2) && !l.allows(3));
     }
 
     #[test]

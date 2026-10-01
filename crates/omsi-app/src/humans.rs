@@ -1843,6 +1843,8 @@ pub struct Humans {
     next_id: u32,
     /// Seconds since the start.
     time: f64,
+    wall_cells: HashMap<(i32, i32, i32), Vec<(Block, f64, f64)>>,
+    wall_key: (usize, usize, usize, f64),
     /// Passenger cabins by vehicle files (the front vehicle and its coupled parts).
     cabins: HashMap<Vec<PathBuf>, Option<Arc<Cabin>>>,
     player_cabin: Option<Arc<Cabin>>,
@@ -1888,7 +1890,7 @@ pub struct Humans {
     pub paid: Option<(f32, f32)>,
     pub change_due: Option<f32>,
     pub money: Option<crate::money::Money>,
-    /// A rider pressed the stop button for the next stop (the app fires `door_haltewunsch`).
+    /// A rider pressed the stop button for the next stop (the app fires the vehicle trigger `int_haltewunsch`).
     pub stop_request: bool,
     /// Tickets sold at the cash desk this session and what they were worth.
     pub tickets_sold: u32,
@@ -2015,6 +2017,37 @@ pub struct Humans {
     claimed: HashMap<u32, f64>,
 }
 
+/// Resolve each map entry directly, including human packs with nested folders.
+/// Keep duplicate entries as spawn weights, but load each definition only once.
+fn map_human_types(root: &Path, list: &[String]) -> Vec<Arc<HumanType>> {
+    // (keyed case-blind: OMSI paths are, and the lists spell one file several ways)
+    let mut loaded: HashMap<String, Option<Arc<HumanType>>> = HashMap::new();
+    let mut picked = Vec::new();
+    for line in list {
+        let rel = line.trim().replace('\\', "/");
+        // Lists normally include Humans/, but also accept paths relative to that folder.
+        let rel = if rel.to_ascii_lowercase().starts_with("humans/") {
+            rel
+        } else {
+            format!("Humans/{rel}")
+        };
+        let path = omsi_cfg::resolve_path(root, &rel);
+        let ty = loaded.entry(path.to_string_lossy().to_lowercase()).or_insert_with(|| {
+            match HumanType::load(&path) {
+                Ok(t) => Some(Arc::new(t)),
+                Err(e) => {
+                    log::warn!("map human {}: {e:#}", path.display());
+                    None
+                }
+            }
+        });
+        if let Some(t) = ty {
+            picked.push(t.clone());
+        }
+    }
+    picked
+}
+
 impl Humans {
     /// LAN uses the room id as the shared source of randomness.  This keeps the
     /// initial pedestrian selection and their generated identities identical on
@@ -2085,6 +2118,8 @@ impl Humans {
             rng: 0x1234_5678_9ABC_DEF1,
             next_id: 1,
             time: 0.0,
+            wall_cells: HashMap::new(),
+            wall_key: (0, 0, 0, 0.0),
             cabins: HashMap::new(),
             player_cabin: None,
             seats: HashMap::new(),
@@ -4103,7 +4138,12 @@ impl Humans {
         const CELL: f64 = 12.0;
         let collision = world.collision.lock();
         let places: Vec<DVec2> = world.waiting_places.lock().iter().map(|w| w.1.truncate()).collect();
-        let mut cells: HashMap<(i32, i32), Vec<(Block, f64, f64)>> = HashMap::new();
+        let (boxes, meshes, since) = (collision.boxes.len(), collision.meshes.len(), self.wall_key.3);
+        if (boxes, meshes, places.len()) != (self.wall_key.0, self.wall_key.1, self.wall_key.2) || self.time - since > 2.0 || self.time < since {
+            self.wall_cells.clear();
+            self.wall_key = (boxes, meshes, places.len(), self.time);
+        }
+        let mut cells = std::mem::take(&mut self.wall_cells);
         for (k, w) in ground.iter_mut() {
             let i = who[*k];
             if w.fixed || self.people[i].place != Place::Ground {
@@ -4114,28 +4154,29 @@ impl Humans {
                 continue;
             }
             let z = self.people[i].position.z;
-            let key = ((p0.x / CELL).floor() as i32, (p0.y / CELL).floor() as i32);
+            let key = ((p0.x / CELL).floor() as i32, (p0.y / CELL).floor() as i32, z.floor() as i32);
             let walls = cells.entry(key).or_insert_with(|| {
                 let c = DVec2::new((key.0 as f64 + 0.5) * CELL, (key.1 as f64 + 0.5) * CELL);
                 let probe = omsi_sim::collision::Obb {
                     center: c,
                     half: DVec2::splat(CELL * 0.5 + 2.0),
                     heading: 0.0,
-                    z0: z - 1.0,
-                    z1: z + 2.5,
+                    z0: key.2 as f64 - 1.0,
+                    z1: key.2 as f64 + 3.5,
                     velocity: DVec2::ZERO,
                     mass: 0.0,
                     pole: None,
                     id: -1,
                 };
-                collision
-                    .obstacles_near(&probe)
-                    .into_iter()
+                let near = collision.obstacles_near(&probe);
+                let reach = near.iter().map(|o| (o.center - c).length() + o.half.length() + 1.0).fold(0.0, f64::max);
+                let local: Vec<DVec2> = places.iter().copied().filter(|q| (*q - c).length() < reach).collect();
+                near.into_iter()
                     .filter(|o| {
                         // a shelter given as one solid box has its waiting places inside:
                         // people go in there
                         let b = Block { center: o.center, half: o.half, heading: o.heading, vel: DVec2::ZERO };
-                        !places.iter().any(|q| (*q - o.center).length() < o.half.length() + 1.0 && b.near(*q, 0.3))
+                        !local.iter().any(|q| (*q - o.center).length() < o.half.length() + 1.0 && b.near(*q, 0.3))
                     })
                     .map(|o| {
                         (
@@ -4156,7 +4197,7 @@ impl Humans {
                 if *z0 > z + 1.6 || *z1 < z + 0.5 {
                     continue;
                 }
-                if !b.near(w.pos, 0.0) || b.near(p0, -0.01) {
+                if (w.pos - b.center).length_squared() >= b.half.length_squared() || !b.near(w.pos, 0.0) || b.near(p0, -0.01) {
                     continue;
                 }
                 let (q, inside) = b.closest(w.pos);
@@ -4195,6 +4236,7 @@ impl Humans {
                 }
             }
         }
+        self.wall_cells = cells;
     }
 
     /// `OMSI_CHECK_OVERLAP=1`: measure how often somebody on the ground stands inside a
@@ -4310,23 +4352,22 @@ impl Humans {
         }
     }
 
-    /// Keep only the people the map's `humans.txt` names (once). OMSI draws a map's
-    /// pedestrians and passengers from that list alone: Berlin-Spandau and Grundorf name 15
-    /// of the stock types - not the uniformed DBC staff, not the aXYZ man01 - and certainly
-    /// not an add-on's people installed for another map (the GSPNS ones of Novi Sad, whose
-    /// man02 had no texture on Spandau and whose man04 walked with crossed legs). An entry
-    /// may be listed more than once to make it more common. A map without the file, or
-    /// whose list names nobody installed, keeps everybody.
+    /// Keep only the people the map's `humans.txt` names, an entry listed twice counting
+    /// twice, as OMSI draws a map's pedestrians and passengers from that list alone. A map
+    /// without the file, or whose list names nobody to be found, keeps everybody.
     fn use_map_humans(&mut self, world: &World) {
         if self.map_humans_done {
             return;
         }
         self.map_humans_done = true;
-        let list = omsi_map::ailists::load_list(&world.map_dir.join("humans.txt"));
+        let path = omsi_cfg::resolve_path(&world.map_dir, "humans.txt");
+        let list = omsi_map::ailists::load_list(&path);
         if list.is_empty() {
             return;
         }
-        // the path below `Humans/`, lower case with forward slashes
+        // the people installed already (any content root, mods too), matched by the path
+        // below `Humans/`; an entry not among them (a pack nested deeper than the scan) is
+        // loaded from its own path
         let key = |p: &str| -> String {
             let p = p.replace('\\', "/").to_ascii_lowercase();
             match p.rfind("humans/") {
@@ -4335,28 +4376,24 @@ impl Humans {
             }
         };
         let mut picked: Vec<Arc<HumanType>> = Vec::new();
-        let mut missing: Vec<&str> = Vec::new();
         for line in &list {
             let want = key(line.trim());
-            match self
-                .types
-                .iter()
-                .find(|t| key(&t.def.path.to_string_lossy()) == want)
-            {
+            match self.types.iter().find(|t| key(&t.def.path.to_string_lossy()) == want) {
                 Some(t) => picked.push(t.clone()),
-                None => missing.push(line),
+                None => picked.extend(map_human_types(&world.root, std::slice::from_ref(line))),
             }
         }
-        if !missing.is_empty() {
-            log::warn!("humans.txt of the map names people not installed: {missing:?}");
-        }
+        // (a list that names nobody to be found keeps everybody: a map without people
+        // looked broken)
         if picked.is_empty() {
+            log::warn!("humans.txt of the map names nobody installed: keeping all people");
             return;
         }
         log::info!(
-            "humans: {} of {} types from the map's humans.txt",
+            "humans: {} of {} map entries loaded from {}",
             picked.len(),
-            self.types.len()
+            list.len(),
+            path.display()
         );
         self.types = picked;
     }
@@ -8437,7 +8474,7 @@ impl Humans {
             let ab = b2 - a2;
             let t = if ab.length_squared() > 1e-6 { ((want - a2).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
             let q = a2 + ab * t;
-            let d = (want - q).length();
+            let d = (want - q).length() + (local.z - (pa.z + (pb.z - pa.z) * t)).abs();
             if best.map(|x| d < x.0).unwrap_or(true) {
                 best = Some((d, q, pa.z + (pb.z - pa.z) * t));
             }
@@ -9053,6 +9090,37 @@ impl Humans {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_humans_load_nested_paths_and_preserve_weights() {
+        let root = std::env::temp_dir().join(format!(
+            "omsi-map-human-paths-{}", std::process::id()
+        ));
+        let nested = root.join("Humans/JP_Test/Child_1");
+        std::fs::create_dir_all(&nested).unwrap();
+        // Synthetic definitions: no original passenger assets are required.
+        std::fs::write(nested.join("Child_1.hum"), "[model]\nmodel.cfg\n").unwrap();
+        std::fs::write(nested.join("model.cfg"), "").unwrap();
+        let other = root.join("Humans/Other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("Man.hum"), "[model]\nmodel.cfg\n").unwrap();
+        std::fs::write(other.join("model.cfg"), "").unwrap();
+        let list = vec![
+            "humans\\jp_test\\child_1\\child_1.hum".into(),
+            "Humans/JP_Test/Child_1/Child_1.hum".into(),
+            "JP_Test/Child_1/Child_1.hum".into(),
+            "Humans/JP_Test/Missing.hum".into(),
+        ];
+        let picked = map_human_types(&root, &list);
+        assert_eq!(picked.len(), 3);
+        assert!(Arc::ptr_eq(&picked[0], &picked[1]));
+        assert!(Arc::ptr_eq(&picked[1], &picked[2]));
+        // (case-blind: a case-insensitive disk keeps the list's own spelling)
+        let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+        assert!(picked.iter().all(|t| lower(&t.def.path).starts_with(&lower(&nested))));
+        assert!(map_human_types(&root, &["Humans/Missing/None.hum".into()]).is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// Berlin 1991's pack: full fare, short haul, day ticket (adults), and two reduced
     /// fares for 6..13.

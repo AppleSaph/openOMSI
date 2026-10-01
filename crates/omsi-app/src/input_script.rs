@@ -624,7 +624,7 @@ impl App {
                 );
                 // (coming over to it as the host does, not at a stroke - the streets stay
                 // as wet as they are and dry or wet with it)
-                self.change_weather(w, false);
+                self.change_weather(w, false, 240.0);
             }
             lan::WorldUpdate::Tours(tours) => {
                 if let Some(s) = self.schedule.as_mut() {
@@ -699,41 +699,9 @@ impl App {
     /// The indicator lever: 1 left, 2 right, 3 the hazard lights - each a toggle, as the
     /// Z / C / X keys and the phone's buttons work it.
     pub(crate) fn blinker(&mut self, want: u8) {
-        let Some(p) = self.player.as_mut() else { return };
-        // (as the lever stands now: the scripts put it back themselves after
-        // a turn, and the key remembered "left" - the next Z switched off a
-        // blinker that was off, and it took two presses)
-        let lever = if p.vehicle.var("lights_sw_warnblinker").is_some_and(|v| v > 0.5) {
-            Some(3)
-        } else {
-            p.vehicle.var("lights_sw_blinker").map(|v| match v.round() as i32 {
-                1 => 1u8,
-                2 => 2,
-                _ => 0,
-            })
-        };
-        if let Some(l) = lever {
-            p.blinker_key_state = l;
+        if let Some(player) = self.player.as_mut() {
+            player.toggle_indicator(want);
         }
-        // (the hazard lights have a switch of their own that toggles: pressed
-        // again with them on, "blinker_off" only let go of the indicator
-        // lever, and the hazards - the phone's button too - never went off)
-        let action = if want == 3 {
-            p.blinker_key_state = if p.blinker_key_state == 3 { 0 } else { 3 };
-            "blinker_warn_toggle"
-        } else if p.blinker_key_state == want {
-            p.blinker_key_state = 0;
-            "blinker_off"
-        } else {
-            p.blinker_key_state = want;
-            match want {
-                1 => "blinker_left_set",
-                2 => "blinker_right_set",
-                _ => "blinker_warn_toggle",
-            }
-        };
-        p.action(action, true);
-        p.action(action, false);
     }
 
     /// The right mouse button (or both) held in a view of the bus: start OMSI's mouse zoom
@@ -751,6 +719,12 @@ impl App {
         self.mouse_look = false;
         self.update_hover();
         true
+    }
+
+    /// Looking round with the mouse goes by the cursor's way in the window (a view of the
+    /// bus); on foot and with the free camera it keeps the raw mouse movement.
+    pub(crate) fn cursor_looks(&self) -> bool {
+        self.mouse_look && self.player.is_some() && !matches!(self.view.as_str(), "foot" | "free")
     }
 
     /// The right button alone zooms, as in Omsi.exe (TForm_main.Panel1MouseMove 0x82c5f8:
@@ -952,6 +926,16 @@ impl App {
         if let Some(n) = self.navigator.as_mut().filter(|n| n.map_open()) {
             n.map_move(x, y);
             return false;
+        }
+        // looking round in a view of the bus follows the cursor, as Omsi.exe turns it
+        // (0x82c5f8: yaw and pitch at the press plus the cursor's way times fov / 78.75):
+        // raw device deltas are no window pixels (a tablet, a remote desktop or a VM
+        // reports positions there and spun the view) and did not follow the zoom
+        if self.cursor_looks() {
+            let scale = self.window.as_ref().map(|w| w.scale_factor() as f32).unwrap_or(1.0).max(0.1);
+            let fov = self.camera.as_ref().map(|c| c.fov_deg).unwrap_or(60.0);
+            let k = look_deg_per_px(fov);
+            self.look_by((x - last.0) / scale * k, (y - last.1) / scale * k);
         }
         // Dragging a switch reads the movement in screen pixels - take it from the
         // cursor itself rather than from the raw device delta, which is not in the
@@ -2036,17 +2020,19 @@ impl App {
         }
         let cur = self.args.weather.clone().unwrap_or_default().replace('\\', "/").to_ascii_lowercase();
         let i = files.iter().position(|f| f.to_ascii_lowercase() == cur).map(|i| (i + 1) % files.len()).unwrap_or(0);
-        self.change_weather(Some(files[i].clone()), true);
+        self.change_weather(Some(files[i].clone()), true, 1.0);
     }
 
-    /// Go over to weather `file` (None: the map's default) in a few minutes of the day (see
+    /// Go over to weather `file` (None: the map's default) in `secs` of the day (see
     /// `weather_cycle`); a host tells the others (`share`), who come over to it the same way.
-    pub(crate) fn change_weather(&mut self, file: Option<String>, share: bool) {
+    /// The player's own choice comes at once, as in Omsi.exe (the weather dialog loads the
+    /// .owt and applies it straight away, 0x6828e0 -> 0x754c80); the cycle blends it in.
+    pub(crate) fn change_weather(&mut self, file: Option<String>, share: bool, secs: f32) {
         let from = self.weather.clone().unwrap_or_default();
         self.args.weather = file.clone();
         let to = load_weather(&self.args);
         let name = to.name.clone();
-        self.weather_blend = Some(crate::weather_cycle::Blend::new(from, to, 240.0));
+        self.weather_blend = Some(crate::weather_cycle::Blend::new(from, to, secs));
         if share {
             // (a host: the others take it up with its next clock message)
             if let (Some(l), Some(f)) = (self.lan.as_mut(), file.as_ref()) {
@@ -2072,6 +2058,9 @@ impl App {
                 }
             }
         }
+        if let Some(w) = self.weather.as_ref() {
+            crate::weather_setup::cloud_drift_step(&mut self.cloud_drift, w, secs as f64);
+        }
         let follows = self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client);
         if follows || self.weather_blend.is_some() {
             return;
@@ -2087,7 +2076,7 @@ impl App {
         let now = self.weather.clone().unwrap_or_default();
         let now_file = self.args.weather.clone().unwrap_or_default();
         if let Some(next) = crate::weather_cycle::pick(&all, &now, &now_file, self.clock.day_month().1, r) {
-            self.change_weather(Some(next), true);
+            self.change_weather(Some(next), true, 240.0);
         }
     }
 
@@ -2675,7 +2664,10 @@ impl App {
         // the cursor itself says when it is over something that can be operated
         // (steering with the mouse: a cross, as OMSI shows it; turning the view with the
         // right button held: the four arrows OMSI shows then, #185)
-        let kind: u8 = if self.mouse_look && self.game_menu.is_none() {
+        // (zooming with the mouse: the up-down arrows, Omsi's crSizeNS)
+        let kind: u8 = if self.both_drag.is_some() && self.game_menu.is_none() {
+            4
+        } else if self.mouse_look && self.game_menu.is_none() {
             3
         } else if self.mouse_drive && matches!(self.view.as_str(), "driver" | "outside" | "pax") && self.game_menu.is_none() {
             2
@@ -2688,6 +2680,7 @@ impl App {
             self.cursor_kind = kind;
             if let Some(w) = self.window.as_ref() {
                 w.set_cursor(match kind {
+                    4 => winit::window::CursorIcon::NsResize,
                     3 => winit::window::CursorIcon::Move,
                     2 => winit::window::CursorIcon::Crosshair,
                     1 => winit::window::CursorIcon::Pointer,
@@ -2695,6 +2688,20 @@ impl App {
                 });
             }
         }
+    }
+}
+
+/// Degrees the view turns per (logical) pixel of the cursor's way while looking round:
+/// Omsi.exe's fov / 78.75 (TForm_main.Panel1MouseMove 0x82c5f8).
+fn look_deg_per_px(fov_deg: f32) -> f32 {
+    fov_deg / 78.75
+}
+
+#[cfg(test)]
+mod look_tests {
+    #[test]
+    fn a_cursor_way_of_78_75_px_turns_by_the_field_of_view() {
+        assert!((78.75 * super::look_deg_per_px(60.0) - 60.0).abs() < 1e-4);
     }
 }
 

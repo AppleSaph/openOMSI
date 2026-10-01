@@ -6,6 +6,25 @@ const MIRROR_RATE: f32 = 75.0;
 const MIRROR_MIN_HZ: f32 = 8.0;
 const MIRROR_MAX_HZ: f32 = 30.0;
 
+/// Consume the VR redraw budget without updating a mirror twice in one frame.
+/// Negative rates request every mirror each frame; zero freezes immediately.
+fn vr_mirror_updates(budget: &mut f32, dt: f32, rate: f32, mirrors: usize) -> usize {
+    if mirrors == 0 || rate == 0.0 {
+        *budget = 0.0;
+        return 0;
+    }
+    if rate < 0.0 {
+        *budget = 0.0;
+        return mirrors;
+    }
+    // Keep only a frame's worth of work after a stall, with the fractional
+    // credit carried forward for rates below the game's frame rate.
+    *budget = (*budget + dt.clamp(0.0, 0.1) * rate).min(mirrors as f32 + 0.5);
+    let updates = (budget.floor() as usize).min(mirrors);
+    *budget -= updates as f32;
+    updates
+}
+
 fn render_scale_step(fps: f32, slow_frame_wait_share: f32) -> f32 {
     // (three levels, far apart, and a wide band between going down and up again: every
     // step makes the picture's targets anew - hundreds of MB with MSAA and HDR - and a
@@ -210,6 +229,7 @@ impl ApplicationHandler for App {
                     if !pressed && self.both_drag.is_some() && !(self.buttons_held.1 && self.right_zooms()) {
                         self.both_drag = None;
                         self.mouse_look = self.buttons_held.1;
+                        self.update_hover();
                     }
                     self.left_button(event_loop, pressed);
                 }
@@ -509,8 +529,11 @@ impl ApplicationHandler for App {
                         let (kind, rate) = precip_of(w);
                         w.fog.0 < 600.0 || (kind != 0 && rate > 0.05) || w.clouds.0.trim().to_ascii_lowercase().starts_with("overcast")
                     }).unwrap_or(false);
+                    // Omsi switches the AI's lights on below a light value of 0.75, before
+                    // the street lamps (0.6), and off after them in the morning
                     t.night = omsi_sim::Daylight::compute(&self.clock, self.envir.as_ref())
-                        .lamps_on
+                        .brightness
+                        < 0.75
                         || gloomy;
                     let __t2 = Instant::now();
                     t.others = lan_outlines(&self.remotes);
@@ -766,7 +789,7 @@ impl ApplicationHandler for App {
                         let vr_on = self.vr.is_some();
                         #[cfg(not(windows))]
                         let vr_on = false;
-                        p.move_head(dt, self.settings.head_movement && !vr_on, self.settings.steer_look && !vr_on);
+                        p.move_head(dt, self.settings.head_movement && !vr_on);
                         if let Some(w) = self.world.as_ref() {
                             crate::rail_drive::frame(p, self.traffic.as_ref().map(|t| &t.net), w, dt);
                         }
@@ -841,6 +864,16 @@ impl ApplicationHandler for App {
                                 }
                             }
                             let tracked = self.headtrack.as_ref().and_then(|h| h.pose()).filter(|_| self.settings.head_tracking && matches!(self.view.as_str(), "driver" | "pax"));
+                            #[cfg(windows)]
+                            let vr_on = self.vr.is_some();
+                            #[cfg(not(windows))]
+                            let vr_on = false;
+                            // Camera smoothing uses frame time, not the head physics' clamped step.
+                            // Physical head tracking controls the view without an added automatic turn.
+                            p.steer_look = if vr_on || tracked.is_some() { 0.0 } else {
+                                crate::player::steering_view_yaw(p.steer_look, p.vehicle.physics.controls.steering, dt,
+                                    self.settings.steer_look && self.view == "driver", self.settings.steer_look_angle, self.settings.steer_look_response)
+                            };
                             if let Some(t) = tracked {
                                 p.seat += glam::Vec3::new(t.pos[0], -t.pos[2], t.pos[1]).clamp(glam::Vec3::splat(-60.0), glam::Vec3::splat(60.0)) / 100.0;
                             }
@@ -1123,11 +1156,10 @@ impl ApplicationHandler for App {
                             h.take_change_tray();
                         }
                         if std::mem::take(&mut h.stop_request) {
-                            p.vehicle.trigger("door_haltewunsch");
-                            // (a press is let go again: the script keeps its button pressed
-                            // until `_off`, and the stop request never ended - the automatic
-                            // rear door opened again whenever it was shut)
-                            p.vehicle.trigger("door_haltewunsch_off");
+                            // a passenger's request is the vehicle trigger Omsi.exe fires
+                            // (0x62e42c), not the cab's stop button `door_haltewunsch`,
+                            // whose switch and brake sounds some buses play
+                            p.vehicle.trigger("int_haltewunsch");
                         }
                         h.write_pax_vars(&mut p.vehicle);
                         p.vehicle.host.humans_on_path_link = h.path_link_counts();
@@ -1672,7 +1704,7 @@ impl ApplicationHandler for App {
                         scene,
                         dt,
                         cam.position,
-                        daylight.lamps_on,
+                        daylight.brightness,
                         &phase,
                         self.audio.as_ref(),
                         self.in_cab,
@@ -1693,7 +1725,7 @@ impl ApplicationHandler for App {
                     // in the interface font, top left.
                     let mut lines: Vec<String> = Vec::new();
                     if self.paused {
-                        lines.push("Paused · P to go on".into());
+                        lines.push(ui::PAUSE_NOTICE.into());
                     }
                     // why the bus is not moving, whenever the throttle is pressed and nothing
                     // happens: the things a driver checks first
@@ -1769,16 +1801,20 @@ impl ApplicationHandler for App {
                             }
                             _ => nav.clear_route(),
                         }
+                        let (outside_temp, inside_temp) = vehicle_temperatures(p);
                         let frame = navigator::NavFrame {
                             traffic: self.traffic.as_ref(),
                             bus: p.vehicle.position,
                             heading: p.vehicle.heading,
                             speed_kmh: p.vehicle.physics.velocity_kmh(),
+                            outside_temp,
+                            inside_temp,
                             line,
                             terminus,
                             stops,
                             delay: self.duty.as_ref().map(|_| p.vehicle.host.tt_delay as f64),
                             passengers: self.humans.as_ref().map(|h| h.riding()),
+                            stop_requested: navigator::stop_requested(&p.vehicle),
                             time: self.clock.time,
                             weekday: self.clock.weekday(),
                             language: &self.settings.language,
@@ -1857,7 +1893,7 @@ impl ApplicationHandler for App {
                             // (not over the city map, which has the stops and their times: it
                             // covered the map's zoom and close buttons)
                             timetable: (self.timetable && !map_open).then(|| timetable_rows(self.duty.as_ref(), self.player.as_ref().map(|p| p.vehicle.host.tt_delay as f64))).flatten(),
-                            info: self.info_bar.then(|| info_line(&self.clock, self.player.as_ref(), self.duty.as_ref())),
+                            info: self.info_bar.then(|| info_line(&self.clock, self.player.as_ref(), self.duty.as_ref(), self.humans.as_ref().map(|h| h.riding()))),
                             tutorial: self.tutorial.as_ref().filter(|t| !t.hidden && self.game_menu.is_none()).and_then(|t| t.page().map(|p| (p.title.as_str(), p.text.as_str(), p.image.as_deref(), t.at, t.pages.len()))),
                             chat,
                             tags,
@@ -1873,8 +1909,7 @@ impl ApplicationHandler for App {
                         weather_lighting(
                             &daylight,
                             w,
-                            // (on over midnight, for the clouds' drift)
-                            self.clock.time + self.clock.day_of_year as f64 * 86400.0,
+                            self.cloud_drift,
                             self.wetness,
                             self.settings.shadows,
                         )
@@ -2044,23 +2079,22 @@ impl ApplicationHandler for App {
                             self.mirror_budget = 0.0;
                             self.mirrors_seen = 0;
                         } else {
-                            let mirrors = self.player.as_ref().map(|p| p.vehicle.ty.def.cameras_reflexion.len()).unwrap_or(0) as f32;
+                            let mirrors = self.player.as_ref().map(|p| p.vehicle.ty.def.cameras_reflexion.len()).unwrap_or(0);
                             #[cfg(windows)]
                             let vr_active = self.vr.is_some();
                             #[cfg(not(windows))]
                             let vr_active = false;
                             let rate = {
                                 if vr_active {
-                                    // Each VR frame already draws two full-size eyes. Keep bus
-                                    // mirrors useful without spending two more scene renders
-                                    // on nearly every frame when the headset is below refresh.
+                                    // Preserve the user's total redraw budget. A negative
+                                    // value explicitly requests every mirror each frame.
                                     omsi_cfg::env::var("OMSI_OPENXR_MIRROR_RATE")
                                         .ok()
                                         .and_then(|s| s.parse::<f32>().ok())
-                                        .filter(|rate| rate.is_finite() && *rate >= 0.0)
+                                        .filter(|rate| rate.is_finite() && *rate >= -1.0)
                                         .unwrap_or(self.settings.vr_mirror_rate)
                                 } else {
-                                    MIRROR_RATE.max(mirrors * MIRROR_MIN_HZ).min(MIRROR_MAX_HZ * self.mirrors_seen.max(1) as f32)
+                                    MIRROR_RATE.max(mirrors as f32 * MIRROR_MIN_HZ).min(MIRROR_MAX_HZ * self.mirrors_seen.max(1) as f32)
                                 }
                             };
                             // The desktop camera does not follow the headset. Culling by
@@ -2072,14 +2106,35 @@ impl ApplicationHandler for App {
                             } else {
                                 Some((*cam, s.config.width as f32 / s.config.height.max(1) as f32))
                             };
-                            self.mirror_budget = (self.mirror_budget + raw_dt.min(0.1) * rate).min(2.5);
-                            let mut drawn = 0;
                             // (in the cab, and from outside too while the bus is near: its
                             // mirrors are seen from the pavement and stood frozen)
                             let near = self.player.as_ref().zip(self.camera.as_ref()).is_some_and(|(p, c)| (p.vehicle.position - c.position).length() < 12.0);
-                            while (self.in_cab || near) && self.mirror_budget >= 1.0 && drawn < self.mirrors_seen.clamp(1, 2) {
+                            let draw_limit = if vr_active {
+                                if self.in_cab || near {
+                                    vr_mirror_updates(&mut self.mirror_budget, raw_dt, rate, mirrors)
+                                } else {
+                                    self.mirror_budget = 0.0;
+                                    0
+                                }
+                            } else {
+                                self.mirror_budget = (self.mirror_budget + raw_dt.min(0.1) * rate).min(2.5);
+                                self.mirrors_seen.clamp(1, 2)
+                            };
+                            let mut drawn = 0;
+                            if vr_active && draw_limit > 0 && draw_limit == mirrors {
+                                // Prepare the cameras and textures only once when all
+                                // mirrors are due, including the Every frame mode.
+                                if let (Some(w), Some(p)) = (self.world.as_ref(), self.player.as_ref()) {
+                                    self.mirror_turn = self.mirror_turn.wrapping_add(draw_limit);
+                                    self.mirrors_seen = render_mirrors(r, scene, w, p, &lighting, None, mirror_view);
+                                    drawn = draw_limit;
+                                }
+                            }
+                            while (self.in_cab || near) && drawn < (if vr_active { draw_limit } else { self.mirrors_seen.clamp(1, 2) }) && (vr_active || self.mirror_budget >= 1.0) {
                                 let (Some(w), Some(p)) = (self.world.as_ref(), self.player.as_ref()) else { break };
-                                self.mirror_budget -= 1.0;
+                                if !vr_active {
+                                    self.mirror_budget -= 1.0;
+                                }
                                 drawn += 1;
                                 self.mirror_turn = self.mirror_turn.wrapping_add(1);
                                 self.mirrors_seen = render_mirrors(
@@ -2330,8 +2385,11 @@ impl ApplicationHandler for App {
             }
         }
         if let DeviceEvent::MouseMotion { delta } = event {
+            // (in a view of the bus the cursor's own way turns it: move_cursor)
             if self.mouse_look {
-                self.look_by(delta.0 as f32 * 0.15, delta.1 as f32 * 0.15);
+                if !self.cursor_looks() {
+                    self.look_by(delta.0 as f32 * 0.15, delta.1 as f32 * 0.15);
+                }
             } else if self.mouse_drive && self.game_menu.is_none() {
                 self.mouse_past_edge(delta.0 as f32);
             }
@@ -2560,15 +2618,35 @@ fn timetable_rows(duty: Option<&crate::schedule::PlayerDuty>, delay: Option<f64>
     Some((title, rows))
 }
 
-/// OMSI's information bar: the time, the speed, and the trip with its next stop and delay.
-fn info_line(clock: &omsi_sim::SimClock, player: Option<&Player>, duty: Option<&crate::schedule::PlayerDuty>) -> String {
+/// The outside air from the weather and the cabin air the vehicle scripts/engine maintain.
+/// OMSI exposes both to every bus as Weather_Temperature and Cabinair_Temp.
+pub(crate) fn vehicle_temperatures(p: &Player) -> (f32, f32) {
+    let outside = p.vehicle.host.temperature;
+    let inside = p
+        .vehicle
+        .var("Cabinair_Temp")
+        .filter(|v| v.is_finite())
+        .unwrap_or_else(|| outside.clamp(18.0, 25.0));
+    (outside, inside)
+}
+
+/// OMSI's information bar: the time, the speed, temperatures, the passengers aboard, and the
+/// trip with its next stop and delay.
+fn info_line(clock: &omsi_sim::SimClock, player: Option<&Player>, duty: Option<&crate::schedule::PlayerDuty>, passengers: Option<usize>) -> String {
     let t = clock.time;
     let mut parts = vec![format!("{:02}:{:02}:{:02}", ((t / 3600.0) as i64).rem_euclid(24), ((t % 3600.0) / 60.0) as i64, (t % 60.0) as i64)];
     if let Some(p) = player {
         parts.push(format!("{:.0} km/h", p.vehicle.physics.velocity_kmh().abs()));
+        let (outside, inside) = vehicle_temperatures(p);
+        parts.push(format!("EXT {:.0} °C / INT {:.0} °C", outside, inside));
         // the tank as the bus's script says it (OMSI's RL_TankContent: tank_percent)
         if let Some(tank) = p.vehicle.var("tank_percent").filter(|v| v.is_finite()) {
             parts.push(format!("tank {:.0} %", (tank * 100.0).round()));
+        }
+        // how many are aboard right now (None: the passengers are switched off for this
+        // drive, so there is nothing to count)
+        if let Some(n) = passengers {
+            parts.push(passengers_aboard(n));
         }
         if let Some(d) = duty {
             if let Some(trip) = d.trips.get(d.trip_index) {
@@ -2585,6 +2663,12 @@ fn info_line(clock: &omsi_sim::SimClock, player: Option<&Player>, duty: Option<&
     parts.join("   ·   ")
 }
 
+/// `n` with the word for a passenger in the interface's language (singular for one; both
+/// words are keys of the tables - the whole line is too much of a sentence to translate).
+fn passengers_aboard(n: usize) -> String {
+    format!("{n} {}", omsi_ui::tr(if n == 1 { "Passenger" } else { "Passengers" }))
+}
+
 #[cfg(test)]
 mod governor_tests {
     use super::render_scale_step;
@@ -2594,5 +2678,60 @@ mod governor_tests {
         assert!(render_scale_step(35.0, 0.1) > 0.0);
         assert!(render_scale_step(35.0, 0.6) < 0.0);
         assert!(render_scale_step(60.0, 0.6) > 0.0);
+    }
+}
+
+#[cfg(test)]
+mod info_tests {
+    use super::passengers_aboard;
+
+    /// The count stands before the word, which is singular for one passenger (in the
+    /// tables' language; without a lookup the English key is drawn as it is).
+    #[test]
+    fn one_passenger_is_written_in_the_singular() {
+        assert_eq!(passengers_aboard(0), "0 Passengers");
+        assert_eq!(passengers_aboard(1), "1 Passenger");
+        assert_eq!(passengers_aboard(23), "23 Passengers");
+    }
+}
+
+#[cfg(test)]
+mod vr_mirror_tests {
+    use super::vr_mirror_updates;
+
+    #[test]
+    fn every_frame_updates_all_mirrors_even_at_low_game_fps() {
+        let mut budget = 0.75;
+        for dt in [1.0 / 90.0, 1.0 / 30.0, 0.5] {
+            assert_eq!(vr_mirror_updates(&mut budget, dt, -1.0, 8), 8);
+            assert_eq!(budget, 0.0);
+        }
+    }
+
+    #[test]
+    fn a_high_budget_is_not_limited_to_two_mirrors_per_frame() {
+        let mut budget = 0.0;
+        assert_eq!(vr_mirror_updates(&mut budget, 1.0 / 60.0, 240.0, 4), 4);
+        assert_eq!(vr_mirror_updates(&mut budget, 0.5, 360.0, 4), 4);
+        assert!(budget <= 0.5);
+    }
+
+    #[test]
+    fn fractional_credit_preserves_the_selected_total_rate() {
+        for fps in [30, 60, 90] {
+            let mut budget = 0.0;
+            let updates: usize = (0..fps * 10).map(|_| vr_mirror_updates(&mut budget, 1.0 / fps as f32, 16.0, 4)).sum();
+            assert!((159..=160).contains(&updates), "fps={fps}: {updates}");
+        }
+    }
+
+    #[test]
+    fn off_and_no_mirrors_discard_old_credit() {
+        let mut budget = 2.5;
+        assert_eq!(vr_mirror_updates(&mut budget, 0.1, 0.0, 4), 0);
+        assert_eq!(budget, 0.0);
+        assert_eq!(vr_mirror_updates(&mut budget, 0.1, -1.0, 0), 0);
+        assert_eq!(vr_mirror_updates(&mut budget, 0.1, 360.0, 0), 0);
+        assert_eq!(budget, 0.0);
     }
 }

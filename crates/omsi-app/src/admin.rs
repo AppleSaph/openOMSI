@@ -151,7 +151,7 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
             }
             // (only an installed weather file: the name comes from the admin's game)
             ("set", file) if !file.contains("..") && file.to_ascii_lowercase().starts_with("weather/") && file.to_ascii_lowercase().ends_with(".owt") => {
-                app.change_weather(Some(file.to_string()), true);
+                app.change_weather(Some(file.to_string()), true, 1.0);
             }
             _ => app.next_weather(),
         },

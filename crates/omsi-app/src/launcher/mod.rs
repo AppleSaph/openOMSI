@@ -263,6 +263,7 @@ impl Launcher {
     /// launcher's window).
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     pub fn release_window(&mut self) -> Option<Arc<Window>> {
+        self.pages.pads.cancel_feedback_test();
         self.surface = None;
         self.gpu = None;
         self.preview_tex = None;
@@ -377,10 +378,19 @@ impl ApplicationHandler for Launcher {
             self.last_input = Instant::now();
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.pages.pads.cancel_feedback_test();
+                event_loop.exit();
+            }
             WindowEvent::Touch(t) => self.touch(t, scale),
-            WindowEvent::Focused(f) => self.focused = f,
-            WindowEvent::Occluded(o) => self.occluded = o,
+            WindowEvent::Focused(f) => {
+                self.focused = f;
+                if !f { self.pages.pads.cancel_feedback_test(); }
+            }
+            WindowEvent::Occluded(o) => {
+                self.occluded = o;
+                if o { self.pages.pads.cancel_feedback_test(); }
+            }
             WindowEvent::Resized(s) => {
                 if let (Some(sf), Some(r)) = (self.surface.as_mut(), self.renderer.as_ref()) {
                     sf.resize(r, s.width, s.height);
@@ -486,7 +496,7 @@ impl ApplicationHandler for Launcher {
                 }
             }
             WindowEvent::DroppedFile(path) => {
-                // a mod folder or .zip dropped on the window is installed
+                // a mod folder or supported archive dropped on the window is installed
                 self.page = Page::Mods;
                 self.state.install(path.to_string_lossy().to_string());
             }
@@ -590,6 +600,43 @@ impl Launcher {
     fn frame(&mut self, event_loop: &ActiveEventLoop) {
         if self.recover_device() {
             return;
+        }
+        let desktop = !mobile::mobile() && self.window.is_some();
+        if let Some(d) = self.state.queued_launch.take() {
+            self.pages.pads.cancel_feedback_test();
+            if desktop && self.renderer.is_some() {
+                log::info!("launcher: the graphics device is given up before the game starts");
+                self.surface = None;
+                self.gpu = None;
+                self.preview_tex = None;
+                self.showroom = showroom::Showroom::new();
+                self.preview_gen = 0;
+                self.renderer = None;
+            }
+            self.state.spawn_launch(d);
+        }
+        if desktop {
+            let starting = self.state.launch_hold.is_some_and(|t| t.elapsed().as_secs_f32() < 15.0);
+            if starting || self.state.instances.iter().any(|i| i.running) {
+                if self.renderer.is_some() {
+                    log::info!("launcher: a game runs, the graphics device is given up until it ends");
+                    self.surface = None;
+                    self.gpu = None;
+                    self.preview_tex = None;
+                    self.showroom = showroom::Showroom::new();
+                    self.preview_gen = 0;
+                    self.renderer = None;
+                }
+                let now = Instant::now();
+                let dt = now.duration_since(self.last).as_secs_f32().min(0.1);
+                self.last = now;
+                self.state.update(dt);
+                return;
+            }
+            if self.renderer.is_none() {
+                log::info!("launcher: no game runs any more, the graphics device is opened again");
+                self.make_surface();
+            }
         }
         let now = Instant::now();
         let dt = now.duration_since(self.last).as_secs_f32().min(0.1);
@@ -786,6 +833,9 @@ impl Launcher {
     }
 
     fn draw_ui(&mut self) {
+        if self.page != Page::Controls || self.pages.controls_tab != 1 {
+            self.pages.pads.cancel_feedback_test();
+        }
         let size = self.ui.size;
         let mobile = mobile::mobile();
         // the storage browser (or the update dialog) lies over the page: the page sees no
@@ -793,6 +843,9 @@ impl Launcher {
         let dialog = self.update_dialog_open();
         let crash = !dialog && self.state.crash.is_some();
         let reset = !dialog && !crash && self.pages.confirm_reset;
+        if self.browser.is_some() || dialog || crash || reset {
+            self.pages.pads.cancel_feedback_test();
+        }
         let saved = (self.browser.is_some() || dialog || crash || reset).then(|| {
             let i = self.ui.input.clone();
             self.ui.input.mouse = Vec2::new(-1e4, -1e4);

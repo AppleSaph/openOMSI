@@ -800,6 +800,12 @@ pub struct AiFrame {
     /// shut); 0 = not at a stop (a script still closing its doors is told -1 until it
     /// answers, see `VehicleInstance::station_released`).
     pub at_station: i32,
+    /// `AI_Scheduled_AtStation_Side`: which side's doors a bus standing at its stop opens -
+    /// 0 = the side the map lays its road on, 1 = the other, 2 = both. AiList vehicles whose
+    /// model has doors on both sides read it (Urumqi61's `[AI]YoungMan*`: the BRT platforms
+    /// lie left, the ordinary stops right) and a script without the variable opens the right
+    /// side, which is OMSI's default too. 0 when the vehicle is not at a stop.
+    pub at_station_side: f32,
     /// `TrafficPriorityWarningNeeded`: a vehicle with right of way (`TrafficPriority`) has
     /// something in its way that is to be warned - the stock ambulance's script sounds its
     /// siren for the next 30 m on it.
@@ -951,6 +957,14 @@ impl VehicleInstance {
             })
             .collect();
         host.number_var = program.str_var("number");
+        // The vehicle dialog has already chosen these. They must exist before {init}: many
+        // mods branch on the fleet number to choose equipment, textures or script state.
+        if let (Some(i), Some(number)) = (program.str_var("number"), host.initial_number.as_ref()) {
+            state.str_vars[i as usize] = number.clone();
+        }
+        if let (Some(i), Some(ident)) = (program.str_var("ident"), host.initial_ident.as_ref()) {
+            state.str_vars[i as usize] = ident.clone();
+        }
         // defaults every bus expects before {init}
         let mut var_index = HashMap::new();
         for (i, n) in program.var_names.iter().enumerate() {
@@ -2137,6 +2151,11 @@ impl VehicleInstance {
             ("AI_Interiorlight", ai.lights as i32 as f32),
             ("AI_Engine", 1.0),
             ("AI_Scheduled_AtStation", station),
+            // Which side's doors: OMSI hands the stop's side to the script, and a vehicle
+            // with doors on both sides opens only the platform's (the BRT stops in
+            // Urumqi61 lie left, the ordinary ones right). Off a stop it is 0 (OMSI's
+            // default), so a script that reads it there does the same as ever.
+            ("AI_Scheduled_AtStation_Side", ai.at_station_side),
             ("TrafficPriorityWarningNeeded", ai.priority_warning as i32 as f32),
         ] {
             self.set_var(name, v);

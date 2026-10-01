@@ -51,9 +51,9 @@ gives, so a mod bus is driven by them as by the keyboard.
    cable, from a PC or a USB stick). openOMSI finds it by itself in `openOMSI/`,
    `Download/` or the top of the storage; anywhere else choose it in the launcher under
    **Setup → Browse → Use this folder → Save**.
-4. **Mods**: copy mod folders or .zip files into `openOMSI/Mods` (installed when the launcher
-   opens), or install them from the launcher's **Mods** page (Choose a folder / Choose a
-   .zip); archives can also lie in `openOMSI/Archives` and are used in place. Maps and buses
+4. **Mods**: copy mod folders or .zip, .7z and .rar files into `openOMSI/Mods` (installed when the launcher
+   opens), or install them from the launcher's **Mods** page (Choose a folder / Choose an
+   archive); .zip archives can also lie in `openOMSI/Archives` and are used in place. Maps and buses
    work exactly as on the computer.
 
 Settings, profiles and sessions are in the app's private folder; screenshots go to

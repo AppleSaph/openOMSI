@@ -199,9 +199,10 @@ fn vs_main(in: CoronaIn) -> CoronaOut {
     return out;
 }
 
-// The sprite's light: the soft round texture, and for a star light four thin rays across it.
-fn corona_shape(in: CoronaOut) -> f32 {
-    let t = textureSample(t_corona, s_corona, in.uv).r;
+// The sprite's light: the round texture (in its own colours), and for a star light four thin rays across it.
+fn corona_shape(in: CoronaOut) -> vec3<f32> {
+    // (the sprite keeps the bitmap's own colours, modulated by the light's colour)
+    let t = textureSample(t_corona, s_corona, in.uv).rgb;
     // the cone's fan: its apex has uv (0, 1) and a rim vertex (sin a, 1 - cos a)
     // (u = sin a, v = 1 - cos a), a being 0.05 inside
     // the inner cone and rising to 0.9 pi/2 + 0.05 at the outer edge: light_cone.bmp's
@@ -216,7 +217,7 @@ fn corona_shape(in: CoronaOut) -> f32 {
     let tb = textureSample(t_corona, s_corona, fan_uv).r;
     if (in.beam > 0.5) {
         let inside = select(0.0, 1.0, r <= 1.0 && phi <= in.cone.y);
-        return tb * inside;
+        return vec3<f32>(tb * inside);
     }
     return t;
 }

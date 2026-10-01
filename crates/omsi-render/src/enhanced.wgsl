@@ -283,7 +283,7 @@ struct EnhancedOut {
 };
 
 @fragment
-fn fs_enhanced(in: VsOut) -> EnhancedOut {
+fn fs_enhanced(in: FsIn) -> EnhancedOut {
     let c = shade_enhanced(in);
     let screen = material.flags.x > 0.5;
     // an LED panel's dots stay in the glow's source (`post.wgsl`), the other screens'
@@ -295,7 +295,7 @@ fn fs_enhanced(in: VsOut) -> EnhancedOut {
     return out;
 }
 
-fn shade_enhanced(in: VsOut) -> vec4<f32> {
+fn shade_enhanced(in: FsIn) -> vec4<f32> {
     if (material.emissive.w > 1.5) {
         // a pane's film of water: drops, not the sliding texture (see `rain_glass`), each a
         // lens that mirrors the sky probe and shows it upside down through itself

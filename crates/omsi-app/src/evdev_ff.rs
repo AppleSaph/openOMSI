@@ -78,8 +78,22 @@ impl Wheel {
         self.upload(level) || std::io::Error::last_os_error().raw_os_error() != Some(libc::ENODEV)
     }
 
+    pub(crate) fn pulse_force(&mut self, force: f32) -> bool {
+        let limit = crate::ffb_calibration::MAX_PULSE_FORCE;
+        let level = (-force.clamp(-limit, limit) * i16::MAX as f32) as i16;
+        if !self.upload_for(level, crate::ffb_calibration::PULSE_MS as u16) {
+            return false;
+        }
+        self.send(self.id as u16, 1)
+    }
+
     fn upload(&mut self, level: i16) -> bool {
+        self.upload_for(level, 0)
+    }
+
+    fn upload_for(&mut self, level: i16, milliseconds: u16) -> bool {
         let mut effect = FfEffect { kind: FF_CONSTANT as u16, id: self.id, direction: 0x4000, ..Default::default() };
+        effect.replay[0] = milliseconds;
         effect.params[0] = level as u16 as u64;
         let r = unsafe { libc::ioctl(self.file.as_raw_fd(), EVIOCSFF as _, &mut effect as *mut FfEffect) };
         self.sent = Instant::now();
@@ -91,10 +105,10 @@ impl Wheel {
         true
     }
 
-    fn send(&mut self, code: u16, value: i32) {
+    fn send(&mut self, code: u16, value: i32) -> bool {
         let ev = InputEvent { time: libc::timeval { tv_sec: 0, tv_usec: 0 }, kind: EV_FF, code, value };
         let bytes = unsafe { std::slice::from_raw_parts(&ev as *const InputEvent as *const u8, std::mem::size_of::<InputEvent>()) };
-        let _ = self.file.write_all(bytes);
+        self.file.write_all(bytes).is_ok()
     }
 }
 

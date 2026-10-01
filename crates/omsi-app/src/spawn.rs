@@ -95,6 +95,67 @@ pub(crate) fn load_coupled_parts(
     parts
 }
 
+/// Choose the player's fleet number and registration before the script VM runs `{init}`.
+/// Manual plates win, free registrations come from the map, otherwise the selected number
+/// is paired with the bus's registration rules.
+fn player_identity(
+    args: &Args,
+    world: &World,
+    vt: &omsi_sim::VehicleType,
+) -> (Option<String>, Option<String>) {
+    let available = vt.def.numbers_with_plates();
+    let saved_number = args
+        .situation_strvars
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("number"))
+        .map(|(_, v)| v.trim())
+        .filter(|v| !v.is_empty());
+    let wanted = args
+        .number
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .or(saved_number);
+
+    let number = match wanted {
+        Some(w) if available.is_empty() => Some(w.to_string()),
+        Some(w) => match available.iter().find(|(n, _)| n.trim() == w) {
+            Some((n, _)) => Some(n.clone()),
+            None => {
+                log::warn!("--number {w}: not in the bus's [number] list, the first one is taken");
+                available.first().map(|(n, _)| n.clone())
+            }
+        },
+        None => available.first().map(|(n, _)| n.clone()),
+    };
+
+    let saved_ident = args
+        .situation_strvars
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("ident"))
+        .map(|(_, v)| v.trim())
+        .filter(|v| !v.is_empty());
+    let typed = args.plate.as_deref().map(str::trim).filter(|p| !p.is_empty());
+    let ident = if let Some(p) = typed {
+        Some(p.to_string())
+    } else if let Some(p) = saved_ident {
+        Some(p.to_string())
+    } else if vt.def.registration_free {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        world.free_registration(seed)
+    } else {
+        number
+            .as_deref()
+            .map(|n| vt.def.chosen_plate_of_number(n))
+            .filter(|p| !p.trim().is_empty())
+    };
+
+    (number, ident)
+}
+
 pub(crate) fn spawn_player(
     args: &Args,
     world: &World,
@@ -143,6 +204,10 @@ pub(crate) fn spawn_player(
             h.info_trips.len()
         );
     }
+    // number / ident are there before the scripts' first {init} instruction
+    let (number, ident) = player_identity(args, world, &vt);
+    host.initial_number = number;
+    host.initial_ident = ident;
     // (the paint scheme's variables are there for the scripts' {init})
     host.paint_scheme = Some(paint_scheme(&vt, args.paint.as_deref()));
     let mut vehicle = omsi_sim::VehicleInstance::new(vt.clone(), host);
@@ -262,53 +327,7 @@ pub(crate) fn spawn_player(
                 .map(|i| (i.width, i.height, i.rgba))
         });
     }
-    // vehicle number and registration from the [number] list
-    if let Some(list) = &vt.def.number_file {
-        if let Ok(nl) =
-            omsi_vehicle::vehicle::NumberList::load(&omsi_cfg::resolve_path(vt.def.dir(), list))
-        {
-            // the number picked in the vehicle dialog (Omsi.exe's number combo, 0x67e150)
-            let wanted = args.number.as_deref().map(str::trim).filter(|n| !n.is_empty());
-            let picked = wanted.and_then(|w| nl.numbers.iter().find(|n| n.trim() == w));
-            if let (Some(w), None) = (wanted, picked) {
-                log::warn!("--number {w}: not in the bus's [number] list, the first one is taken");
-            }
-            if let Some(n) = picked.or(nl.numbers.first()) {
-                if let Some(i) = vt.program.str_var("number") {
-                    vehicle.state.str_vars[i as usize] = n.clone();
-                }
-                // (a free plate is the player's to choose: from registrations.txt below)
-                if vt.def.registration_mode != 1 {
-                    if let Some(i) = vt.program.str_var("ident") {
-                        vehicle.state.str_vars[i as usize] = vt.def.chosen_plate_of_number(n);
-                    }
-                }
-            }
-        }
-    }
-    // [registration_free]: a plate of the map's registrations.txt when nothing gave one
-    if vt.def.registration_free {
-        if let Some(i) = vt.program.str_var("ident") {
-            if vehicle.state.str_vars[i as usize].trim().is_empty() {
-                let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
-                if let Some(reg) = world.free_registration(seed) {
-                    vehicle.state.str_vars[i as usize] = reg;
-                }
-            }
-        }
-    }
-    // a plate given by hand (the launcher's field, `--plate`) is the player's own: it wins
-    // over every plate the content gave the bus
-    if let Some(plate) = args.plate.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-        match vt.program.str_var("ident") {
-            Some(i) => {
-                vehicle.state.str_vars[i as usize] = plate.to_string();
-                log::info!("number plate set by hand: {plate}");
-            }
-            // a bus whose scripts know no `ident` draws its plate from the model's texture
-            None => log::warn!("--plate {plate}: this bus has no `ident` string variable"),
-        }
-    }
+    // number / ident were installed before {init}; do not rewrite them here.
     // ground following through the loaded tiles (road surfaces first, then terrain)
     let terrains = world.terrains.clone();
     let surfaces = world.surfaces.clone();
@@ -420,6 +439,7 @@ pub(crate) fn spawn_player(
         mirrors_dirty: false,
         take_change: false,
         toggled_up: Default::default(),
+        momentary_gears: crate::settings::Settings::load().momentary_gears,
         side_lights_by_l: false,
         driver: None,
         ibis_duty: None,

@@ -14,11 +14,21 @@ The game starts in the headset when the session opens.
 | --- | --- | --- |
 | Eye resolution | 50%, 65%, 80%, 100% | Scale of the runtime's recommended resolution for each eye. Lower values reduce GPU work. |
 | Head tracking smoothing | Off, 5, 10, 20, 30 ms | Smooth the headset pose; Off uses raw tracking. |
-| Bus mirror refresh | Off, 8, 16, 24, 32/s | Limit how often bus mirrors are redrawn in VR; Off freezes their picture. |
+| Bus mirror refresh | Off, 8, 16, 24, 32, 48, 60, 90, 120, 180, 240, 360/s, Every frame | Total redraw budget shared by all bus mirrors. Off freezes their picture; Every frame redraws every mirror once per game frame. |
 | Show headset picture on monitor | On or off | Copy the left eye to the desktop window. |
 
 These settings affect VR only. The game's other graphics settings still apply
 and may need adjusting on demanding maps.
+
+The default mirror budget is 16 redraws/s in total. With four mirrors, 120/s
+targets about 30 updates/s per mirror, while 240/s targets about 60 updates/s
+per mirror. Each mirror can update at most once per game frame. **Every frame**
+removes the redraw budget, so mirrors follow the game's actual frame rate;
+headset reprojection does not generate additional mirror updates. More frequent
+mirror rendering can reduce game FPS, especially on buses with many mirrors.
+
+For testing, `OMSI_OPENXR_MIRROR_RATE` overrides the saved VR mirror budget.
+Set it to `-1` for Every frame, `0` to freeze, or a positive total redraw rate.
 
 ## Controls
 

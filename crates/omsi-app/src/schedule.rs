@@ -245,7 +245,7 @@ struct Choice {
 /// Stops moved `shift` metres back along `route` (the lanes the stops' route indices less
 /// `base` count in): where the vehicle's origin comes to rest (`bus_service::stop_shift`).
 /// One that comes to lie before the route's first lane keeps a distance below zero on it.
-fn shift_stops(net: &Network, route: &[usize], base: usize, stops: &mut [(usize, f32, f32, f64, i64)], shift: f32) {
+fn shift_stops(net: &Network, route: &[usize], base: usize, stops: &mut [(usize, f32, f32, f64, i64, f32)], shift: f32) {
     if shift.abs() < 1e-3 {
         return;
     }
@@ -290,7 +290,7 @@ fn bay_for(lat: f32, ty: &omsi_sim::VehicleType, rail: bool, left_hand: bool) ->
 
 /// The stops' raw box offsets (see `bay_offset`) made the vehicle's bay offsets, and the
 /// stops moved to where its origin comes to rest (`shift_stops`).
-fn place_stops(net: &Network, route: &[usize], base: usize, stops: &mut [(usize, f32, f32, f64, i64)], ty: &omsi_sim::VehicleType, rail: bool) {
+fn place_stops(net: &Network, route: &[usize], base: usize, stops: &mut [(usize, f32, f32, f64, i64, f32)], ty: &omsi_sim::VehicleType, rail: bool) {
     for st in stops.iter_mut() {
         st.2 = bay_for(st.2, ty, rail, net.left_hand);
     }
@@ -878,7 +878,15 @@ impl Schedule {
                     self.pending.push_back(j);
                 }
             }
-            if !taken {
+            if !taken && next.is_none() {
+                // the tour's last trip is over: Omsi takes the bus (and what is coupled to
+                // it) off the road at once rather than letting it drive on
+                traffic.remove_car(world, renderer, scene, id);
+                self.car_departure.remove(&id);
+                if omsi_cfg::env::var_os("OMSI_DEBUG_TRAFFIC").is_some() {
+                    log::info!("scheduled bus {id}: the last trip of its tour is over: removed");
+                }
+            } else if !taken {
                 traffic.release(ci);
                 if omsi_cfg::env::var_os("OMSI_DEBUG_TRAFFIC").is_some() {
                     log::info!("scheduled bus {id}: trip over, no next trip of its tour to take on here: it drives off");
@@ -1168,6 +1176,7 @@ impl Schedule {
                 continue;
             }
             crate::traffic::warm_up(world, ty, hof.clone());
+            t.prime_pull_out_room(ty, true);
             for (tr, _) in t.trailer_chain(ty) {
                 if seen.insert(tr.def.path.clone()) {
                     crate::traffic::warm_up(world, &tr, None);
@@ -1854,7 +1863,7 @@ impl Schedule {
         // a handful per call: spawning a bus builds its meshes, and a whole rush hour at
         // once is a frame that lasts seconds (a departure that has to wait costs little)
         let (mut spawned, mut tried) = (0, 0);
-        while spawned < 3 && tried < 24 {
+        while spawned < if loading { 3 } else { 1 } && tried < 24 {
             let Some(i) = self.pending.pop_front() else {
                 break;
             };
@@ -1925,7 +1934,7 @@ impl Schedule {
                         project_stop(&traffic.net, &lanes, pos, Some(STOP_REACH), from)
                     {
                         from = ri;
-                        stops.push((base + ri, ss, bay_offset(lat), *t_dep, *sid));
+                        stops.push((base + ri, ss, bay_offset(lat), *t_dep, *sid, world.stop_side(*sid)));
                         run.served[si] = true;
                     }
                 }
@@ -2117,7 +2126,7 @@ impl Schedule {
                     Some((ri, ss, lat)) => {
                         from = ri;
                         served[si] = true;
-                        stops.push((ri, ss, bay_offset(lat), leave[si], *sid));
+                        stops.push((ri, ss, bay_offset(lat), leave[si], *sid, world.stop_side(*sid)));
                     }
                     None => log::debug!("station {sid}: not near the route"),
                 },
@@ -2193,15 +2202,15 @@ impl Schedule {
             let route: Vec<usize> = prefix.iter().copied().chain(section[from..].iter().copied()).collect();
             let shift = prefix.len() as isize - from as isize;
             // the stops from the bus on; one just behind it on its lane is where it stands
-            let stops: Vec<(usize, f32, f32, f64, i64)> = stops
+            let stops: Vec<(usize, f32, f32, f64, i64, f32)> = stops
                 .into_iter()
                 .filter(|st| st.0 >= from)
-                .filter_map(|(ri, ss, lat, t, id)| {
+                .filter_map(|(ri, ss, lat, t, id, side)| {
                     let nri = (ri as isize + shift) as usize;
                     if nri == 0 && ss <= s0 + 0.3 {
-                        (s0 - ss < 25.0).then_some((0, s0 + 0.3, 0.0, t, id))
+                        (s0 - ss < 25.0).then_some((0, s0 + 0.3, 0.0, t, id, side))
                     } else {
-                        Some((nri, ss, lat, t, id))
+                        Some((nri, ss, lat, t, id, side))
                     }
                 })
                 .collect();
@@ -2210,12 +2219,14 @@ impl Schedule {
             traffic.reroute(ci, route, s0, stops, layover);
             let line = self.display_line(i);
             let terminus = self.data.trips[self.departures[i].trip].terminus.clone();
+            let names = self.trip_stop_names(self.departures[i].trip);
             let car = &mut traffic.cars[ci];
             if let Some(k) = car.vehicle.ty.program.str_var("Linie") {
                 car.vehicle.state.str_vars[k as usize] = line.clone();
             }
             let hof = car.vehicle.host.hof.clone();
-            set_ai_destination(&mut car.vehicle, hof.as_deref(), &line, &terminus);
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            set_ai_destination(&mut car.vehicle, hof.as_deref(), &line, &terminus, &names);
             if let Some(b) = car.bus.as_mut() {
                 b.route_open = end < slots.len();
                 b.terminus = terminus.clone();
@@ -2296,7 +2307,7 @@ impl Schedule {
         // a bus that would start a few metres short of its next stop stands at it (half a
         // metre short, so that it is served): starting before it, it had to pull over into
         // the stop - often a lane over - in less than its own length
-        if let Some(&(ri, ss, _, _, _)) = stops
+        if let Some(&(ri, ss, _, _, _, _)) = stops
             .iter()
             .find(|st| st.0 > start_index || (st.0 == start_index && st.1 > s))
         {
@@ -2352,10 +2363,10 @@ impl Schedule {
             return Placed::Busy;
         }
         self.startup.remove(&i);
-        let stops: Vec<(usize, f32, f32, f64, i64)> = stops
+        let stops: Vec<(usize, f32, f32, f64, i64, f32)> = stops
             .into_iter()
-            .filter(|(ri, ss, _, _, _)| *ri > start_index || (*ri == start_index && *ss > s))
-            .map(|(ri, ss, lat, t, id)| (ri - start_index, ss, lat, t, id))
+            .filter(|(ri, ss, _, _, _, _)| *ri > start_index || (*ri == start_index && *ss > s))
+            .map(|(ri, ss, lat, t, id, side)| (ri - start_index, ss, lat, t, id, side))
             .collect();
         let route: Vec<usize> = section[start_index..].to_vec();
         // the trip's own line (" 5"), which is what the displays show; the timetable line's
@@ -2398,6 +2409,8 @@ impl Schedule {
             traffic.cars[ci].state.max_speed_kmh = 90.0;
             traffic.cars[ci].state.length = 20.0 * (1 + traffic.cars[ci].vehicle.trailers.len()) as f32;
         }
+        let names = self.trip_stop_names(self.departures[i].trip);
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
         let car = &mut traffic.cars[ci];
         // on its layover only when it stands at its first stop now (the trip's first station
         // may lie on a part of the track that is not loaded): it waits there for its departure
@@ -2411,7 +2424,7 @@ impl Schedule {
         if let Some(i) = ty.program.str_var("Linie") {
             car.vehicle.state.str_vars[i as usize] = line.clone();
         }
-        set_ai_destination(&mut car.vehicle, hof.as_deref(), &line, &terminus);
+        set_ai_destination(&mut car.vehicle, hof.as_deref(), &line, &terminus, &names);
         log::info!("scheduled bus: line {line} tour {tour} trip {trip_name} {} #{:?} at {:.1} min, {} stops, at ({:.1}, {:.1}) heading {:.0}{}", ty.def.type_name, number.as_ref().map(|n| format!("{} plate {:?} paint {:?}", n.0, n.1, scheme.and_then(|i| ty.paint_schemes.get(i)).map(|p| p.name.as_str()))), day_time / 60.0, car.bus.as_ref().map(|b| b.stops.len()).unwrap_or(0), car.vehicle.position.x, car.vehicle.position.y, car.vehicle.heading, if end < slots.len() { format!(", route {} of {} steps so far", end - start, steps.len()) } else { String::new() });
         if end < slots.len() {
             self.running.push(RunningTrip {
@@ -2653,15 +2666,17 @@ fn depot_file(
 }
 
 /// Put an AI bus's IBIS onto the line/terminus of its trip: the depot file gives the
-/// terminus code (by ident) and the info trip (route index) for the line, and the IBIS
+/// terminus code (by ident) and the info trip (route index) for the line - the one its
+/// stops (`stops`, the trip's station names) follow, [`pick_route`] - and the IBIS
 /// variables the bus scripts render are set as if the driver had typed them.
 pub fn set_ai_destination(
     v: &mut omsi_sim::VehicleInstance,
     hof: Option<&omsi_vehicle::Hof>,
     line: &str,
     terminus: &str,
+    stops: &[&str],
 ) {
-    set_destination(v, hof, line, terminus, false)
+    set_destination(v, hof, line, terminus, stops, false)
 }
 
 /// The same for the player's bus, done the driver's way: a typing job
@@ -2680,13 +2695,13 @@ pub fn player_ibis(
     hof: Option<&omsi_vehicle::Hof>,
     line: &str,
     terminus: &str,
-    first_stop: Option<&str>,
+    stops: &[&str],
     stop: Option<(usize, &str)>,
     operable: &dyn Fn(&str) -> bool,
     background: bool,
 ) -> Option<omsi_sim::ibis::Typist> {
     let h = hof?;
-    let Some(target) = ibis_target(h, line, terminus, first_stop, stop) else {
+    let Some(target) = ibis_target(h, line, terminus, stops, stop) else {
         log::info!(
             "IBIS: terminus '{}' is not in depot file {}",
             terminus.trim(),
@@ -2726,8 +2741,9 @@ pub fn set_player_destination_directly(
     hof: Option<&omsi_vehicle::Hof>,
     line: &str,
     terminus: &str,
+    stops: &[&str],
 ) {
-    set_destination(v, hof, line, terminus, true)
+    set_destination(v, hof, line, terminus, stops, true)
 }
 
 /// What the IBIS shows once a driver has typed a trip's codes, standing at the timetable's
@@ -2736,10 +2752,10 @@ pub fn ibis_target(
     hof: &omsi_vehicle::Hof,
     line: &str,
     terminus: &str,
-    first_stop: Option<&str>,
+    stops: &[&str],
     stop: Option<(usize, &str)>,
 ) -> Option<omsi_sim::ibis::Target> {
-    let (codes, ti) = ibis_codes(hof, line, terminus, first_stop)?;
+    let (codes, ti) = ibis_codes(hof, line, terminus, stops)?;
     let code = hof.termini[ti].code;
     // the IBIS looks the codes up itself: the first route of the typed code, the first
     // destination of the route's code
@@ -2768,32 +2784,10 @@ pub fn ibis_target(
         .map(|i| i as i32);
     // the IBIS counts the stops of its own route list, which need not be the timetable's
     // (Grundorf's timetable has two Bauernhof stations, the route one): the stop of that
-    // name nearest the timetable's place in the trip
+    // name nearest the timetable's place in the trip - at the trip's first stop as well,
+    // for a route that begins before it
     let ibis_stop = match (route_index, stop) {
-        (Some(r), Some((k, name))) if k > 0 => {
-            let name = name.trim();
-            let list = hof
-                .info_busstop_lists
-                .get(r as usize)
-                .map(|l| l.as_slice())
-                .unwrap_or(&[]);
-            let is_it = |ident: &str| {
-                let ident = ident.split('#').next().unwrap_or("").trim();
-                ident.eq_ignore_ascii_case(name)
-                    || hof.bus_stops.iter().any(|b| {
-                        b.ident.trim().eq_ignore_ascii_case(ident)
-                            && b.strings
-                                .iter()
-                                .any(|s| s.trim().eq_ignore_ascii_case(name))
-                    })
-            };
-            list.iter()
-                .enumerate()
-                .filter(|(_, id)| is_it(id))
-                .map(|(i, _)| i)
-                .min_by_key(|i| i.abs_diff(k))
-                .unwrap_or(0)
-        }
+        (Some(r), Some((k, name))) => ibis_stop_index(hof, r as usize, name, k).unwrap_or(0),
         _ => 0,
     };
     Some(omsi_sim::ibis::Target {
@@ -2843,7 +2837,32 @@ fn complex_line_text(line: &str, line_num: f32) -> String {
     }
 }
 
+/// The letter and digits of a line named letter first ("X10", "M41"), else None.
+fn line_prefix(line: &str) -> Option<(char, &str)> {
+    let line = line.trim();
+    let first = line.chars().next().filter(|c| c.is_ascii_alphabetic())?;
+    let digits = &line[1..];
+    (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+        .then_some((first.to_ascii_uppercase(), digits))
+}
+
 fn line_suffix_from_text(line: &str) -> u32 {
+    // the stock MAN matrices' and X10 Berlin's IBIS's "letter then number" codes
+    if let Some((letter, _)) = line_prefix(line) {
+        return match letter {
+            'E' => 1,
+            'S' => 5,
+            'A' => 6,
+            'D' => 11,
+            'C' => 12,
+            'B' => 13,
+            'U' => 25,
+            'M' => 28,
+            'N' => 35,
+            'X' => 36,
+            _ => 0,
+        };
+    }
     match line.trim().chars().last().map(|c| c.to_ascii_uppercase()) {
         // The stock Matrix scripts use two different E codes: 1 renders E5,
         // while 10 renders 5E. Timetable line names put the letter after the
@@ -2866,14 +2885,29 @@ fn line_suffix_from_text(line: &str) -> u32 {
 /// timetable line such as `5E`, the display suffix must therefore come from
 /// the text (`10` in the stock matrix scripts), while a plain `5` stays `500`.
 fn line_code_from_text(line: &str, route_code: Option<u32>) -> Option<u32> {
-    let digits: String = line
-        .trim()
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    match digits.parse::<u32>().ok().filter(|n| *n > 0 && *n < 1000) {
+    // a lettered line's IBIS number is the depot file's (X10 Berlin types X10 as 510)
+    if let (Some(_), Some(code)) = (line_prefix(line), route_code) {
+        return Some(code / 100 * 100 + line_suffix_from_text(line));
+    }
+    match line_number_digits(line)
+        .parse::<u32>()
+        .ok()
+        .filter(|n| *n > 0 && *n < 1000)
+    {
         Some(number) => Some(number * 100 + line_suffix_from_text(line)),
         None => route_code,
+    }
+}
+
+/// The line's number: its leading digits, or the digits after a prefix letter ("X10" → 10).
+fn line_number_digits(line: &str) -> String {
+    match line_prefix(line) {
+        Some((_, digits)) => digits.to_string(),
+        None => line
+            .trim()
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect(),
     }
 }
 
@@ -2939,12 +2973,13 @@ fn find_terminus(hof: &omsi_vehicle::Hof, wanted: &str) -> Option<usize> {
 
 /// The IBIS codes of a trip from the depot file, and the terminus index they lead to.
 /// A line has one route per direction and variant to the same terminus; the one whose
-/// stop list starts where the trip starts is taken, else the first.
+/// stop list follows the trip's stops (`stops`, the timetable's names) best is taken
+/// ([`pick_route`]), else the first.
 pub fn ibis_codes(
     hof: &omsi_vehicle::Hof,
     line: &str,
     terminus: &str,
-    first_stop: Option<&str>,
+    stops: &[&str],
 ) -> Option<(IbisCodes, usize)> {
     let terminus = terminus.trim();
     if terminus.is_empty() {
@@ -2952,48 +2987,8 @@ pub fn ibis_codes(
     }
     let ti = find_terminus(hof, terminus)?;
     let code = hof.termini[ti].code;
-    let line_digits: String = line
-        .trim()
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    let line_number = line_digits.parse::<u32>().ok();
-    // the route code is the line's number and two digits: a driver types those, whatever
-    // the route's line string says (Grundorf's 7601 to Krankenhaus has "TML")
-    let routes: Vec<usize> = hof
-        .info_trips
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| {
-            omsi_cfg::parse_i32(&t.route) == code
-                && (t.line.trim().eq_ignore_ascii_case(line.trim())
-                    || (!line_digits.is_empty() && t.line.trim() == line_digits)
-                    || (line_number.is_some()
-                        && t.code.trim().parse::<u32>().ok().map(|c| c / 100) == line_number))
-        })
-        .map(|(i, _)| i)
-        .collect();
-    let starts_here = |i: &usize| {
-        let first = hof
-            .info_busstop_lists
-            .get(*i)
-            .and_then(|l| l.first())
-            .map(|s| s.trim().to_ascii_lowercase());
-        match (first, first_stop) {
-            (Some(f), Some(s)) => {
-                !f.is_empty()
-                    && (f == s.trim().to_ascii_lowercase()
-                        || f.starts_with(&s.trim().to_ascii_lowercase())
-                        || s.trim().to_ascii_lowercase().starts_with(&f))
-            }
-            _ => false,
-        }
-    };
-    let route = routes
-        .iter()
-        .find(|i| starts_here(i))
-        .or(routes.first())
-        .and_then(|i| hof.info_trips[*i].code.trim().parse::<u32>().ok());
+    let route = pick_route(hof, &routes_to(hof, line, code), stops)
+        .and_then(|i| hof.info_trips[i].code.trim().parse::<u32>().ok());
     let codes = match route {
         Some(r) => IbisCodes {
             line: line_code_from_text(line, Some(r)),
@@ -3009,11 +3004,135 @@ pub fn ibis_codes(
     Some((codes, ti))
 }
 
+/// The depot file's routes of `line` to the terminus with code `code`, in file order. The
+/// route code is the line's number and two digits: a driver types those, whatever the
+/// route's line string says (Grundorf's 7601 to Krankenhaus has "TML").
+fn routes_to(hof: &omsi_vehicle::Hof, line: &str, code: i32) -> Vec<usize> {
+    let line_digits: String = line
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    let line_number = line_digits.parse::<u32>().ok();
+    hof.info_trips
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            omsi_cfg::parse_i32(&t.route) == code
+                && (t.line.trim().eq_ignore_ascii_case(line.trim())
+                    || (!line_digits.is_empty() && t.line.trim() == line_digits)
+                    || (line_number.is_some()
+                        && t.code.trim().parse::<u32>().ok().map(|c| c / 100) == line_number))
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Which of `routes` a trip through `stops` (the timetable's station names) runs: one
+/// starting at the trip's first stop (the IBIS starts its count there), of those the one
+/// that has most of the trip's stops in the trip's order, then the one as long as the trip
+/// (a short working's route rather than the long one it is part of). Nothing in the
+/// timetable ties a trip to a route of the depot file - a driver picks it by its stops -
+/// and a line often has several routes to one terminus; taking the first whose first stop
+/// was spelt as the timetable spells it typed the wrong one whenever the spellings
+/// differed. None without routes; the first route when no stop matches any.
+fn pick_route(hof: &omsi_vehicle::Hof, routes: &[usize], stops: &[&str]) -> Option<usize> {
+    let trip: Vec<(String, Vec<String>)> = stops
+        .iter()
+        .map(|s| (s.trim().to_lowercase(), stop_words(s)))
+        .filter(|(s, _)| !s.is_empty())
+        .collect();
+    let mut best: Option<(usize, (bool, usize, std::cmp::Reverse<usize>))> = None;
+    for &r in routes {
+        let list = hof
+            .info_busstop_lists
+            .get(r)
+            .map(|l| l.as_slice())
+            .unwrap_or(&[]);
+        let names: Vec<Vec<(String, Vec<String>)>> =
+            list.iter().map(|id| ident_names(hof, id)).collect();
+        // the longest common subsequence: a stop missing on either side costs nothing
+        // but itself, and a stop the route lists twice is not
+        // matched past the rest of the trip
+        let mut row = vec![0usize; names.len() + 1];
+        for t in &trip {
+            let mut diag = 0;
+            for (j, n) in names.iter().enumerate() {
+                let up = row[j + 1];
+                row[j + 1] = if same_stop(n, t) { diag + 1 } else { up.max(row[j]) };
+                diag = up;
+            }
+        }
+        let found = row[names.len()];
+        let starts = match (trip.first(), names.first()) {
+            (Some(t), Some(n)) => same_stop(n, t),
+            _ => false,
+        };
+        let score = (
+            starts,
+            found,
+            std::cmp::Reverse(names.len().abs_diff(stops.len())),
+        );
+        if best.as_ref().is_none_or(|(_, b)| score > *b) {
+            best = Some((r, score));
+        }
+    }
+    match best {
+        Some((r, (_, found, _))) if found > 0 => Some(r),
+        _ => routes.first().copied(),
+    }
+}
+
+/// The names a stop of a route's list goes by: its ident (before a `#`) and the strings
+/// the depot file's `[addbusstop]` of that ident gives it, each lowercased and as its
+/// [`stop_words`].
+fn ident_names(hof: &omsi_vehicle::Hof, ident: &str) -> Vec<(String, Vec<String>)> {
+    let ident = ident.split('#').next().unwrap_or("").trim();
+    let mut names = vec![ident.to_string()];
+    for b in &hof.bus_stops {
+        if b.ident.trim().eq_ignore_ascii_case(ident) {
+            names.extend(b.strings.iter().map(|s| s.trim().to_string()));
+        }
+    }
+    names
+        .into_iter()
+        .filter(|n| !n.is_empty())
+        .map(|n| (n.to_lowercase(), stop_words(&n)))
+        .collect()
+}
+
+/// One stop of a route (its [`ident_names`]) and a timetable stop (lowercased, and its
+/// [`stop_words`]) are the same: a name equal, one the start of the other, or the same
+/// words.
+fn same_stop(names: &[(String, Vec<String>)], stop: &(String, Vec<String>)) -> bool {
+    names.iter().any(|(raw, words)| {
+        !raw.is_empty()
+            && (*raw == stop.0
+                || raw.starts_with(&stop.0)
+                || stop.0.starts_with(raw.as_str())
+                || (!words.is_empty() && *words == stop.1))
+    })
+}
+
+/// A stop name as the set of its words, so that the map's and the depot file's spellings
+/// of one stop meet: in any order ("Nordstadt Bhf", "Bhf Nordstadt"), with any punctuation
+/// ("Bhf. Nordstadt") and without one-letter prefixes ("F_Kirchweg", "Kirchweg").
+fn stop_words(name: &str) -> Vec<String> {
+    let mut w: Vec<String> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() > 1)
+        .map(|w| w.to_lowercase())
+        .collect();
+    w.sort();
+    w
+}
+
 fn set_destination(
     v: &mut omsi_sim::VehicleInstance,
     hof: Option<&omsi_vehicle::Hof>,
     line: &str,
     terminus: &str,
+    stops: &[&str],
     player: bool,
 ) {
     let Some(hof) = hof else { return };
@@ -3035,21 +3154,8 @@ fn set_destination(
         hof.termini[ti].code
     );
     let code = hof.termini[ti].code;
-    let line_digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let route_index = hof
-        .info_trips
-        .iter()
-        .position(|t| {
-            omsi_cfg::parse_i32(&t.route) == code && t.line.trim().eq_ignore_ascii_case(line.trim())
-        })
-        .or_else(|| {
-            hof.info_trips.iter().position(|t| {
-                omsi_cfg::parse_i32(&t.route) == code
-                    && t.code.starts_with(&line_digits)
-                    && !line_digits.is_empty()
-            })
-        });
-    let line_num = line_digits.parse::<f32>().unwrap_or(0.0);
+    let route_index = pick_route(hof, &routes_to(hof, line, code), stops);
+    let line_num = line_number_digits(line).parse::<f32>().unwrap_or(0.0);
     // The route's last two digits select its stop list; they must not replace
     // a display suffix. Otherwise an ordinary route code such as 505 becomes
     // suffix 5 and the stock matrix renders S5 instead of 5E.
@@ -3059,6 +3165,11 @@ fn set_destination(
     let line_code =
         line_code_from_text(line, route_code).unwrap_or_else(|| line_num.max(0.0) as u32 * 100);
     let line_suffix = (line_code % 100) as f32;
+    let line_num = if line_prefix(line).is_some() {
+        (line_code / 100) as f32
+    } else {
+        line_num
+    };
     // the original's way: SetLineTo + AI_target_index, then the ai_scheduled_settarget trigger
     set_line_to(v, line);
     if !player {
@@ -3195,19 +3306,12 @@ const MAX_PAGE_DEPARTURES: usize = 20;
 /// `route` (an index into the depot file's `info_busstop_lists`): the stop of that name
 /// nearest `k`. What `IBIS_busstop` has to be for the IBIS to show that stop.
 pub fn ibis_stop_index(hof: &omsi_vehicle::Hof, route: usize, name: &str, k: usize) -> Option<usize> {
-    let name = name.trim();
+    let stop = (name.trim().to_lowercase(), stop_words(name));
     let list = hof.info_busstop_lists.get(route)?;
-    let is_it = |ident: &str| {
-        let ident = ident.split('#').next().unwrap_or("").trim();
-        ident.eq_ignore_ascii_case(name)
-            || hof.bus_stops.iter().any(|b| {
-            b.ident.trim().eq_ignore_ascii_case(ident)
-                && b.strings.iter().any(|s| s.trim().eq_ignore_ascii_case(name))
-        })
-    };
+    // (spelt as `pick_route` compares the names: "Kirchweg" is the depot file's "F_Kirchweg")
     list.iter()
         .enumerate()
-        .filter(|(_, id)| is_it(id))
+        .filter(|(_, id)| same_stop(&ident_names(hof, id), &stop))
         .map(|(i, _)| i)
         .min_by_key(|i| i.abs_diff(k))
 }
@@ -3417,18 +3521,7 @@ impl Schedule {
                 .iter()
                 .enumerate()
                 .map(|(i, id)| {
-                    let name = self
-                        .data
-                        .bus_stops
-                        .iter()
-                        .find(|b| b.object_id == *id)
-                        .map(|b| b.name.clone())
-                        .filter(|n| !n.trim().is_empty())
-                        // (the trip file names its stations too: a stop whose object is not
-                        // among the map's known stops - Novi Sad's, on tiles not loaded yet -
-                        // had no name on the navigator, the HUD and in the log)
-                        .or_else(|| trip.stations.is_empty().then(|| trip.stations_legacy.get(i).and_then(|r| r.get(2)).map(|n| n.trim().to_string())).flatten())
-                        .unwrap_or_default();
+                    let name = self.station_name(trip, i, *id);
                     let position = world.object_positions.lock().get(id).map(|p| p.0);
                     let (arr, dep) = times.stations[i];
                     PlannedStop {
@@ -3735,6 +3828,41 @@ impl Schedule {
 
     /// The line a departure's displays show: its trip's own (" 5"), else the timetable
     /// line's name.
+    /// The name of station `i` (object `id`) of `trip`, as the map's stop calls it.
+    fn station_name(&self, trip: &omsi_timetable::Trip, i: usize, id: i64) -> String {
+        self.data
+            .bus_stops
+            .iter()
+            .find(|b| b.object_id == id)
+            .map(|b| b.name.clone())
+            .filter(|n| !n.trim().is_empty())
+            // (the trip file names its stations too: a stop whose object is not
+            // among the map's known stops - Novi Sad's, on tiles not loaded yet -
+            // had no name on the navigator, the HUD and in the log)
+            .or_else(|| {
+                trip.stations
+                    .is_empty()
+                    .then(|| {
+                        trip.stations_legacy
+                            .get(i)
+                            .and_then(|r| r.get(2))
+                            .map(|n| n.trim().to_string())
+                    })
+                    .flatten()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The station names of trip `ti`, for picking its route in the depot file.
+    fn trip_stop_names(&self, ti: usize) -> Vec<String> {
+        let trip = &self.data.trips[ti];
+        trip_stations(trip)
+            .iter()
+            .enumerate()
+            .map(|(i, id)| self.station_name(trip, i, *id))
+            .collect()
+    }
+
     fn display_line(&self, i: usize) -> String {
         let d = &self.departures[i];
         let own = self.data.trips[d.trip].line.trim();
@@ -3836,6 +3964,12 @@ struct OnRoad {
     dwelling: bool,
     /// How late it left its last stop (s).
     late: f64,
+}
+
+/// GetTTTerminusIndex as Omsi.exe answers it: the first depot terminus whose name is the
+/// trip's terminus (the second [trip] line), else -1.
+fn tt_terminus_index(hof: Option<&omsi_vehicle::hof::Hof>, terminus: &str) -> i32 {
+    hof.and_then(|h| h.termini.iter().position(|t| t.texture_id == terminus)).map_or(-1, |i| i as i32)
 }
 
 impl PlayerDuty {
@@ -4110,7 +4244,7 @@ impl PlayerDuty {
             .collect();
         host.tt_stop_ids = trip.stops.iter().map(|s| s.object_id).collect();
         host.tt_busstop_index = self.next_stop as i32;
-        host.tt_terminus_index = trip.stops.len() as i32 - 1;
+        host.tt_terminus_index = tt_terminus_index(host.hof.as_deref(), &trip.terminus);
         host.tt_delay = delay as f32;
         served
     }
@@ -4261,19 +4395,32 @@ mod tests {
         assert_eq!(line_code_from_text("5", Some(505)), Some(500));
     }
 
+    /// #546: a letter-first line had no number, and the DL05's matrix blanks line 0.
+    #[test]
+    fn line_with_letter_prefix_keeps_its_number() {
+        assert_eq!(line_code_from_text("X10", None), Some(1036));
+        assert_eq!(line_code_from_text("X10", Some(51001)), Some(51036));
+        assert_eq!(line_code_from_text("M41", Some(4101)), Some(4128));
+        assert_eq!(line_code_from_text("N9", None), Some(935));
+        assert_eq!(line_code_from_text("TML", Some(7601)), Some(7601));
+        assert_eq!(line_suffix_from_text("X10"), 36);
+        assert_eq!(line_number_digits("X10"), "10");
+        assert_eq!(line_number_digits("5E"), "5");
+    }
+
     #[test]
     fn berlin_5e_uses_its_real_terminus_when_no_hof_route_exists() {
         let path = std::path::Path::new("../../../OMSI 2 Original/Vehicles/MAN_SD202/Berlin.hof");
         let Ok(hof) = omsi_vehicle::Hof::load(path) else {
             return;
         };
-        let target = ibis_target(&hof, "5E", "Fernbahnhof Spandau", None, None).expect("5E target");
+        let target = ibis_target(&hof, "5E", "Fernbahnhof Spandau", &[], None).expect("5E target");
         assert_eq!(target.terminus_code, Some(232));
         assert_eq!(
             target.terminus_index,
             hof.termini.iter().position(|t| t.code == 232).unwrap() as i32
         );
-        let target = ibis_target(&hof, "5E", "Spektefeld Schulzentrum", None, None)
+        let target = ibis_target(&hof, "5E", "Spektefeld Schulzentrum", &[], None)
             .expect("5E shortened HOF target");
         assert_eq!(target.terminus_code, Some(233));
     }
@@ -4285,10 +4432,88 @@ mod tests {
         let Ok(hof) = omsi_vehicle::Hof::load(path) else {
             return;
         };
-        let target = ibis_target(&hof, "5E", "Nervenklinik", Some("U Rathaus Spandau"), None)
+        let target = ibis_target(&hof, "5E", "Nervenklinik", &["U Rathaus Spandau"], None)
             .expect("5E route target");
         assert_eq!(target.route, Some(3));
         assert_eq!(target.suffix, 10);
+    }
+
+    #[test]
+    fn stop_names_meet_in_any_order_and_spelling() {
+        assert_eq!(stop_words("Nordstadt Bhf"), stop_words("Bhf. Nordstadt"));
+        assert_eq!(stop_words("F_Kirchweg"), stop_words("Kirchweg"));
+        assert_ne!(stop_words("Bhf Nordstadt"), stop_words("Nordstadt"));
+        assert!(stop_words("").is_empty());
+    }
+
+    /// A made-up line 7 with six routes to Hafen, each telling one rule of `pick_route`.
+    fn hafen_depot() -> omsi_vehicle::Hof {
+        let mut hof = omsi_vehicle::Hof {
+            termini: vec![omsi_vehicle::hof::Terminus {
+                code: 100,
+                strings: vec!["Hafen".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let routes: [(&str, &[&str]); 6] = [
+            ("707", &["Markt", "Schule", "Park", "Ufer", "Hafen"]),
+            ("701", &["Markt", "Schule", "Park", "Hafen"]),
+            ("702", &["Bhf Nordstadt", "F_Kirchweg", "Markt", "Schule", "Park", "Hafen"]),
+            ("703", &["Schule", "Park", "Hafen"]),
+            ("705", &["Bhf Nordstadt", "Markt", "Rathaus", "Schule", "Park", "Hafen"]),
+            ("706", &["Am Wald", "Kirchweg", "Markt", "Schule", "Park", "Hafen"]),
+        ];
+        for (code, stops) in routes {
+            hof.info_trips.push(omsi_vehicle::hof::InfoTrip {
+                code: code.into(),
+                route: "100".into(),
+                line: "7".into(),
+                ..Default::default()
+            });
+            hof.info_busstop_lists
+                .push(stops.iter().map(|s| s.to_string()).collect());
+        }
+        hof
+    }
+
+    #[test]
+    fn the_route_follows_the_trips_stops() {
+        let hof = hafen_depot();
+        let route = |stops: &[&str]| {
+            ibis_target(&hof, "7", "Hafen", stops, None)
+                .expect("line 7 target")
+                .route
+        };
+        // the depot file spells the first stop another way, and with a one-letter prefix
+        assert_eq!(
+            route(&["Nordstadt Bhf", "Kirchweg", "Markt", "Schule", "Park", "Hafen"]),
+            Some(2)
+        );
+        // a short working gets its own route, not the long ones it is part of
+        assert_eq!(route(&["Schule", "Park", "Hafen"]), Some(3));
+        // of two routes from the trip's first stop, the one as long as the trip
+        assert_eq!(route(&["Markt", "Schule", "Park", "Hafen"]), Some(1));
+        // starting at the trip's first stop counts before one stop more of the trip: 705
+        // has Rathaus too but begins at Bhf Nordstadt, so a route from Markt (707, as
+        // long as the trip) is taken
+        assert_eq!(
+            route(&["Markt", "Rathaus", "Schule", "Park", "Hafen"]),
+            Some(7)
+        );
+        // nothing known of the trip: the first route, as before
+        assert_eq!(route(&[]), Some(7));
+    }
+
+    #[test]
+    fn the_ibis_stands_at_the_trips_first_stop_on_a_route_that_begins_before_it() {
+        let hof = hafen_depot();
+        // no route begins at Kirchweg; 702 and 706 have the trip's stops after one more
+        let stops = ["Kirchweg", "Markt", "Schule", "Park", "Hafen"];
+        let target = ibis_target(&hof, "7", "Hafen", &stops, Some((0, stops[0])))
+            .expect("line 7 target");
+        assert_eq!(target.route, Some(2));
+        assert_eq!(target.stop, 1);
     }
 
     #[test]
@@ -4424,6 +4649,17 @@ mod tests {
             end: stops.last().unwrap().arr,
             stops,
         }
+    }
+
+    #[test]
+    fn terminus_index_is_the_depot_terminus_of_that_name() {
+        let mut hof = omsi_vehicle::hof::Hof::default();
+        for name in ["A", "B", "C"] {
+            hof.termini.push(omsi_vehicle::hof::Terminus { texture_id: name.into(), ..Default::default() });
+        }
+        assert_eq!(tt_terminus_index(Some(&hof), "B"), 1);
+        assert_eq!(tt_terminus_index(Some(&hof), "b"), -1);
+        assert_eq!(tt_terminus_index(None, "B"), -1);
     }
 
     #[test]

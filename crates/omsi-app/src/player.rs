@@ -2,6 +2,34 @@
 
 use super::*;
 
+fn indicator_toggle_action(state: &mut u8, lever: Option<u8>, want: u8) -> &'static str {
+    // Scripts can cancel the lever themselves after a turn; prefer their current state.
+    if let Some(lever) = lever { *state = lever; }
+    if want == 3 {
+        *state = if *state == 3 { 0 } else { 3 };
+        "blinker_warn_toggle"
+    } else if *state == want {
+        *state = 0;
+        "blinker_off"
+    } else {
+        *state = want;
+        if want == 1 { "blinker_left_set" } else { "blinker_right_set" }
+    }
+}
+
+pub(crate) fn steering_view_yaw(current: f32, steering: f32, dt: f32, enabled: bool, angle: f32, response: f32) -> f32 {
+    let target = if enabled { steering.clamp(-1.0, 1.0) * angle.clamp(0.0, 60.0) } else { 0.0 };
+    current + (target - current) * (1.0 - (-dt.max(0.0) / response.clamp(0.05, 1.0)).exp())
+}
+
+fn is_manual_gate_action(name: &str) -> bool {
+    let Some(gate) = name.get(..5).filter(|p| p.eq_ignore_ascii_case("kw_s_")).and_then(|_| name.get(5..)) else {
+        return false;
+    };
+    let gate = gate.strip_suffix("_fest").unwrap_or(gate);
+    gate.eq_ignore_ascii_case("r") || gate.eq_ignore_ascii_case("n") || gate.parse::<u32>().is_ok()
+}
+
 /// Everything about the spawned player vehicle.
 pub(crate) struct Player {
     /// Which vehicle this is, for as long as the session runs (the people riding in one
@@ -70,16 +98,18 @@ pub(crate) struct Player {
     pub(crate) take_change: bool,
     /// Keys whose `_toggle` this bus does as `_up`/`_down` (see `action`): turned up last.
     pub(crate) toggled_up: hashbrown::HashSet<String>,
+    /// H-pattern actions act as momentary gear buttons when this is enabled.
+    pub(crate) momentary_gears: bool,
     /// L switched the side lights on with the headlights (see
     /// [`Player::headlights_with_side_lights`]).
     pub(crate) side_lights_by_l: bool,
     /// The driver figure at the wheel (see `driver.rs`).
     pub(crate) driver: Option<crate::driver::DriverFigure>,
     /// The duty's trip to type into the IBIS once the auto-start has the electrics on:
-    /// (line, terminus, first stop, the stop the bus is at: its index and name).
-    pub(crate) ibis_duty: Option<(String, String, Option<String>, (usize, String))>,
+    /// (line, terminus, the trip's stops, the stop the bus is at: its index and name).
+    pub(crate) ibis_duty: Option<(String, String, Vec<String>, (usize, String))>,
     /// The IBIS being typed, with the line and terminus it is typed for.
-    pub(crate) ibis_typist: Option<(omsi_sim::ibis::Typist, String, String)>,
+    pub(crate) ibis_typist: Option<(omsi_sim::ibis::Typist, String, String, Vec<String>)>,
     /// The duty is typed into the IBIS by itself (after Shift+U or `--autostart`): a new
     /// trip of the duty is typed too.
     pub(crate) duty_typed: bool,
@@ -444,6 +474,17 @@ pub(crate) fn digit_of(code: KeyCode) -> Option<usize> {
 }
 
 impl Player {
+    pub(crate) fn toggle_indicator(&mut self, want: u8) {
+        let lever = if self.vehicle.var("lights_sw_warnblinker").is_some_and(|v| v > 0.5) {
+            Some(3)
+        } else {
+            self.vehicle.var("lights_sw_blinker").map(|v| match v.round() as i32 { 1 => 1, 2 => 2, _ => 0 })
+        };
+        let action = indicator_toggle_action(&mut self.blinker_key_state, lever, want);
+        self.action(action, true);
+        self.action(action, false);
+    }
+
     /// Some stock roller-blind scripts keep a ratchet position with `max`.  The original
     /// engine resets that ratchet while the hand is moving; without that small engine-side
     /// detail a blind lowered once is immediately snapped back down on every frame.
@@ -467,7 +508,17 @@ impl Player {
         if pressed {
             log::info!("action: {name}");
         }
+        if name.eq_ignore_ascii_case("blinker_left_toggle") || name.eq_ignore_ascii_case("blinker_right_toggle") {
+            if pressed {
+                self.toggle_indicator(if name.eq_ignore_ascii_case("blinker_left_toggle") { 1 } else { 2 });
+            }
+            return true;
+        }
         let suffix = if pressed { "" } else { "_off" };
+        let release_gear = !pressed
+            && self.momentary_gears
+            && self.vehicle.ty.program.manual_gearbox()
+            && is_manual_gate_action(name);
         // the ticket key of Inputs/keyboard.cfg (T): sell the ticket the passenger at the
         // desk asked for, on buses whose script has no ticket printer
         if name.eq_ignore_ascii_case("ticket_give") {
@@ -494,6 +545,9 @@ impl Player {
         let headlights = pressed && name.eq_ignore_ascii_case("kw_scheinwerfer_toggle");
         let lamps_before = if headlights { self.outside_lamps_lit() } else { 0 };
         if self.vehicle.trigger(&format!("{name}{suffix}")) {
+            if release_gear {
+                self.select_neutral();
+            }
             self.repair_roller_blind(&format!("{name}{suffix}"));
             if headlights {
                 self.headlights_with_side_lights(lamps_before);
@@ -503,6 +557,9 @@ impl Player {
         // a key whose press reached the script's own trigger releases as Omsi.exe does, with
         // `<name>_off` only: an alias's `_off` (parking_brake_mouse_off) would undo it (#420)
         if !pressed && self.vehicle.ty.program.trigger(name).is_some() {
+            if release_gear {
+                self.select_neutral();
+            }
             return true;
         }
         let Some((_, aliases)) = ACTION_ALIASES
@@ -513,11 +570,29 @@ impl Player {
         };
         for alias in *aliases {
             if self.vehicle.trigger(&format!("{alias}{suffix}")) {
+                if release_gear {
+                    self.select_neutral();
+                }
                 self.repair_roller_blind(&format!("{alias}{suffix}"));
                 return true;
             }
         }
-        self.toggle_as_steps(name, pressed)
+        let done = self.toggle_as_steps(name, pressed);
+        if release_gear {
+            self.select_neutral();
+        }
+        done
+    }
+
+    /// A held gate is released into OMSI's neutral trigger; the usual action release still
+    /// runs first so buses with an explicit gate-off script retain their own behavior.
+    fn select_neutral(&mut self) {
+        for name in ["kw_s_N", "kw_s_N_fest"] {
+            if self.vehicle.ty.program.trigger(name).is_some() && self.vehicle.trigger(name) {
+                self.vehicle.trigger(&format!("{name}_off"));
+                break;
+            }
+        }
     }
 
     /// OMSI's automatic clutch for a gear lever whose scripts only take a gear with the
@@ -800,8 +875,8 @@ impl Player {
         if omsi_sim::startup::power_on(&self.vehicle) {
             self.saloon_lights_after_dark();
         }
-        if let Some((line, terminus, first, stop)) = self.ibis_duty.take() {
-            self.type_destination(&line, &terminus, first.as_deref(), (stop.0, &stop.1));
+        if let Some((line, terminus, stops, stop)) = self.ibis_duty.take() {
+            self.type_destination(&line, &terminus, &stops, (stop.0, &stop.1));
         }
         false
     }
@@ -837,11 +912,11 @@ impl Player {
     /// Type on into the IBIS; when the typing could not be done, the IBIS variables are
     /// written directly.
     pub(crate) fn tick_ibis(&mut self, dt: f32) {
-        let Some((mut typist, line, terminus)) = self.ibis_typist.take() else {
+        let Some((mut typist, line, terminus, stops)) = self.ibis_typist.take() else {
             return;
         };
         if typist.tick(&mut self.vehicle, dt) {
-            self.ibis_typist = Some((typist, line, terminus));
+            self.ibis_typist = Some((typist, line, terminus, stops));
             return;
         }
         match typist.outcome() {
@@ -855,11 +930,13 @@ impl Player {
                         .unwrap_or_default()
                 );
                 let hof = self.vehicle.host.hof.clone();
+                let stops: Vec<&str> = stops.iter().map(String::as_str).collect();
                 schedule::set_player_destination_directly(
                     &mut self.vehicle,
                     hof.as_deref(),
                     &line,
                     &terminus,
+                    &stops,
                 );
             }
         }
@@ -884,7 +961,7 @@ impl Player {
     /// auto-start is done.
     pub(crate) fn set_duty_destination(&mut self, trip: &schedule::PlannedTrip, stop: usize) {
         self.duty_typed = true;
-        let first = trip.stops.first().map(|s| s.name.clone());
+        let stops: Vec<String> = trip.stops.iter().map(|s| s.name.clone()).collect();
         let name = trip
             .stops
             .get(stop)
@@ -894,11 +971,11 @@ impl Player {
             self.ibis_duty = Some((
                 trip.line.clone(),
                 trip.terminus.clone(),
-                first,
+                stops,
                 (stop, name),
             ));
         } else {
-            self.type_destination(&trip.line, &trip.terminus, first.as_deref(), (stop, &name));
+            self.type_destination(&trip.line, &trip.terminus, &stops, (stop, &name));
         }
     }
 
@@ -906,7 +983,7 @@ impl Player {
         &mut self,
         line: &str,
         terminus: &str,
-        first_stop: Option<&str>,
+        stops: &[String],
         stop: (usize, &str),
     ) {
         if let Some((mut old, ..)) = self.ibis_typist.take() {
@@ -929,18 +1006,24 @@ impl Player {
                 .map(|a| a.trim().to_ascii_lowercase()),
         );
         let operable = |name: &str| keys.contains(&name.trim().to_ascii_lowercase());
+        let names: Vec<&str> = stops.iter().map(String::as_str).collect();
         match schedule::player_ibis(
             &mut self.vehicle,
             hof.as_deref(),
             line,
             terminus,
-            first_stop,
+            &names,
             Some(stop),
             &operable,
             self.ibis_background,
         ) {
             Some(typist) => {
-                self.ibis_typist = Some((typist, line.to_string(), terminus.to_string()))
+                self.ibis_typist = Some((
+                    typist,
+                    line.to_string(),
+                    terminus.to_string(),
+                    stops.to_vec(),
+                ))
             }
             None => log::info!("IBIS: nothing to type for line {line} terminus {terminus}"),
         }
@@ -1022,7 +1105,7 @@ impl Player {
                     if let Some((mut old, ..)) = self.ibis_typist.take() {
                         old.abandon(&mut self.vehicle);
                     }
-                    schedule::set_player_destination_directly(&mut self.vehicle, Some(&hof), &line, &wanted);
+                    schedule::set_player_destination_directly(&mut self.vehicle, Some(&hof), &line, &wanted, &[]);
                 }
             }
         }
@@ -1039,12 +1122,14 @@ impl Player {
             log::info!("HTML page: route {i} ({}) leads to destination code {code}, which the depot file lacks", t.name.trim());
             return;
         };
-        let first = hof.info_busstop_lists.get(i).and_then(|l| l.first()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        let name = first.clone().unwrap_or_default();
+        // (the route's own stops, so that this route is typed and not another of the line to
+        // the same terminus)
+        let stops: Vec<String> = hof.info_busstop_lists.get(i).map(|l| l.iter().map(|s| s.trim().to_string()).collect()).unwrap_or_default();
+        let name = stops.first().cloned().unwrap_or_default();
         let wanted = if term.texture_id.trim().is_empty() { term.strings.first().cloned().unwrap_or_default() } else { term.texture_id.clone() };
         let line = route_line(t);
         log::info!("HTML page: route {i} '{}' (line '{line}' (file: '{}') to '{wanted}')", t.name.trim(), t.line.trim());
-        self.type_destination(&line, &wanted, first.as_deref(), (0, &name));
+        self.type_destination(&line, &wanted, &stops, (0, &name));
     }
 
     /// The driver's head follows the bus's accelerations a little late, as a body does:
@@ -1057,12 +1142,8 @@ impl Player {
     /// never further than 10 cm up or down (0x7e2256). (A lag of our own towards a point a
     /// hundredth of the acceleration off - a third of what the original throws the head -
     /// stood in for it.)
-    pub(crate) fn move_head(&mut self, dt: f32, enabled: bool, steer_look: bool) {
+    pub(crate) fn move_head(&mut self, dt: f32, enabled: bool) {
         let dt = dt.clamp(0.0, 0.1);
-        // (a driver looks into the bend he steers: up to 30 degrees at full lock, eased so
-        // the view does not snap with the wheel)
-        let steer_want = if steer_look { self.vehicle.physics.controls.steering.clamp(-1.0, 1.0) * 30.0 } else { 0.0 };
-        self.steer_look += (steer_want - self.steer_look) * (1.0 - (-4.0 * dt).exp());
         let a = self.vehicle.physics.accel;
         let omega = self.vehicle.rigid.as_ref().map(|rb| rb.omega).unwrap_or(Vec3::ZERO);
         let dw = omega - self.head_omega;
@@ -1625,7 +1706,7 @@ impl Player {
     pub(crate) fn driver_world(&self, turned: &omsi_vehicle::Camera) -> Camera {
         let (eye, yaw, pitch, roll) = self.vehicle.camera_world_full(turned);
         let eye = eye + self.vehicle.body_rotation().transform_vector3(self.head + self.seat).as_dvec3();
-        Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: turned.fov, near: 0.25, far: 6000.0 }
+        Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: turned.fov, near: 0.1, far: 6000.0 }
     }
 
     /// Where a camera in the world (the walker's eyes) is in the bus's frame.
@@ -1731,15 +1812,15 @@ impl Player {
             let k = def.cameras_reflexion.iter().position(|x| std::ptr::eq(x, c)).unwrap_or(0);
             let aimed = crate::camera_util::mirror_view(&self.vehicle, c, crate::camera_util::driver_eye(self), self.mirror_offsets.get(k).copied().unwrap_or([0.0; 2]));
             let (eye, yaw, pitch, roll) = self.vehicle.camera_world_full(&aimed);
-            return Camera { position: eye, yaw, pitch, roll, fov_deg: if c.fov > 1.0 { c.fov } else { 50.0 }, near: 0.3, far: 450.0 };
+            return Camera { position: eye, yaw, pitch, roll, fov_deg: if c.fov > 1.0 { c.fov } else { 50.0 }, near: 0.1, far: 450.0 };
         }
         let cam = match view {
             "driver" => {
                 // (a coupled part's driver camera, on that part's body)
                 if let Some((t, c)) = self.trailer_driver_camera() {
-                    let turned = omsi_vehicle::Camera { yaw: c.yaw + look.0, pitch: (c.pitch + look.1).clamp(-89.0, 89.0), ..c.clone() };
+                    let turned = omsi_vehicle::Camera { yaw: c.yaw + look.0 + self.steer_look, pitch: (c.pitch + look.1).clamp(-89.0, 89.0), ..c.clone() };
                     let (eye, yaw, pitch, roll) = t.camera_world_full(&turned);
-                    return Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: c.fov, near: 0.25, far: 6000.0 };
+                    return Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: c.fov, near: 0.1, far: 6000.0 };
                 }
                 let n = def.cameras_driver.len().max(1);
                 def.cameras_driver
@@ -1766,7 +1847,7 @@ impl Player {
                             k -= t.ty.def.cameras_pax.len();
                         }
                         if let Some(((eye, yaw, pitch, roll), fov)) = found {
-                            return Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: fov, near: 0.25, far: 6000.0 };
+                            return Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: fov, near: 0.1, far: 6000.0 };
                         }
                         def.cameras_pax.first()
                     }
@@ -1784,16 +1865,15 @@ impl Player {
                 let turned = omsi_vehicle::Camera { yaw: c.yaw + look.0 + if view == "driver" { self.steer_look } else { 0.0 }, pitch: (c.pitch + look.1).clamp(-89.0, 89.0), ..c.clone() };
                 let (eye, yaw, pitch, roll) = self.vehicle.camera_world_full(&turned);
                 let eye = if view == "driver" { eye + self.vehicle.body_rotation().transform_vector3(self.head + self.seat).as_dvec3() } else { eye };
-                // near 0.25 rather than 0.1: the depth buffer has to reach 6 km, and the
-                // nearer the near plane the coarser it gets out there - the flicker between
-                // the road and the ground at a distance is that precision running out
+                // near 0.1 as in Omsi.exe (every view, 0x6f6aa7); with the reversed float
+                // depth buffer it costs no precision out at 6 km
                 Camera {
                     position: eye,
                     yaw,
                     pitch: pitch.clamp(-89.0, 89.0),
                     roll,
                     fov_deg: c.fov,
-                    near: 0.25,
+                    near: 0.1,
                     far: 6000.0,
                 }
             }
@@ -1812,7 +1892,7 @@ impl Player {
                     pitch: (-15.0 + look.1).clamp(-85.0, 85.0),
                     roll: 0.0,
                     fov_deg: fallback.fov_deg,
-                    near: 0.3,
+                    near: 0.1,
                     far: 6000.0,
                 };
                 cam.position =
@@ -1901,7 +1981,7 @@ pub(crate) fn sync_vehicle_transforms(
             renderer.set_interior(scene, *inst, p.interior);
         }
     }
-    scene::sync_vehicle_textures(renderer, scene, vehicle, render);
+    scene::sync_vehicle_textures(renderer, scene, vehicle, render, &mut { usize::MAX });
     let mut trailers = std::mem::take(&mut vehicle.trailers);
     for (t, r) in trailers.iter_mut().zip(trailer_renders.iter_mut()) {
         scene::sync_vehicle_part(renderer, scene, &vehicle, t, r);
@@ -2163,5 +2243,73 @@ mod preset_tests {
         assert_eq!(fallback_action(KeyCode::KeyA, "simple"), Some(A::SteeringLeft));
         assert_eq!(fallback_action(KeyCode::ArrowLeft, "arrows"), Some(A::SteeringLeft));
         assert_eq!(fallback_action(KeyCode::ArrowRight, "arrows"), Some(A::SteeringRight));
+    }
+}
+
+#[cfg(test)]
+mod indicator_tests {
+    use super::indicator_toggle_action;
+
+    #[test]
+    fn repeated_presses_switch_each_side_on_then_off() {
+        for (side, on) in [(1, "blinker_left_set"), (2, "blinker_right_set")] {
+            let mut state = 0;
+            assert_eq!(indicator_toggle_action(&mut state, None, side), on);
+            assert_eq!(indicator_toggle_action(&mut state, None, side), "blinker_off");
+            assert_eq!(state, 0);
+        }
+    }
+
+    #[test]
+    fn changing_side_and_automatic_cancellation_use_the_current_lever() {
+        let mut state = 1;
+        assert_eq!(indicator_toggle_action(&mut state, Some(1), 2), "blinker_right_set");
+        assert_eq!(indicator_toggle_action(&mut state, Some(0), 2), "blinker_right_set");
+        assert_eq!(indicator_toggle_action(&mut state, Some(2), 2), "blinker_off");
+    }
+
+    #[test]
+    fn hazards_keep_their_dedicated_toggle_trigger() {
+        let mut state = 0;
+        assert_eq!(indicator_toggle_action(&mut state, Some(0), 3), "blinker_warn_toggle");
+        assert_eq!(state, 3);
+        assert_eq!(indicator_toggle_action(&mut state, Some(3), 3), "blinker_warn_toggle");
+        assert_eq!(state, 0);
+    }
+}
+
+#[cfg(test)]
+mod steering_view_tests {
+    use super::steering_view_yaw;
+
+    #[test]
+    fn follows_both_directions_without_snapping_or_overshooting() {
+        let right = steering_view_yaw(0.0, 1.0, 0.016, true, 30.0, 0.25);
+        assert!(right > 0.0 && right < 30.0);
+        assert_eq!(steering_view_yaw(0.0, -1.0, 0.016, true, 30.0, 0.25), -right);
+        let changed = steering_view_yaw(30.0, -1.0, 0.016, true, 30.0, 0.25);
+        assert!(changed < 30.0 && changed > -30.0);
+    }
+
+    #[test]
+    fn smoothing_is_frame_rate_independent_even_at_five_fps() {
+        let mut reference: Option<f32> = None;
+        for fps in [5, 30, 60, 144] {
+            let mut yaw = 0.0;
+            for _ in 0..fps { yaw = steering_view_yaw(yaw, 0.8, 1.0 / fps as f32, true, 40.0, 0.25); }
+            if let Some(reference) = reference { assert!((yaw - reference).abs() < 0.0001); }
+            reference = Some(yaw);
+        }
+    }
+
+    #[test]
+    fn configurable_angle_response_and_return_to_center() {
+        let slow = steering_view_yaw(0.0, 1.0, 0.1, true, 45.0, 0.5);
+        let fast = steering_view_yaw(0.0, 1.0, 0.1, true, 45.0, 0.1);
+        assert!(fast > slow);
+        assert_eq!(steering_view_yaw(0.0, 2.0, 0.1, true, 45.0, 0.1), fast);
+        let centered = steering_view_yaw(30.0, 1.0, 0.1, false, 45.0, 0.25);
+        assert!(centered > 0.0 && centered < 30.0);
+        assert_eq!(steering_view_yaw(30.0, 0.0, 0.0, true, 45.0, 0.25), 30.0);
     }
 }

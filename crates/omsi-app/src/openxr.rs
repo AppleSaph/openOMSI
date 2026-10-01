@@ -337,7 +337,7 @@ impl Vr {
             scale
         );
         if let Ok(rate) = omsi_cfg::env::var("OMSI_OPENXR_MIRROR_RATE") {
-            log::info!("OpenXR bus mirror rate override: {rate} pictures/s");
+            log::info!("OpenXR bus mirror rate override: {rate} pictures/s (-1: every mirror each game frame)");
         }
         Ok(Self {
             instance,

@@ -11,6 +11,7 @@ use omsi_render::{Renderer, Scene, TextureId};
 
 /// Roboto (Apache 2.0), the interface font.
 const ROBOTO: &[u8] = include_bytes!("../../../assets/fonts/Roboto-VariableFont_wdth,wght.ttf");
+pub(crate) const PAUSE_NOTICE: &str = "Paused  ·  P to go on";
 
 /// A rendered text: its texture and size in pixels.
 #[derive(Clone, Copy)]
@@ -364,7 +365,8 @@ impl Ui {
             // interface is made smaller)
             let mut y = if crate::platform::touch_controls() { (80.0 * f.scale.max(0.5) * f.ui_scale.max(1.0)).max(corner_top) } else { corner_top };
             for n in f.notes.iter().filter(|n| !n.trim().is_empty()).take(8) {
-                let text = clip_to(&self.text, n, px as f32, f.width * 0.6);
+                let text = omsi_ui::tr(n);
+                let text = clip_to(&self.text, &text, px as f32, f.width * 0.6);
                 let l = self.text.label(r, scene, &text, px, [255, 255, 255, 235]);
                 let plate = self.text.plate(r, scene, 7);
                 scene.overlays.push((plate, [x0 - 5.0 * s, y, x0 + l.w as f32 + 5.0 * s, y + l.h as f32]));
@@ -542,17 +544,6 @@ impl Ui {
             let plate = self.text.plate(r, scene, 3);
             scene.overlays.push((plate, [x, top, x + w, y]));
             scene.overlays.extend(items);
-        }
-        // --- paused
-        if f.paused && f.menu.is_none() {
-            let l = self.text.label(r, scene, "Paused  ·  P to go on", (18.0 * s) as u32, [255, 255, 255, 0]);
-            let pad = 14.0 * s;
-            let (w, h) = (l.w as f32 + pad * 2.0, l.h as f32 + pad);
-            let x = (f.width - w) * 0.5;
-            let y = f.height * 0.2;
-            let plate = self.text.plate(r, scene, 3);
-            scene.overlays.push((plate, [x, y, x + w, y + h]));
-            scene.overlays.push((l.tex, [x + pad, y + pad * 0.5, x + pad + l.w as f32, y + pad * 0.5 + l.h as f32]));
         }
         // --- the game menu, in the middle over a dimmed picture
         self.menu_rects.clear();
@@ -872,6 +863,19 @@ pub fn filter_chat(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pause_notice_is_translated_in_every_supported_language() {
+        for &(_, _, language, _) in omsi_launcher_lib::LANGUAGES {
+            if language == "en" {
+                continue;
+            }
+            let translated = crate::_rust_i18n_try_translate(language, PAUSE_NOTICE)
+                .unwrap_or_else(|| panic!("missing pause notice for {language}"));
+            assert!(!translated.trim().is_empty());
+            assert_ne!(translated, PAUSE_NOTICE, "{language}");
+        }
+    }
 
     #[test]
     fn text_renders_with_an_outline() {

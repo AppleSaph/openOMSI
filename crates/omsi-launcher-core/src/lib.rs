@@ -428,8 +428,9 @@ pub struct ModsStatus {
     pub jobs: Vec<install::Progress>,
 }
 
-/// Start installing the mod at `src` (a folder, or a .zip) into the content folder in the
-/// background; `mode` is "auto" (unpack, or use a .zip in place when it does not fit),
+/// Start installing the mod at `src` (a folder, .zip, .7z or .rar) into the content folder in the
+/// background; `mode` is "auto" (unpack, or use a .zip in place when it does not fit; .7z
+/// and .rar are always unpacked),
 /// "extract" or "inplace".
 pub fn start_install(src: &Path, mode: &str) -> Result<install::Progress> {
     let content = content_dir().ok_or_else(|| anyhow!("no game binary configured, so no content folder"))?;
@@ -462,7 +463,7 @@ fn inbox_entries(content: &Path) -> Vec<PathBuf> {
         .filter(|p| {
             let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
             !(name.starts_with('.') || name.eq_ignore_ascii_case("installed") || name.eq_ignore_ascii_case(install::WAITING) || name.eq_ignore_ascii_case(install::PLUGINS_HELD) || name.eq_ignore_ascii_case("README.txt"))
-                && (p.is_dir() || p.extension().map(|x| x.eq_ignore_ascii_case("zip")).unwrap_or(false))
+                && (p.is_dir() || p.extension().map(|x| ["zip", "7z", "rar"].iter().any(|ext| x.eq_ignore_ascii_case(ext))).unwrap_or(false))
         })
         .collect();
     v.sort();
@@ -711,6 +712,9 @@ pub struct VehicleInfo {
     pub file: String,
     pub folder: String,
     pub description: String,
+    /// The original third [friendlyname] line, shown for the bus's standard paint.
+    #[serde(default)]
+    pub default_paint: String,
     pub paints: Vec<String>,
     pub hofs: Vec<String>,
     /// Installed as a mod (the bus file is in the content folder).
@@ -739,7 +743,10 @@ fn missing_packs_of(model: &Path) -> Vec<String> {
             continue;
         }
         let p = omsi_cfg::resolve_path(dir, l);
-        if omsi_cfg::vfs::is_file(&p) {
+        // (the game also finds a part from the model's parent folders - `<vehicle>/model`
+        // and the vehicle folder for a cfg in `model/Configuration Files`: mesh_path)
+        let found = |d: &Path| omsi_cfg::vfs::is_file(&omsi_cfg::resolve_path(d, l));
+        if omsi_cfg::vfs::is_file(&p) || dir.ancestors().skip(1).take(2).any(found) {
             continue;
         }
         if let Some(pack) = omsi_cfg::missing_vehicle_pack(&p) {
@@ -822,12 +829,12 @@ pub fn list_vehicles() -> Result<Vec<VehicleInfo>> {
                 stamped.extend(subs);
             }
         }
-        let key = format!("bus2|{lang}|{}", dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>().join("|"));
+        let key = format!("bus4|{lang}|{}", dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>().join("|"));
         keys.push(key.clone());
         let list: Vec<VehicleInfo> = index::cached(&key, index::folder_stamp(&stamped), || read_vehicle_folder(&folder, &dirs, lang));
         out.extend(list);
     }
-    index::save("bus2|", Some(&keys));
+    index::save("bus4|", Some(&keys));
     if out.is_empty() {
         log_empty("Vehicles", ".bus file");
     }
@@ -907,7 +914,7 @@ fn read_vehicle_folder(folder: &str, dirs: &[PathBuf], lang: &str) -> (Vec<Vehic
         if !missing_packs.is_empty() {
             log_line(&format!("vehicles: {} borrows parts from packs that are not installed: {}", f.display(), missing_packs.join(", ")));
         }
-        out.push(VehicleInfo { name: if name.is_empty() { stem.clone() } else { name }, manufacturer: v.manufacturer.trim().to_string(), type_name: v.type_name.trim().to_string(), file: rel, folder: folder.to_string(), description: description.chars().take(600).collect(), paints, hofs, installed: in_content(f), missing_packs, numbers: v.numbers_with_plates() });
+        out.push(VehicleInfo { name: if name.is_empty() { stem.clone() } else { name }, manufacturer: v.manufacturer.trim().to_string(), type_name: v.type_name.trim().to_string(), file: rel, folder: folder.to_string(), description: description.chars().take(600).collect(), default_paint: v.default_paint.trim().to_string(), paints, hofs, installed: in_content(f), missing_packs, numbers: v.numbers_with_plates() });
     }
     deps.sort();
     deps.dedup();
@@ -1486,7 +1493,7 @@ fn binding_from_json(v: &Value) -> Option<omsi_content::input::KeyBinding> {
 
 pub fn get_keybindings() -> Result<Value> {
     let path = keyboard_cfg_read_path()?;
-    let k = omsi_content::input::KeyboardCfg::load(&path)?.with_vr_defaults();
+    let k = omsi_content::input::KeyboardCfg::load(&path)?.with_game_defaults().with_vr_defaults();
     Ok(json!({ "game": k.game.iter().map(binding_to_json).collect::<Vec<_>>(), "vehicles": k.vehicles.iter().map(binding_to_json).collect::<Vec<_>>() }))
 }
 
@@ -1615,6 +1622,8 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
     for (k, d) in [("pax_voices", json!("all")), ("nav_arrows", json!(false)), ("get_up", json!(false)), ("time_speed", json!("1")), ("machine_translation", json!(false)), ("shadow_casters", json!("all")), ("shadow_blobs", json!(true)), ("reflections", json!(true)), ("mouse_sens", json!(1.0)), ("graphics_api", json!("auto")), ("ctrl_off", json!("")), ("steering_linear", json!(false)), ("old_steering", json!(false)), ("red_steer_spd", json!(false)), ("ff_invert", json!(false)), ("ff_enabled", json!(true)), ("brake_hold", json!(true)), ("auto_clutch", json!(true)), ("wheel_range", json!(900.0)), ("wheel_lock", json!(0.0)), ("fov", json!(0.0)), ("camera_collision", json!(true)), ("steer_look", json!(false)), ("pedal_throttle", json!(1.0)), ("pedal_brake", json!(1.0)), ("seat_x", json!(0.0)), ("seat_y", json!(0.0)), ("seat_z", json!(0.0)), ("head_tracking", json!(false)), ("led_glow", json!(6)), ("led_mips", json!(1.3)), ("ui_scale", json!(1.0)), ("ui_scale_window", json!(true)), ("notes", json!(true))] {
         v[k] = d;
     }
+    v["steer_look_angle"] = json!(30.0);
+    v["steer_look_response"] = json!(0.25);
     // updates from the GitHub releases: looked for when the launcher starts, installed
     // after asking (or at once)
     for (k, d) in [("update_check", json!(true)), ("update_auto", json!(false))] {
@@ -1638,7 +1647,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
             "pax_density" => v[&k] = json!(val.trim_end_matches('%').parse::<f64>().map(|x| if x > 5.0 { x / 100.0 } else { x }).unwrap_or(1.0)),
             "vr_scale" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.5, 1.0)).unwrap_or(0.65)),
             "vr_head_smoothing_ms" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 30.0) as i64).unwrap_or(0)),
-            "vr_mirror_rate" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 60.0) as i64).unwrap_or(16)),
+            "vr_mirror_rate" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(-1.0, 360.0) as i64).unwrap_or(16)),
             "mirror_size" => v[&k] = json!(val.parse::<i64>().map(|x| if x == 0 { 0 } else { x.clamp(64, 2048) }).unwrap_or(256)),
             "max_fps" => v[&k] = json!(val.parse::<f64>().map(|x| x as i64).unwrap_or(0)),
             "max_obj_dist" => v[&k] = if val.eq_ignore_ascii_case("auto") { json!("auto") } else { json!(val.parse::<f64>().map(|m| (m.round() as i64).to_string()).unwrap_or_else(|_| "auto".into())) },
@@ -1659,6 +1668,8 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
             // it was a number says 1 or 0)
             "led_mips" => v[&k] = json!(val.trim().parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 4.0)).unwrap_or(1.3)),
             "led_glow" => v[&k] = json!(val.parse::<i64>().map(|x| x.clamp(0, 15)).unwrap_or(6)),
+            "steer_look_angle" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 60.0)).unwrap_or(30.0)),
+            "steer_look_response" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.05, 1.0)).unwrap_or(0.25)),
             "pedal_throttle" | "pedal_brake" => v[&k] = json!(val.parse::<f64>().map(|x| x.clamp(0.25, 4.0)).unwrap_or(1.0)),
             "seat_x" | "seat_y" | "seat_z" => v[&k] = json!(val.parse::<f64>().map(|x| x.clamp(-1.5, 1.5)).unwrap_or(0.0)),
             "nav_arrows" | "get_up" | "ui_scale_window" | "notes" | "machine_translation" | "update_check" | "update_auto" | "reflections" | "steering_linear" | "old_steering" | "red_steer_spd" | "ff_invert" | "ff_enabled" | "brake_hold" | "auto_clutch" => v[&k] = json!(b(val)),
@@ -1913,11 +1924,12 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
     );
     let vr_scale = v.get("vr_scale").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(0.65).clamp(0.5, 1.0);
     let vr_head_smoothing_ms = v.get("vr_head_smoothing_ms").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(0.0).clamp(0.0, 30.0);
-    let vr_mirror_rate = v.get("vr_mirror_rate").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(16.0).clamp(0.0, 60.0);
+    let vr_mirror_rate = v.get("vr_mirror_rate").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(16.0).clamp(-1.0, 360.0);
     let text = format!("{text}vr={}\nvr_scale={vr_scale}\nvr_head_smoothing_ms={vr_head_smoothing_ms}\nvr_mirror_rate={vr_mirror_rate}\nvr_desktop_mirror={}\n", b("vr", false), b("vr_desktop_mirror", true));
     // what the page does not manage (keys of newer games, hand-written ones) stays as it
     // was in the file; other spellings of the keys just written go
     let mut text = text;
+    text.push_str(&format!("steer_look_angle={}\nsteer_look_response={}\n", f("steer_look_angle", 30.0).clamp(0.0, 60.0), f("steer_look_response", 0.25).clamp(0.05, 1.0)));
     let written: Vec<String> = text.lines().filter_map(|l| l.split_once('=')).map(|(k, _)| k.trim().to_ascii_lowercase()).collect();
     for line in old.unwrap_or("").lines() {
         let t = line.trim();
@@ -2200,7 +2212,7 @@ pub fn pick_mod(zip: bool) -> Option<PathBuf> {
     #[cfg(not(target_os = "android"))]
     {
         if zip {
-            rfd::FileDialog::new().set_title("Choose a mod archive").add_filter("Mod archive", &["zip"]).pick_file()
+            rfd::FileDialog::new().set_title("Choose a mod archive").add_filter("Mod archive", &["zip", "7z", "rar"]).pick_file()
         } else {
             rfd::FileDialog::new().set_title("Choose the mod folder").pick_folder()
         }
@@ -2340,6 +2352,23 @@ pub fn cli(cmd: &str, arg: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_part_found_from_the_vehicle_folder_is_no_missing_pack() {
+        let root = std::env::temp_dir().join(format!("openomsi-packs-{}", std::process::id()));
+        let obj = root.join("Sceneryobjects/X");
+        let cfgs = root.join("Vehicles/B/model/Configuration Files");
+        std::fs::create_dir_all(&obj).unwrap();
+        std::fs::create_dir_all(&cfgs).unwrap();
+        std::fs::write(obj.join("a.o3d"), b"x").unwrap();
+        omsi_cfg::add_content_root(root.clone());
+        let model = cfgs.join("m.cfg");
+        std::fs::write(&model, "[mesh]\r\n..\\..\\..\\Sceneryobjects\\X\\a.o3d\r\n..\\..\\..\\Other\\b.o3d\r\n").unwrap();
+        let packs = super::missing_packs_of(&model);
+        omsi_cfg::remove_content_root(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(packs, vec!["Other".to_string()]);
+    }
+
+    #[test]
     fn the_games_options_survive_a_save() {
         // what the pause menu's Options change, read back as they were set
         let mut v = settings_from_text(None);
@@ -2426,6 +2455,34 @@ mod tests {
         for key in ["vr", "vr_scale", "vr_head_smoothing_ms", "vr_mirror_rate", "vr_desktop_mirror"] {
             assert_eq!(loaded[key], settings[key], "{key} was not saved");
         }
+    }
+
+    #[test]
+    fn steering_view_settings_survive_the_launcher() {
+        let values = settings_from_text(Some("steer_look=1\nsteer_look_angle=45\nsteer_look_response=0.5\n"));
+        let saved = settings_to_text(&values, Some("steer_look_angle=10\nsteer_look_response=0.1\n"));
+        let loaded = settings_from_text(Some(&saved));
+        assert_eq!(loaded["steer_look"], json!(true));
+        assert_eq!(loaded["steer_look_angle"], json!(45.0));
+        assert_eq!(loaded["steer_look_response"], json!(0.5));
+        assert_eq!(saved.lines().filter(|l| l.starts_with("steer_look_angle=")).count(), 1);
+        let invalid = settings_from_text(Some("steer_look_angle=NaN\nsteer_look_response=NaN\n"));
+        assert_eq!(invalid["steer_look_angle"], json!(30.0));
+        assert_eq!(invalid["steer_look_response"], json!(0.25));
+    }
+
+    #[test]
+    fn high_vr_mirror_rates_survive_launcher_settings() {
+        for rate in [-1, 0, 16, 60, 120, 240, 360] {
+            let mut settings = settings_from_text(None);
+            // Select controls store their values as strings.
+            settings["vr_mirror_rate"] = json!(rate.to_string());
+            let saved = settings_to_text(&settings, None);
+            let loaded = settings_from_text(Some(&saved));
+            assert_eq!(loaded["vr_mirror_rate"], json!(rate));
+        }
+        assert_eq!(settings_from_text(Some("vr_mirror_rate=NaN\n"))["vr_mirror_rate"], json!(16));
+        assert_eq!(settings_from_text(Some("vr_mirror_rate=999\n"))["vr_mirror_rate"], json!(360));
     }
 
     /// The interface size: 100% without a file, kept as set, and a hand-written value out

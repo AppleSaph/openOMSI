@@ -1,8 +1,8 @@
-//! Material Symbols (Rounded, filled) - the SVG files of `assets/icons/material`, built in.
+//! Built-in Material Symbols and custom SVG icons from `assets/icons`.
 
 include!(concat!(env!("OUT_DIR"), "/icons.rs"));
 
-/// The SVG source of an icon by its Material Symbols name (`directions_bus`).
+/// The SVG source of an icon by name (`directions_bus`, `stop_request`).
 pub fn svg(name: &str) -> Option<&'static str> {
     ICONS.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
 }
@@ -12,8 +12,7 @@ pub fn names() -> impl Iterator<Item = &'static str> {
     ICONS.iter().map(|(n, _)| *n)
 }
 
-/// An icon as an alpha mask of `size` x `size` pixels (the symbol fills its 48-unit box
-/// the way Google draws it, with its own margin).
+/// An icon as an anti-aliased alpha mask of `size` x `size` pixels, with the SVG's margins.
 pub fn rasterize(name: &str, size: u32) -> Option<Vec<u8>> {
     let src = svg(name)?;
     let opt = resvg::usvg::Options::default();
@@ -27,6 +26,17 @@ pub fn rasterize(name: &str, size: u32) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stop_request_has_smooth_edges_and_an_open_background() {
+        for size in [24, 32, 64] {
+            let alpha = super::rasterize("stop_request", size).unwrap();
+            assert!(alpha.iter().any(|&a| a > 0 && a < 255), "edges must be anti-aliased");
+            assert_eq!(alpha[(size / 4 * size + size / 2) as usize], 0);
+            assert_eq!(alpha[(size / 2 * size + size * 3 / 4) as usize], 0, "the bar's interior is transparent");
+            assert!(alpha.iter().filter(|&&a| a > 128).count() > (size * size / 12) as usize);
+        }
+    }
+
     #[test]
     fn icons_are_built_in_and_draw() {
         assert!(super::names().count() > 50);

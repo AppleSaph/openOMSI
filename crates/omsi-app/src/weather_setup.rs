@@ -240,7 +240,7 @@ fn cloud_texture(root: &Path, kind: &str) -> Option<omsi_texture::Image> {
 
 /// Cloud cover of a weather file: `[clouds] type density`, type -1 = clear, density up to
 /// ~300 (Cumulus 3) - mapped to 0..1; the cover drifts with the wind.
-pub(crate) fn clouds_of(w: &omsi_content::weather::Weather, time: f64) -> (f32, [f32; 2]) {
+pub(crate) fn clouds_of(w: &omsi_content::weather::Weather, drift: [f32; 2]) -> (f32, [f32; 2]) {
     let kind = w.clouds.0.trim();
     if kind.is_empty() || kind.starts_with("-1") || !CLOUDS.load(std::sync::atomic::Ordering::Relaxed) {
         return (0.0, [0.0; 2]);
@@ -263,13 +263,25 @@ pub(crate) fn clouds_of(w: &omsi_content::weather::Weather, time: f64) -> (f32, 
     } else {
         0.5
     };
-    // [wind] direction (deg) speed (m/s): drift over the 2500 m tiling. (It was the time of
-    // day, and at midnight the whole sky jumped back.)
-    let (dir, speed) = (w.wind.0.to_radians(), w.wind.1);
-    // `time` runs on over midnight (seconds since the year began, see the callers); the
-    // field repeats every tile, so only the fraction of a tile is kept
-    let drift = (time * speed as f64 / 2500.0).rem_euclid(1.0) as f32;
-    (density, [dir.sin() * drift, dir.cos() * drift])
+    (density, drift)
+}
+
+/// The clouds' drift after `time` seconds of a steady wind (see `cloud_drift_step`).
+pub(crate) fn cloud_drift_at(w: &omsi_content::weather::Weather, time: f64) -> [f32; 2] {
+    let mut d = [0.0; 2];
+    cloud_drift_step(&mut d, w, time);
+    d
+}
+
+/// Move the clouds on by `secs` of [wind] direction (deg) speed (m/s), over the 2500 m
+/// tiling; the field repeats every tile, so only the fraction of a tile is kept. (Taken
+/// from the absolute time, every change of the wind while a weather blends in moved the
+/// whole sky by time x change.)
+pub(crate) fn cloud_drift_step(d: &mut [f32; 2], w: &omsi_content::weather::Weather, secs: f64) {
+    let (dir, speed) = (w.wind.0.to_radians() as f64, w.wind.1 as f64);
+    let s = secs * speed / 2500.0;
+    d[0] = (d[0] as f64 + dir.sin() * s).rem_euclid(1.0) as f32;
+    d[1] = (d[1] as f64 + dir.cos() * s).rem_euclid(1.0) as f32;
 }
 
 /// How wet the roads are: rain soaks them in a few minutes, sunshine dries them in about
@@ -287,14 +299,14 @@ pub(crate) fn road_wetness(rate: f32, secs: f64, start: f32) -> f32 {
 pub(crate) fn weather_lighting(
     daylight: &omsi_sim::Daylight,
     w: &omsi_content::weather::Weather,
-    time: f64,
+    cloud_drift: [f32; 2],
     wetness: f32,
     shadows: bool,
 ) -> omsi_render::Lighting {
     let mut lighting = lights::lighting_from(daylight, w.fog.0);
     lighting.enhanced = ENHANCED.load(std::sync::atomic::Ordering::Relaxed);
     lighting.classic = CLASSIC.load(std::sync::atomic::Ordering::Relaxed);
-    let (density, offset) = clouds_of(w, time);
+    let (density, offset) = clouds_of(w, cloud_drift);
     lighting.cloud_density = density;
     lighting.cloud_offset = offset;
     let (kind, rate) = precip_of(w);

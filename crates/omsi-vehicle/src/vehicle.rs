@@ -277,18 +277,21 @@ impl Vehicle {
                 "number" => v.number_file = Some(r.str().to_string()),
                 // Omsi.exe (TRoadVehicle.LoadFromFile 0x7cddf5, 0x7cde6e) reads these lines
                 // as they come, whatever they say: the automatic mode's prefix and postfix
-                // (the stock "B-V " with its space), the list mode's file, prefix and postfix
+                // (the stock "B-V " with its space), the list mode's file, prefix and postfix.
+                // The lines end where the next block starts, so a file that leaves them out
+                // (the Urumqi AI cars' `[registration_automatic]` straight before `[model]`)
+                // reads them as empty instead of taking the keyword for one of them.
                 "registration_automatic" => {
-                    let pre = r.line().to_string();
-                    let post = r.line().to_string();
+                    let pre = r.param_line().to_string();
+                    let post = r.param_line().to_string();
                     v.registration_automatic = Some((pre.clone(), post.clone()));
                     v.registration_mode = 3;
                     v.registration_affix = (pre, post);
                 }
                 "registration_list" => {
-                    let file = r.word().to_string();
-                    let pre = r.line().to_string();
-                    let post = r.line().to_string();
+                    let file = r.param_line().trim().to_string();
+                    let pre = r.param_line().to_string();
+                    let post = r.param_line().to_string();
                     v.registration_list = Some((file, pre.clone(), post.clone()));
                     v.registration_mode = 2;
                     v.registration_affix = (pre, post);
@@ -591,6 +594,21 @@ mod tests {
         assert_eq!(offered, vec!["G Main.bus", "L Main.bus", "Solo.bus"]);
         assert_eq!(front_sections_of(&dir.join("L Trail.bus")).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `.ovh` that leaves the registration affixes out (`[registration_automatic]` with
+    /// nothing but a blank line before `[model]`, as the Urumqi AI cars write it): the
+    /// `[model]` is a keyword, not the postfix, so the vehicle keeps its model.
+    #[test]
+    fn an_empty_registration_affix_keeps_the_next_keyword() {
+        let v = Vehicle::parse(&CfgFile::from_str("x.ovh", "[registration_free]\n\n[registration_automatic]\n\n[model]\nmodel\\model.cfg\n\n[sound]\ns.cfg\n"));
+        assert_eq!(v.registration_mode, 3);
+        assert_eq!(v.registration_affix, (String::new(), String::new()));
+        assert_eq!(v.model.as_deref(), Some("model\\model.cfg"));
+        // the stock shape (prefix "B-V ", blank postfix) is unchanged
+        let s = Vehicle::parse(&CfgFile::from_str("y.bus", "[registration_automatic]\nB-V \n\n[model]\nm.cfg\n"));
+        assert_eq!(s.registration_affix, ("B-V ".to_string(), String::new()));
+        assert_eq!(s.model.as_deref(), Some("m.cfg"));
     }
 
     /// A repaint's own `[registration_list]` followed by the template's

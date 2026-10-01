@@ -212,4 +212,23 @@ mod tests {
         // in January snow may come
         assert!((0..20).map(|i| pick(&all, &all[1].1, "Weather/b.owt", 1, i as f32 / 20.0)).any(|p| p.as_deref() == Some("Weather/c.owt")));
     }
+    #[test]
+    fn the_clouds_drift_smoothly_while_the_wind_blends() {
+        let mut a = w("calm", 0.4, 0.0, 50000.0, 20.0, false);
+        a.wind = (0.0, 1.0);
+        let mut b = w("storm", 0.4, 0.0, 50000.0, 20.0, false);
+        b.wind = (90.0, 20.0);
+        let mut bl = Blend::new(a, b, 240.0);
+        // late in the year, where the old time-based drift jumped by whole tiles a frame
+        let mut d = crate::weather_setup::cloud_drift_at(&bl.from, 3.0e7);
+        for _ in 0..600 {
+            let (x, _, _) = bl.step(1.0 / 2.0);
+            let before = d;
+            crate::weather_setup::cloud_drift_step(&mut d, &x, 1.0 / 2.0);
+            for i in 0..2 {
+                let step = (d[i] - before[i]).abs();
+                assert!(step.min(1.0 - step) < 0.01, "jump {step}");
+            }
+        }
+    }
 }
