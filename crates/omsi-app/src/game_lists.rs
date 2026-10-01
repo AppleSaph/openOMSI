@@ -434,7 +434,7 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
             // (the arrows and a click on a stepper only change values: no buttons)
             let step = matches!(mv, Move::Next);
             match verb {
-                "weather" => app.step_weather(if matches!(mv, Move::Dec) { -1 } else { 1 }),
+                "weather" => app.step_weather(),
                 "cloudkind" => step_clouds(app, if matches!(mv, Move::Dec) { -1 } else { 1 }),
                 "precipkind" => step_precip(app, if matches!(mv, Move::Dec) { -1 } else { 1 }),
                 // the exact time: Enter starts typing it, and sets it when typed
@@ -1212,12 +1212,15 @@ pub(crate) fn tour_start(tour: &omsi_timetable::Tour) -> Option<f64> {
     tour.trips.iter().map(|t| t.departure as f64 * 60.0).fold(None, |a: Option<f64>, d| Some(a.map_or(d, |x| x.min(d))))
 }
 
-/// A line's tours in order of the time they start (equal times by their numbers).
+/// A line's tours in alphabetical order of their numbers (numbers inside them as numbers:
+/// "2" before "10"; equal numbers by the time they start).
 fn sorted_tours(line: &omsi_timetable::Line) -> Vec<&omsi_timetable::Tour> {
     let mut tours: Vec<&omsi_timetable::Tour> = line.tours.iter().collect();
     tours.sort_by(|a, b| {
-        let (ta, tb) = (tour_start(a).unwrap_or(f64::MAX), tour_start(b).unwrap_or(f64::MAX));
-        ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal).then_with(|| natural(a.number.trim(), b.number.trim()))
+        bus_cmp(a.number.trim(), b.number.trim()).then_with(|| {
+            let (ta, tb) = (tour_start(a).unwrap_or(f64::MAX), tour_start(b).unwrap_or(f64::MAX));
+            ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
     tours
 }
