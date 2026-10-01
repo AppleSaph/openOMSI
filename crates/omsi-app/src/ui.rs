@@ -909,25 +909,37 @@ impl Ui {
 const FADE_SECS: f32 = 0.15;
 const BAR_SECS: f32 = 0.19;
 
-const PANEL: [u8; 4] = [24, 25, 29, 255];
-const PANEL_ALT: [u8; 4] = [255, 255, 255, 10];
-const BORDER: [u8; 4] = [255, 255, 255, 26];
+// (the launcher's values, see `launcher/theme.rs`: neutral greys, no tint)
+const PANEL: [u8; 4] = [22, 22, 22, 255];
+const PANEL_ALT: [u8; 4] = [31, 31, 31, 255];
+const BORDER: [u8; 4] = [255, 255, 255, 15];
 const ACCENT: [u8; 4] = [232, 160, 48, 255];
-const ACCENT_SOFT: [u8; 4] = [232, 160, 48, 40];
+const ACCENT_SOFT: [u8; 4] = [232, 160, 48, 34];
 const DANGER: [u8; 4] = [222, 78, 68, 255];
-const LIT: [u8; 4] = [255, 255, 255, 26];
-const LIT_DANGER: [u8; 4] = [222, 78, 68, 52];
-const DIVIDER: [u8; 4] = [255, 255, 255, 20];
-const CHIP: [u8; 4] = [255, 255, 255, 22];
+/// A line under the mouse, and the line chosen.
+const LIT: [u8; 4] = [255, 255, 255, 16];
+const SELECTED: [u8; 4] = [255, 255, 255, 24];
+const LIT_DANGER: [u8; 4] = [222, 78, 68, 44];
+const CHIP: [u8; 4] = [255, 255, 255, 20];
+/// The accent's fill under the mouse, and the ink on it (the launcher's primary button).
+const ACCENT_HOT: [u8; 4] = [246, 182, 84, 255];
+const ON_ACCENT: [u8; 4] = [18, 14, 8, 0];
 /// Text colours (alpha 0: no outline on the flat panel).
-const WHITE: [u8; 4] = [255, 255, 255, 0];
-const SOFT: [u8; 4] = [225, 227, 232, 0];
-const MUTED: [u8; 4] = [150, 152, 160, 0];
+const WHITE: [u8; 4] = [236, 236, 236, 0];
+const SOFT: [u8; 4] = [200, 200, 200, 0];
+const MUTED: [u8; 4] = [142, 142, 142, 0];
 const AMBER: [u8; 4] = [255, 200, 110, 0];
 
 /// The ink of a greyed-out line and its small hint.
-const OFF_INK: [u8; 4] = [96, 98, 106, 0];
-const OFF_HINT: [u8; 4] = [112, 114, 122, 0];
+const OFF_INK: [u8; 4] = [96, 96, 96, 0];
+const OFF_HINT: [u8; 4] = [96, 96, 96, 0];
+
+/// The card's radius, a line's, and the inset of lines from the card's edge and of their
+/// text from the line's edge (all times the scale).
+const CARD_R: f32 = 8.0;
+const ROW_R: f32 = 6.0;
+const PAD: f32 = 12.0;
+const TEXT_IN: f32 = 16.0;
 
 /// `v` (0 to 1) in eighths.
 fn quant(v: f32) -> f32 {
@@ -1012,13 +1024,38 @@ impl Ui {
         l.w as f32
     }
 
+    /// The accent bar at the left edge of a line, growing from its middle as `k` goes 0 to 1.
+    fn accent_bar(&mut self, r: &Renderer, scene: &mut Scene, rect: [f32; 4], k: f32, danger: bool, s: f32) {
+        let full = (rect[3] - rect[1] - 20.0 * s).max(10.0 * s);
+        let bh = full * (0.4 + 0.6 * k);
+        let by = (rect[1] + rect[3]) * 0.5 - bh * 0.5;
+        self.text.rounded(r, scene, [rect[0], by, rect[0] + 2.0 * s, by + bh], 1.0 * s, fade(if danger { DANGER } else { ACCENT }, k));
+    }
+
+    /// The header of the card at (`x`, `y`) of `w` wide: what the list is of, small and in
+    /// capitals, the title large under it, a hairline under both. Its text starts where the
+    /// text of the lines does. Returns the middle of the header.
+    fn menu_header(&mut self, r: &Renderer, scene: &mut Scene, x: f32, y: f32, w: f32, header_h: f32, title: &str, sub: &str, s: f32) -> f32 {
+        let left = x + (PAD + TEXT_IN) * s;
+        let eyebrow = if sub.is_empty() { "openOMSI".to_string() } else { sub.to_uppercase() };
+        let e = self.text.label(r, scene, &eyebrow, (11.0 * s) as u32, MUTED);
+        let title = clip_to(&self.text, title, 22.0 * s, w - (PAD + TEXT_IN) * 2.0 * s - 80.0 * s);
+        let t = self.text.label(r, scene, &title, (22.0 * s) as u32, WHITE);
+        let band = header_h - 6.0 * s;
+        let top = y + (band - (e.h as f32 + t.h as f32 - 2.0 * s)) * 0.5;
+        scene.overlays.push((e.tex, [left, top, left + e.w as f32, top + e.h as f32]));
+        let ty = top + e.h as f32 - 2.0 * s;
+        scene.overlays.push((t.tex, [left, ty, left + t.w as f32, ty + t.h as f32]));
+        y + band * 0.5
+    }
+
     /// A pill (`cap`: a key cap) of `fill` with `text` in it, ending at `right`; returns
     /// its left edge.
     fn chip(&mut self, r: &Renderer, scene: &mut Scene, text: &str, px: u32, color: [u8; 4], fill: [u8; 4], cap: bool, right: f32, cy: f32, s: f32) -> f32 {
         let l = self.text.label(r, scene, text, px, color);
         let (cw, ch) = (l.w as f32 + 18.0 * s, l.h as f32 + 6.0 * s);
         let x0 = right - cw;
-        self.text.rounded(r, scene, [x0, cy - ch * 0.5, right, cy + ch * 0.5], if cap { 5.0 * s } else { ch * 0.5 }, fill);
+        self.text.rounded(r, scene, [x0, cy - ch * 0.5, right, cy + ch * 0.5], if cap { 4.0 * s } else { ROW_R * s }, fill);
         let (tx, ty) = (x0 + 9.0 * s, cy - l.h as f32 * 0.5);
         scene.overlays.push((l.tex, [tx, ty, tx + l.w as f32, ty + l.h as f32]));
         x0
@@ -1062,14 +1099,16 @@ impl Ui {
         let want = 380.0 * s;
         let w = (want + pane_w).min(f.width - 24.0 * s).max(200.0 * s);
         let list_w = w - pane_w;
-        let header_h = 76.0 * s;
+        let header_h = 72.0 * s;
+        let pad = PAD * s;
+        let tin = TEXT_IN * s;
         // as many lines as fit at a readable height; a longer menu scrolls (the wheel, the
         // arrow keys), the chosen line kept in view
         // (lines and tours: a card of one fixed height, a share of the screen's)
         let fixed_h = matches!(kind, MenuKind::Lines | MenuKind::Tours).then(|| if f.vr { f.height * 0.60 } else { (f.height * 0.82).min(f.height - 24.0 * s) });
         let room = match fixed_h {
-            Some(fh) => fh - header_h - 14.0 * s,
-            None => f.height * (if f.vr { 0.60 } else { 0.92 }) - header_h - 20.0 * s,
+            Some(fh) => fh - header_h - pad,
+            None => f.height * (if f.vr { 0.60 } else { 0.92 }) - header_h - pad - 8.0 * s,
         };
         let base = match (f.vr, kind) {
             (true, _) => 40.0,
@@ -1088,7 +1127,7 @@ impl Ui {
         self.menu_rows = rows;
         self.menu_row_h = row_h;
         let px = ((16.0 * s).min(row_h * 0.45)) as u32;
-        let mut h = header_h + row_h * rows as f32 + 14.0 * s;
+        let mut h = header_h + row_h * rows as f32 + pad;
         if let Some(fh) = fixed_h {
             h = fh;
         } else if preview.is_some() {
@@ -1097,13 +1136,12 @@ impl Ui {
         let x = ((f.width - w) * 0.5).round();
         let y = ((f.height - h) * 0.5).round();
         let list_r = x + list_w;
-        let radius = 16.0 * s;
+        let radius = CARD_R * s;
         // the card: a soft shadow, a 1 px hairline round it, the flat panel
         self.text.shadow(r, scene, [x, y, x + w, y + h], radius, 28.0 * s, 10.0 * s, 110);
         self.text.rounded(r, scene, [x - 1.0, y - 1.0, x + w + 1.0, y + h + 1.0], radius + 1.0, BORDER);
         self.text.rounded(r, scene, [x, y, x + w, y + h], radius, PANEL);
-        // the header: a small line in the accent (the game's name, or what the list is of)
-        // and the title large
+        // the header: what the list is of (or the game's name), and the title
         let (title, sub): (String, String) = match f.menu_head.as_ref() {
             Some((t, u)) => (t.clone(), u.clone()),
             None => {
@@ -1111,12 +1149,7 @@ impl Ui {
                 (t.to_string(), String::new())
             }
         };
-        let eyebrow = self.text.label(r, scene, if sub.is_empty() { "openOMSI" } else { sub.as_str() }, (12.0 * s) as u32, txt(ACCENT));
-        scene.overlays.push((eyebrow.tex, [x + 24.0 * s, y + 16.0 * s, x + 24.0 * s + eyebrow.w as f32, y + 16.0 * s + eyebrow.h as f32]));
-        let title = clip_to(&self.text, &title, 26.0 * s, list_w - 48.0 * s - 70.0 * s);
-        let t = self.text.label(r, scene, &title, (26.0 * s) as u32, WHITE);
-        let ty = y + 16.0 * s + eyebrow.h as f32 - 2.0 * s;
-        scene.overlays.push((t.tex, [x + 24.0 * s, ty, x + 24.0 * s + t.w as f32, ty + t.h as f32]));
+        let head_cy = self.menu_header(r, scene, x, y, list_w, header_h, &title, &sub, s);
         // the scroll bar: where the lines shown lie in the whole menu
         let scrolls = items.len() > rows;
         if scrolls {
@@ -1131,8 +1164,8 @@ impl Ui {
             self.text.rounded(r, scene, thumb, 1.5 * s, ACCENT);
             // (a wider grip than the drawn thumb: three pixels are hard to hit)
             self.menu_scroll_thumb = Some([thumb[0] - 6.0 * s, thumb[1], thumb[2] + 6.0 * s, thumb[3]]);
-            let more = format!("{} of {}", sel + 1, items.len());
-            self.put_right(r, scene, &more, (12.0 * s) as u32, MUTED, list_r - 24.0 * s, y + 30.0 * s);
+            let more = omsi_ui::tr("{} of {}").replacen("{}", &(sel + 1).to_string(), 1).replacen("{}", &items.len().to_string(), 1);
+            self.put_right(r, scene, &more, (12.0 * s) as u32, MUTED, list_r - pad - tin, head_cy);
         }
         // (the line under the mouse is the one lit; the keyboard's choice only while the
         // mouse is off the lines - both lit at once read as two choices)
@@ -1140,14 +1173,14 @@ impl Ui {
         // (the whole list: in the gaps between the lines the keyboard's choice, the top line,
         // lit up for a moment as the mouse went down the list)
         let any_hovered = over([x, y, list_r, y + h]);
-        let right = list_r - if scrolls { 18.0 * s } else { 10.0 * s };
+        let right = list_r - if scrolls { 20.0 * s } else { pad };
         let back_txt = omsi_ui::tr("Back").into_owned();
         let line_pre = format!("{} ", omsi_ui::tr("Line"));
         let tour_pre = format!("{} ", omsi_ui::tr("Tour"));
         for (k, &(id, label)) in items.iter().enumerate().skip(start).take(rows) {
             let ry = y + header_h + row_h * (k - start) as f32;
             let gap = 4.0 * s;
-            let rect = [x + 10.0 * s, ry, right, ry + row_h - gap];
+            let rect = [x + pad, ry, right, ry + row_h - gap];
             // (a greyed-out line is never lit: not by the mouse, not by the keyboard)
             let off = kind == MenuKind::Game && f.menu_disabled.contains(&id);
             let lit = !off && (over(rect) || (k == sel && f.menu_kbd && !any_hovered));
@@ -1161,9 +1194,8 @@ impl Ui {
                 _ => false,
             });
             if apart {
-                let sep = self.text.solid(r, scene, DIVIDER);
                 let sy = (ry - 2.0 * s).round();
-                scene.overlays.push((sep, [x + 22.0 * s, sy, list_r - 22.0 * s, sy + 1.0]));
+                scene.overlays.push((sep, [x + pad, sy, right, sy + 1.0]));
             }
             // (the light of the line eases in and out)
             let glow = self.easeq((7, id, k), if lit { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
@@ -1172,16 +1204,14 @@ impl Ui {
             let a_act = self.easeq((14, id, k), if active { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
             let bar = self.easeq((8, id, k), if lit || active { 1.0 } else { 0.0 }, 1.0 / BAR_SECS);
             if a_act > 0.0 {
-                self.text.rounded(r, scene, rect, 9.0 * s, fade(ACCENT_SOFT, a_act));
+                self.text.rounded(r, scene, rect, ROW_R * s, fade(SELECTED, a_act));
             }
             if glow > 0.0 {
-                self.text.rounded(r, scene, rect, 9.0 * s, fade(if danger { LIT_DANGER } else { LIT }, glow));
+                self.text.rounded(r, scene, rect, ROW_R * s, fade(if danger { LIT_DANGER } else { LIT }, glow));
             }
             if bar > 0.0 {
                 // the accent bar at the left edge of the lit line, growing from its middle
-                let bh = (rect[3] - rect[1]) * 0.46 * (0.4 + 0.6 * bar);
-                let by = (rect[1] + rect[3]) * 0.5 - bh * 0.5;
-                self.text.rounded(r, scene, [rect[0] + 5.0 * s, by, rect[0] + 5.0 * s + 3.0 * s, by + bh], 1.5 * s, fade(if danger { DANGER } else { ACCENT }, bar));
+                self.accent_bar(r, scene, rect, bar, danger, s);
             }
             let ink = if off {
                 OFF_INK
@@ -1189,12 +1219,12 @@ impl Ui {
                 if danger {
                     mix([232, 138, 128, 0], [255, 176, 166, 0], glow)
                 } else {
-                    mix(mix([208, 210, 216, 0], WHITE, glow), AMBER, a_act)
+                    mix(SOFT, WHITE, glow.max(a_act))
                 }
             };
             let cy = (rect[1] + rect[3]) * 0.5;
-            let lx = rect[0] + 20.0 * s;
-            let rx = rect[2] - 14.0 * s;
+            let lx = rect[0] + tin;
+            let rx = rect[2] - tin;
             let mut done = false;
             match kind {
                 // a line of the timetable: its number as a badge
@@ -1203,8 +1233,8 @@ impl Ui {
                     if let Some((name, info)) = parsed {
                         let bl = self.text.label(r, scene, name, (18.0 * s) as u32, txt(ACCENT));
                         let (bw, bh) = ((bl.w as f32 + 22.0 * s).max(54.0 * s), 34.0 * s);
-                        let bx = rect[0] + 12.0 * s;
-                        self.text.rounded(r, scene, [bx, cy - bh * 0.5, bx + bw, cy + bh * 0.5], 9.0 * s, ACCENT_SOFT);
+                        let bx = lx;
+                        self.text.rounded(r, scene, [bx, cy - bh * 0.5, bx + bw, cy + bh * 0.5], ROW_R * s, ACCENT_SOFT);
                         let (lx0, ly0) = (bx + (bw - bl.w as f32) * 0.5, cy - bl.h as f32 * 0.5);
                         scene.overlays.push((bl.tex, [lx0, ly0, lx0 + bl.w as f32, ly0 + bl.h as f32]));
                         let tx = bx + bw + 14.0 * s;
@@ -1231,9 +1261,9 @@ impl Ui {
                 if is_back {
                     let plain = matches!(kind, MenuKind::Lines | MenuKind::Tours);
                     if plain {
-                        self.text.rounded(r, scene, rect, 9.0 * s, fade(LIT, 0.55));
+                        self.text.rounded(r, scene, rect, ROW_R * s, fade(LIT, 0.55));
                     }
-                    let idle = if plain { [208, 210, 216, 0] } else { MUTED };
+                    let idle = if plain { SOFT } else { MUTED };
                     self.put(r, scene, &format!("‹  {text}"), px, if lit { WHITE } else { idle }, lx, cy);
                 } else {
                     if off {
@@ -1247,7 +1277,7 @@ impl Ui {
                         avail -= cw + 10.0 * s;
                     } else if id == "resume" && keys {
                         // ("Resume" shows the key that does the same)
-                        let left = self.chip(r, scene, "Esc", (11.0 * s) as u32, [170, 172, 180, 0], [255, 255, 255, 30], true, rx, cy, s);
+                        let left = self.chip(r, scene, "Esc", (11.0 * s) as u32, MUTED, CHIP, true, rx, cy, s);
                         avail = left - 10.0 * s - lx;
                     }
                     let text = clip_to(&self.text, text, px as f32, avail);
@@ -1258,19 +1288,19 @@ impl Ui {
         }
         // the timetable of the chosen line or tour, beside the list
         if let Some(p) = preview {
-            let (px0, py0) = (x + list_w + 2.0 * s, y + header_h);
-            let (px1, py1) = (x + w - 12.0 * s, y + h - 10.0 * s);
-            self.text.rounded(r, scene, [px0, py0, px1, py1], 12.0 * s, PANEL_ALT);
-            let pad = 18.0 * s;
+            let (px0, py0) = (list_r + 4.0 * s, y + header_h);
+            let (px1, py1) = (x + w - pad, y + h - pad);
+            self.text.rounded(r, scene, [px0 - 1.0, py0 - 1.0, px1 + 1.0, py1 + 1.0], CARD_R * s + 1.0, BORDER);
+            self.text.rounded(r, scene, [px0, py0, px1, py1], CARD_R * s, PANEL_ALT);
+            let pad = tin;
             let inner = px1 - px0 - pad * 2.0;
             let mut cy = py0 + 28.0 * s;
-            let head = clip_to(&self.text, &p.title, 20.0 * s, inner);
-            self.put(r, scene, &head, (20.0 * s) as u32, WHITE, px0 + pad, cy);
+            let head = clip_to(&self.text, &p.title, 18.0 * s, inner);
+            self.put(r, scene, &head, (18.0 * s) as u32, WHITE, px0 + pad, cy);
             cy += 24.0 * s;
             let meta = clip_to(&self.text, &p.meta, 12.0 * s, inner);
             self.put(r, scene, &meta, (12.0 * s) as u32, MUTED, px0 + pad, cy);
             cy += 18.0 * s;
-            let sep = self.text.solid(r, scene, DIVIDER);
             scene.overlays.push((sep, [px0 + pad, cy.round(), px1 - pad, cy.round() + 1.0]));
             let rpx = (14.0 * s) as u32;
             let lh = 26.0 * s;
@@ -1278,7 +1308,7 @@ impl Ui {
             let n = p.rows.len();
             if let (Some(chosen), Some(button)) = (p.chosen, p.button.as_ref()) {
                 // the stops to start from: the one chosen marked, a click chooses another
-                let go_h = 40.0 * s;
+                let go_h = 38.0 * s;
                 let go = [px0 + pad, py1 - 12.0 * s - go_h, px1 - pad, py1 - 12.0 * s];
                 let fit = (((go[1] - 10.0 * s) - top) / lh).floor().max(1.0) as usize;
                 let first = if n > fit { chosen.saturating_sub(fit / 2).min(n - fit) } else { 0 };
@@ -1292,21 +1322,21 @@ impl Ui {
                     let a_on = self.easeq((11, "stop", i), if on { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
                     let a_hov = self.easeq((12, "stop", i), if hov { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
                     if a_hov > 0.0 {
-                        self.text.rounded(r, scene, rect, 7.0 * s, fade(LIT, a_hov));
+                        self.text.rounded(r, scene, rect, ROW_R * s, fade(LIT, a_hov));
                     }
                     if a_on > 0.0 {
-                        self.text.rounded(r, scene, rect, 7.0 * s, fade(ACCENT_SOFT, a_on));
-                        self.text.rounded(r, scene, [rect[0] + 3.0 * s, rect[1] + 5.0 * s, rect[0] + 6.0 * s, rect[3] - 5.0 * s], 1.5 * s, fade(ACCENT, a_on));
+                        self.text.rounded(r, scene, rect, ROW_R * s, fade(SELECTED, a_on));
+                        self.text.rounded(r, scene, [rect[0], rect[1] + 7.0 * s, rect[0] + 2.0 * s, rect[3] - 7.0 * s], 1.0 * s, fade(ACCENT, a_on));
                     }
                     self.put_right(r, scene, when, rpx, AMBER, px1 - pad, ry);
                     let what = clip_to(&self.text, what, rpx as f32, inner - time_w - 14.0 * s);
-                    self.put(r, scene, &what, rpx, mix(SOFT, AMBER, a_on), px0 + pad, ry);
+                    self.put(r, scene, &what, rpx, mix(SOFT, WHITE, a_on), px0 + pad, ry);
                     self.menu_pane.push(rect);
                 }
                 // the button that starts the trip
                 let a_go = self.easeq((13, "go", 0), if over(go) { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
-                self.text.rounded(r, scene, go, 10.0 * s, mix(ACCENT_SOFT, ACCENT, 0.25 + 0.35 * a_go));
-                let l = self.text.label(r, scene, button, (15.0 * s) as u32, mix(AMBER, WHITE, a_go));
+                self.text.rounded(r, scene, go, ROW_R * s, mix(ACCENT, ACCENT_HOT, a_go));
+                let l = self.text.label(r, scene, button, (15.0 * s) as u32, ON_ACCENT);
                 let (gx, gy) = (go[0] + (go[2] - go[0] - l.w as f32) * 0.5, (go[1] + go[3]) * 0.5 - l.h as f32 * 0.5);
                 scene.overlays.push((l.tex, [gx, gy, gx + l.w as f32, gy + l.h as f32]));
                 self.menu_pane_go = Some(go);
@@ -1323,7 +1353,7 @@ impl Ui {
                 }
                 if n > shown {
                     let ry = top + lh * shown as f32 + lh * 0.5;
-                    self.put(r, scene, &format!("+{} more", n - shown), (12.0 * s) as u32, MUTED, px0 + pad, ry);
+                    self.put(r, scene, &omsi_ui::tr("+{} more").replacen("{}", &(n - shown).to_string(), 1), (12.0 * s) as u32, MUTED, px0 + pad, ry);
                 }
             }
         }
@@ -1351,10 +1381,12 @@ impl Ui {
         let want_side = if titles.is_empty() { 0.0 } else { 200.0 * s };
         let w = (want_side + 680.0 * s).min(f.width - 24.0 * s).max(260.0 * s);
         let side_w = want_side.min(w * 0.38);
-        let header_h = 76.0 * s;
+        let header_h = 72.0 * s;
+        let pad = PAD * s;
+        let tin = TEXT_IN * s;
         let fixed_h = (if f.vr { 440.0 } else { 600.0 }) * s;
         let h = fixed_h.min(f.height * (if f.vr { 0.70 } else { 0.94 })).max(220.0 * s);
-        let room = h - header_h - 14.0 * s;
+        let room = h - header_h - pad;
         let row_h = ((if f.vr { 54.0 } else { 62.0 }) * s).min(room).max(30.0 * s);
         let rows = ((room / row_h).floor() as usize).clamp(1, items.len().max(1));
         let start = match (items.len() > rows, f.menu_top) {
@@ -1367,29 +1399,27 @@ impl Ui {
         self.menu_row_h = row_h;
         let x = ((f.width - w) * 0.5).round();
         let y = ((f.height - h) * 0.5).round();
-        let radius = 16.0 * s;
+        let radius = CARD_R * s;
         self.text.shadow(r, scene, [x, y, x + w, y + h], radius, 28.0 * s, 10.0 * s, 110);
         self.text.rounded(r, scene, [x - 1.0, y - 1.0, x + w + 1.0, y + h + 1.0], radius + 1.0, BORDER);
         self.text.rounded(r, scene, [x, y, x + w, y + h], radius, PANEL);
-        // the header: the game's name small in the accent, the title large
+        // the header: the game's name small, the title large
         let (title, sub): (String, String) = match f.menu_head.as_ref() {
             Some((t, u)) => (t.clone(), u.clone()),
             None => ("Options".to_string(), String::new()),
         };
-        let eyebrow = self.text.label(r, scene, if sub.is_empty() { "openOMSI" } else { sub.as_str() }, (12.0 * s) as u32, txt(ACCENT));
-        scene.overlays.push((eyebrow.tex, [x + 24.0 * s, y + 16.0 * s, x + 24.0 * s + eyebrow.w as f32, y + 16.0 * s + eyebrow.h as f32]));
-        let title = clip_to(&self.text, &title, 26.0 * s, w - 48.0 * s);
-        let t = self.text.label(r, scene, &title, (26.0 * s) as u32, WHITE);
-        let ty = y + 16.0 * s + eyebrow.h as f32 - 2.0 * s;
-        scene.overlays.push((t.tex, [x + 24.0 * s, ty, x + 24.0 * s + t.w as f32, ty + t.h as f32]));
+        let head_cy = self.menu_header(r, scene, x, y, w, header_h, &title, &sub, s);
         let over = |rect: [f32; 4]| f.cursor.0 >= rect[0] && f.cursor.0 <= rect[2] && f.cursor.1 >= rect[1] && f.cursor.1 <= rect[3];
         // the sidebar: the pages, and the way back at its foot
         if side_w > 0.0 {
-            self.text.rounded(r, scene, [x + 8.0 * s, y + header_h, x + side_w - 4.0 * s, y + h - 8.0 * s], 12.0 * s, PANEL_ALT);
+            let (sx0, sx1) = (x + pad, x + side_w);
+            self.text.rounded(r, scene, [sx0 - 1.0, y + header_h - 1.0, sx1 + 1.0, y + h - pad + 1.0], CARD_R * s + 1.0, BORDER);
+            self.text.rounded(r, scene, [sx0, y + header_h, sx1, y + h - pad], CARD_R * s, PANEL_ALT);
             let spx = (15.0 * s) as u32;
+            let inset = 6.0 * s;
             for (i, title) in titles.iter().enumerate() {
-                let top = y + header_h + 8.0 * s + i as f32 * 46.0 * s;
-                let rect = [x + 16.0 * s, top, x + side_w - 12.0 * s, top + 40.0 * s];
+                let top = y + header_h + inset + i as f32 * 42.0 * s;
+                let rect = [sx0 + inset, top, sx1 - inset, top + 38.0 * s];
                 let on = i == active;
                 let hov = over(rect) && !on;
                 // (the page chosen and the page under the mouse fade in and out)
@@ -1397,35 +1427,33 @@ impl Ui {
                 let a_hov = self.easeq((2, title.as_str(), 0), if hov { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
                 let a_bar = self.easeq((9, title.as_str(), 0), if on { 1.0 } else { 0.0 }, 1.0 / BAR_SECS);
                 if a_hov > 0.0 {
-                    self.text.rounded(r, scene, rect, 9.0 * s, fade(LIT, a_hov));
+                    self.text.rounded(r, scene, rect, ROW_R * s, fade(LIT, a_hov));
                 }
                 if a_on > 0.0 {
-                    self.text.rounded(r, scene, rect, 9.0 * s, fade(ACCENT_SOFT, a_on));
+                    self.text.rounded(r, scene, rect, ROW_R * s, fade(SELECTED, a_on));
                 }
                 if a_bar > 0.0 {
-                    let bh = (rect[3] - rect[1]) * 0.46 * (0.4 + 0.6 * a_bar);
-                    let by = (rect[1] + rect[3]) * 0.5 - bh * 0.5;
-                    self.text.rounded(r, scene, [rect[0] + 5.0 * s, by, rect[0] + 8.0 * s, by + bh], 1.5 * s, fade(ACCENT, a_bar));
+                    self.accent_bar(r, scene, rect, a_bar, false, s);
                 }
-                let ink = mix(mix([208, 210, 216, 0], WHITE, a_hov), AMBER, a_on);
-                let text = clip_to(&self.text, title, spx as f32, rect[2] - rect[0] - 32.0 * s);
-                self.put(r, scene, &text, spx, ink, rect[0] + 18.0 * s, (rect[1] + rect[3]) * 0.5);
+                let ink = mix(mix(MUTED, SOFT, a_hov), WHITE, a_on);
+                let text = clip_to(&self.text, title, spx as f32, rect[2] - rect[0] - tin * 2.0);
+                self.put(r, scene, &text, spx, ink, rect[0] + tin, (rect[1] + rect[3]) * 0.5);
                 self.menu_side.push(rect);
             }
-            let bottom = y + h - 16.0 * s;
-            let rect = [x + 16.0 * s, bottom - 40.0 * s, x + side_w - 12.0 * s, bottom];
+            let bottom = y + h - pad - inset;
+            let rect = [sx0 + inset, bottom - 38.0 * s, sx1 - inset, bottom];
             let a_back = self.easeq((3, "back", 0), if over(rect) { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
             if a_back > 0.0 {
-                self.text.rounded(r, scene, rect, 9.0 * s, fade(LIT, a_back));
+                self.text.rounded(r, scene, rect, ROW_R * s, fade(LIT, a_back));
             }
             let back = format!("‹  {}", omsi_ui::tr("Back"));
-            self.put(r, scene, &back, spx, mix(MUTED, WHITE, a_back), rect[0] + 18.0 * s, (rect[1] + rect[3]) * 0.5);
+            self.put(r, scene, &back, spx, mix(MUTED, WHITE, a_back), rect[0] + tin, (rect[1] + rect[3]) * 0.5);
             self.menu_side.push(rect);
         }
         // the scroll bar of a long page
         let scrolls = items.len() > rows;
-        let cx0 = x + side_w + 6.0 * s;
-        let cx1 = x + w - 14.0 * s - if scrolls { 10.0 * s } else { 0.0 };
+        let cx0 = x + side_w + if side_w > 0.0 { 8.0 * s } else { pad };
+        let cx1 = x + w - pad - if scrolls { 8.0 * s } else { 0.0 };
         if scrolls {
             let top = y + header_h;
             let track = [x + w - 12.0 * s, top, x + w - 9.0 * s, top + row_h * rows as f32 - 4.0 * s];
@@ -1437,8 +1465,8 @@ impl Ui {
             let thumb = [track[0], t0, track[2], t1];
             self.text.rounded(r, scene, thumb, 1.5 * s, ACCENT);
             self.menu_scroll_thumb = Some([thumb[0] - 6.0 * s, thumb[1], thumb[2] + 6.0 * s, thumb[3]]);
-            let more = format!("{} of {}", sel + 1, items.len());
-            self.put_right(r, scene, &more, (12.0 * s) as u32, MUTED, x + w - 24.0 * s, y + 30.0 * s);
+            let more = omsi_ui::tr("{} of {}").replacen("{}", &(sel + 1).to_string(), 1).replacen("{}", &items.len().to_string(), 1);
+            self.put_right(r, scene, &more, (12.0 * s) as u32, MUTED, x + w - pad - tin, head_cy);
         }
         // the rows
         let any_hovered = over([x + side_w, y + header_h, x + w, y + h]);
@@ -1452,22 +1480,19 @@ impl Ui {
             let a = self.easeq((4, id, k), if lit { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
             let a_bar = self.easeq((10, id, k), if lit { 1.0 } else { 0.0 }, 1.0 / BAR_SECS);
             if a > 0.0 {
-                self.text.rounded(r, scene, rect, 9.0 * s, fade(LIT, a));
+                self.text.rounded(r, scene, rect, ROW_R * s, fade(LIT, a));
             }
             if a_bar > 0.0 {
-                let bh = (rect[3] - rect[1]) * 0.46 * (0.4 + 0.6 * a_bar);
-                let by = (rect[1] + rect[3]) * 0.5 - bh * 0.5;
-                self.text.rounded(r, scene, [rect[0] + 5.0 * s, by, rect[0] + 8.0 * s, by + bh], 1.5 * s, fade(ACCENT, a_bar));
+                self.accent_bar(r, scene, rect, a_bar, false, s);
             }
             if a < 0.5 && k + 1 < start + rows && k + 1 < items.len() {
-                let sep = self.text.solid(r, scene, DIVIDER);
                 let sy = (rect[3] + 2.0 * s).round();
-                scene.overlays.push((sep, [rect[0] + 12.0 * s, sy, rect[2] - 12.0 * s, sy + 1.0]));
+                scene.overlays.push((sep, [rect[0] + tin, sy, rect[2] - tin, sy + 1.0]));
             }
-            let ink = mix([208, 210, 216, 0], WHITE, a);
+            let ink = mix(SOFT, WHITE, a);
             let cy = (rect[1] + rect[3]) * 0.5;
-            let nx = rect[0] + 22.0 * s;
-            let rx = rect[2] - 14.0 * s;
+            let nx = rect[0] + tin;
+            let rx = rect[2] - tin;
             let mut parts = label.split('\u{1f}');
             let name = parts.next().unwrap_or("");
             let kind = parts.next().unwrap_or("a");
@@ -1488,10 +1513,10 @@ impl Ui {
                     if tq < 1.0 {
                         self.text.rounded(r, scene, [track[0] - 1.0, track[1] - 1.0, track[2] + 1.0, track[3] + 1.0], th * 0.5 + 1.0, fade([255, 255, 255, 44], 1.0 - tq));
                     }
-                    self.text.rounded(r, scene, track, th * 0.5, mix([36, 37, 43, 255], ACCENT, tq));
+                    self.text.rounded(r, scene, track, th * 0.5, mix([62, 62, 62, 255], ACCENT, tq));
                     let kn = 18.0 * s;
                     let kx = tx + 3.0 * s + (tw - kn - 6.0 * s) * t;
-                    self.text.rounded(r, scene, [kx, cy - kn * 0.5, kx + kn, cy + kn * 0.5], kn * 0.5, mix([150, 152, 160, 255], [255, 255, 255, 255], tq));
+                    self.text.rounded(r, scene, [kx, cy - kn * 0.5, kx + kn, cy + kn * 0.5], kn * 0.5, mix([142, 142, 142, 255], [240, 240, 240, 255], tq));
                     tx
                 }
                 // a slider: the track with its knob, the value right of it
@@ -1510,14 +1535,14 @@ impl Ui {
                         self.text.rounded(r, scene, [x0, cy - th * 0.5, fx, cy + th * 0.5], th * 0.5, ACCENT);
                     }
                     let kn = (13.0 + 4.0 * a) * s;
-                    self.text.rounded(r, scene, [fx - kn * 0.5, cy - kn * 0.5, fx + kn * 0.5, cy + kn * 0.5], kn * 0.5, mix([225, 227, 232, 255], [255, 255, 255, 255], a));
+                    self.text.rounded(r, scene, [fx - kn * 0.5, cy - kn * 0.5, fx + kn * 0.5, cy + kn * 0.5], kn * 0.5, mix([200, 200, 200, 255], [240, 240, 240, 255], a));
                     ctl = Some([x0, rect[1], x1, rect[3]]);
                     x0
                 }
                 // a stepper: the value between two arrows, the left half steps back
                 "c" => {
                     let text = format!("‹  {value}  ›");
-                    let l = self.chip(r, scene, &text, (13.0 * s) as u32, mix(SOFT, WHITE, a), mix(CHIP, [255, 255, 255, 40], a), false, rx, cy, s);
+                    let l = self.chip(r, scene, &text, (13.0 * s) as u32, mix(SOFT, WHITE, a), mix(CHIP, SELECTED, a), false, rx, cy, s);
                     ctl = Some([l, rect[1], rx, rect[3]]);
                     l
                 }
