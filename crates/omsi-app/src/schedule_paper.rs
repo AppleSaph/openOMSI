@@ -4,7 +4,7 @@
 //! bitmap named by that string; openOMSI makes it from the player's current duty and keeps
 //! it in its own cache so the original installation remains read-only.
 
-use crate::schedule::{PlannedStop, PlayerDuty};
+use crate::schedule::PlayerDuty;
 use ab_glyph::{Font as _, FontVec, PxScale, ScaleFont};
 use anyhow::{anyhow, Context, Result};
 use omsi_content::font::{Font, FontAtlas, FontChar, TextAlign};
@@ -47,9 +47,10 @@ pub(crate) fn update_vehicle(
     duty: &PlayerDuty,
     fonts: &mut omsi_sim::texttex::FontLibrary,
 ) -> Result<()> {
-    let (title, rows) = paper_content(&duty.line, &duty.tour, &duty.trips, duty.trip_index);
+    let (arr, dep) = tt_labels();
+    let (title, rows) = paper_content(&duty.line, &duty.tour, &duty.trips, duty.trip_index, (arr, dep));
     let signature = content_signature(&title, &rows);
-    let path = cache_dir()?.join(format!("schedule-v4-{signature:016x}.png"));
+    let path = cache_dir()?.join(format!("schedule-v5-{signature:016x}.png"));
     let filename = path.to_string_lossy().into_owned();
 
     if vehicle.str_var("file_schedule") == filename {
@@ -184,11 +185,39 @@ fn typewriter_font(title: &str, rows: &[PaperRow]) -> Option<FontAtlas> {
     ))
 }
 
+/// `TT_Arr` and `TT_Dep` of the game's language (`Languages/<LANG>_basic.olf`), as
+/// Omsi.exe translates them for the paper: "Arrival " and "Depart." in English.
+fn tt_labels() -> &'static (String, String) {
+    static LABELS: OnceLock<(String, String)> = OnceLock::new();
+    LABELS.get_or_init(|| {
+        let lang = crate::settings::Settings::load().language;
+        let find = |lang: &str| {
+            omsi_cfg::content_dirs("Languages").into_iter().find_map(|dir| {
+                omsi_content::language::Language::load(&dir.join(format!("{lang}_basic.olf"))).ok()
+            })
+        };
+        let l = find(&lang).or_else(|| find("ENG"));
+        let get = |key: &str, default: &str| {
+            l.as_ref()
+                .and_then(|l| l.strings.get(key))
+                .filter(|v| !v.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| default.to_string())
+        };
+        (get("TT_Arr", "Arrival "), get("TT_Dep", "Depart. "))
+    })
+}
+
+/// The rows of the paper as Omsi.exe makes them (0x7e72a0): every stop of the trip with
+/// its departure (a station the profile passes is left out), the last one as
+/// "<stop> <TT_Arr>" with its arrival, then one more row "<TT_Dep>" with the last stop's
+/// departure.
 fn paper_content(
     duty_line: &str,
     duty_tour: &str,
     trips: &[crate::schedule::PlannedTrip],
     trip_index: usize,
+    (arr_label, dep_label): (&str, &str),
 ) -> (String, Vec<PaperRow>) {
     let trip = &trips[trip_index];
     let line = if trip.line.trim().is_empty() {
@@ -198,53 +227,26 @@ fn paper_content(
     };
     let title = format!("{line} - {} - {}", trip.terminus.trim(), duty_tour.trim());
 
-    let served: Vec<(usize, &PlannedStop)> = trip
-        .stops
-        .iter()
-        .enumerate()
-        .filter(|(_, stop)| stop.stops)
-        .collect();
-    let last = served.last().map(|(index, _)| *index);
-    let mut rows: Vec<PaperRow> = served
-        .iter()
-        .map(|(index, stop)| {
-            let arrival = *index == last.unwrap_or(usize::MAX);
-            let name = if arrival {
-                format!("{} Ankunft", stop.name.trim())
-            } else {
-                stop.name.trim().to_string()
-            };
-            let time = if arrival {
-                format_time(stop.arr)
-            } else if stop.dep - stop.arr >= 60.0 {
-                format!("{} - {}", format_time(stop.arr), format_time(stop.dep))
-            } else {
-                format_time(stop.dep)
-            };
-            PaperRow { name, time }
-        })
-        .collect();
-
-    if let (Some((_, final_stop)), Some(next)) = (served.last(), trips.get(trip_index + 1)) {
-        let next_start = next
-            .stops
-            .iter()
-            .find(|stop| stop.stops)
-            .or_else(|| next.stops.first());
-        let same_stop = next_start.is_some_and(|next_stop| {
-            final_stop.object_id == next_stop.object_id
-                || (!final_stop.name.trim().is_empty()
-                    && final_stop
-                        .name
-                        .trim()
-                        .eq_ignore_ascii_case(next_stop.name.trim()))
-        });
-        if same_stop {
-            rows.push(PaperRow {
-                name: "Abfahrt".into(),
-                time: format_time(next.departure),
-            });
+    let mut rows = Vec::new();
+    let Some(last) = trip.stops.len().checked_sub(1) else {
+        return (title, rows);
+    };
+    for i in 0..=last + 1 {
+        let stop = &trip.stops[i.min(last)];
+        if i < last && !stop.stops {
+            continue;
         }
+        // (the station's name, a blank and its second name - empty for a map's bus stop -
+        // and another blank)
+        let name = if i > last {
+            dep_label.to_string()
+        } else if i == last {
+            format!("{}  {arr_label}", stop.name.trim())
+        } else {
+            format!("{}  ", stop.name.trim())
+        };
+        let time = format_time(if i == last { stop.arr } else { stop.dep });
+        rows.push(PaperRow { name, time });
     }
     (title, rows)
 }
@@ -469,7 +471,7 @@ fn save_png(image: &Image, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schedule::{PlannedTrip, StopDir};
+    use crate::schedule::{PlannedStop, PlannedTrip, StopDir};
     use omsi_content::font::FontChar;
 
     fn stop(id: i64, name: &str, arr: f64, dep: f64) -> PlannedStop {
@@ -511,56 +513,32 @@ mod tests {
     }
 
     #[test]
-    fn paper_keeps_repeated_stops_and_adds_terminal_departure() {
+    fn paper_rows_end_with_arrival_and_departure_of_the_last_stop() {
+        let t = |h: f64, m: f64| h * 3600.0 + m * 60.0;
+        let mut passed = stop(2, "Feld", t(11.0, 54.0), t(11.0, 54.0));
+        passed.stops = false;
         let current = PlannedTrip {
             name: "76_Kk-BH".into(),
             line: "76".into(),
             terminus: "Bauernhof".into(),
-            departure: 11.0 * 3600.0 + 52.0 * 60.0,
-            end: 11.0 * 3600.0 + 59.0 * 60.0,
+            departure: t(11.0, 52.0),
+            end: t(11.0, 59.0),
             stops: vec![
-                stop(
-                    1,
-                    "Krankenhaus",
-                    11.0 * 3600.0 + 52.0 * 60.0,
-                    11.0 * 3600.0 + 52.0 * 60.0,
-                ),
-                stop(
-                    2,
-                    "Krankenhaus",
-                    11.0 * 3600.0 + 52.0 * 60.0,
-                    11.0 * 3600.0 + 52.0 * 60.0,
-                ),
-                stop(
-                    3,
-                    "Bauernhof",
-                    11.0 * 3600.0 + 59.0 * 60.0,
-                    11.0 * 3600.0 + 59.0 * 60.0,
-                ),
+                stop(1, "Krankenhaus", t(11.0, 50.0), t(11.0, 52.0)),
+                passed,
+                stop(3, "Dorf", t(11.0, 55.0), t(11.0, 57.0)),
+                stop(4, "Bauernhof", t(11.0, 59.0), t(12.0, 1.0)),
             ],
         };
-        let next = PlannedTrip {
-            name: "76_BH-Kk".into(),
-            line: "76".into(),
-            terminus: "Krankenhaus".into(),
-            departure: 12.0 * 3600.0 + 7.0 * 60.0,
-            end: 12.0 * 3600.0 + 14.0 * 60.0,
-            stops: vec![stop(
-                3,
-                "Bauernhof",
-                12.0 * 3600.0 + 7.0 * 60.0,
-                12.0 * 3600.0 + 7.0 * 60.0,
-            )],
-        };
-        let (title, rows) = paper_content("76", "1", &[current, next], 0);
+        let (title, rows) = paper_content("76", "1", &[current], 0, ("Arrival ", "Depart. "));
         assert_eq!(title, "76 - Bauernhof - 1");
         assert_eq!(
             rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
-            ["Krankenhaus", "Krankenhaus", "Bauernhof Ankunft", "Abfahrt",]
+            ["Krankenhaus  ", "Dorf  ", "Bauernhof  Arrival ", "Depart. "]
         );
         assert_eq!(
             rows.iter().map(|r| r.time.as_str()).collect::<Vec<_>>(),
-            ["11:52", "11:52", "11:59", "12:07",]
+            ["11:52", "11:57", "11:59", "12:01"]
         );
     }
 
