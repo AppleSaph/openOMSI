@@ -2,6 +2,26 @@
 
 use super::*;
 
+fn indicator_toggle_action(state: &mut u8, lever: Option<u8>, want: u8) -> &'static str {
+    // Scripts can cancel the lever themselves after a turn; prefer their current state.
+    if let Some(lever) = lever { *state = lever; }
+    if want == 3 {
+        *state = if *state == 3 { 0 } else { 3 };
+        "blinker_warn_toggle"
+    } else if *state == want {
+        *state = 0;
+        "blinker_off"
+    } else {
+        *state = want;
+        if want == 1 { "blinker_left_set" } else { "blinker_right_set" }
+    }
+}
+
+pub(crate) fn steering_view_yaw(current: f32, steering: f32, dt: f32, enabled: bool, angle: f32, response: f32) -> f32 {
+    let target = if enabled { steering.clamp(-1.0, 1.0) * angle.clamp(0.0, 60.0) } else { 0.0 };
+    current + (target - current) * (1.0 - (-dt.max(0.0) / response.clamp(0.05, 1.0)).exp())
+}
+
 fn is_manual_gate_action(name: &str) -> bool {
     let Some(gate) = name.get(..5).filter(|p| p.eq_ignore_ascii_case("kw_s_")).and_then(|_| name.get(5..)) else {
         return false;
@@ -454,6 +474,17 @@ pub(crate) fn digit_of(code: KeyCode) -> Option<usize> {
 }
 
 impl Player {
+    pub(crate) fn toggle_indicator(&mut self, want: u8) {
+        let lever = if self.vehicle.var("lights_sw_warnblinker").is_some_and(|v| v > 0.5) {
+            Some(3)
+        } else {
+            self.vehicle.var("lights_sw_blinker").map(|v| match v.round() as i32 { 1 => 1, 2 => 2, _ => 0 })
+        };
+        let action = indicator_toggle_action(&mut self.blinker_key_state, lever, want);
+        self.action(action, true);
+        self.action(action, false);
+    }
+
     /// Some stock roller-blind scripts keep a ratchet position with `max`.  The original
     /// engine resets that ratchet while the hand is moving; without that small engine-side
     /// detail a blind lowered once is immediately snapped back down on every frame.
@@ -476,6 +507,12 @@ impl Player {
     pub(crate) fn action(&mut self, name: &str, pressed: bool) -> bool {
         if pressed {
             log::info!("action: {name}");
+        }
+        if name.eq_ignore_ascii_case("blinker_left_toggle") || name.eq_ignore_ascii_case("blinker_right_toggle") {
+            if pressed {
+                self.toggle_indicator(if name.eq_ignore_ascii_case("blinker_left_toggle") { 1 } else { 2 });
+            }
+            return true;
         }
         let suffix = if pressed { "" } else { "_off" };
         let release_gear = !pressed
@@ -1105,12 +1142,8 @@ impl Player {
     /// never further than 10 cm up or down (0x7e2256). (A lag of our own towards a point a
     /// hundredth of the acceleration off - a third of what the original throws the head -
     /// stood in for it.)
-    pub(crate) fn move_head(&mut self, dt: f32, enabled: bool, steer_look: bool) {
+    pub(crate) fn move_head(&mut self, dt: f32, enabled: bool) {
         let dt = dt.clamp(0.0, 0.1);
-        // (a driver looks into the bend he steers: up to 30 degrees at full lock, eased so
-        // the view does not snap with the wheel)
-        let steer_want = if steer_look { self.vehicle.physics.controls.steering.clamp(-1.0, 1.0) * 30.0 } else { 0.0 };
-        self.steer_look += (steer_want - self.steer_look) * (1.0 - (-4.0 * dt).exp());
         let a = self.vehicle.physics.accel;
         let omega = self.vehicle.rigid.as_ref().map(|rb| rb.omega).unwrap_or(Vec3::ZERO);
         let dw = omega - self.head_omega;
@@ -1785,7 +1818,7 @@ impl Player {
             "driver" => {
                 // (a coupled part's driver camera, on that part's body)
                 if let Some((t, c)) = self.trailer_driver_camera() {
-                    let turned = omsi_vehicle::Camera { yaw: c.yaw + look.0, pitch: (c.pitch + look.1).clamp(-89.0, 89.0), ..c.clone() };
+                    let turned = omsi_vehicle::Camera { yaw: c.yaw + look.0 + self.steer_look, pitch: (c.pitch + look.1).clamp(-89.0, 89.0), ..c.clone() };
                     let (eye, yaw, pitch, roll) = t.camera_world_full(&turned);
                     return Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: c.fov, near: 0.1, far: 6000.0 };
                 }
@@ -2210,5 +2243,73 @@ mod preset_tests {
         assert_eq!(fallback_action(KeyCode::KeyA, "simple"), Some(A::SteeringLeft));
         assert_eq!(fallback_action(KeyCode::ArrowLeft, "arrows"), Some(A::SteeringLeft));
         assert_eq!(fallback_action(KeyCode::ArrowRight, "arrows"), Some(A::SteeringRight));
+    }
+}
+
+#[cfg(test)]
+mod indicator_tests {
+    use super::indicator_toggle_action;
+
+    #[test]
+    fn repeated_presses_switch_each_side_on_then_off() {
+        for (side, on) in [(1, "blinker_left_set"), (2, "blinker_right_set")] {
+            let mut state = 0;
+            assert_eq!(indicator_toggle_action(&mut state, None, side), on);
+            assert_eq!(indicator_toggle_action(&mut state, None, side), "blinker_off");
+            assert_eq!(state, 0);
+        }
+    }
+
+    #[test]
+    fn changing_side_and_automatic_cancellation_use_the_current_lever() {
+        let mut state = 1;
+        assert_eq!(indicator_toggle_action(&mut state, Some(1), 2), "blinker_right_set");
+        assert_eq!(indicator_toggle_action(&mut state, Some(0), 2), "blinker_right_set");
+        assert_eq!(indicator_toggle_action(&mut state, Some(2), 2), "blinker_off");
+    }
+
+    #[test]
+    fn hazards_keep_their_dedicated_toggle_trigger() {
+        let mut state = 0;
+        assert_eq!(indicator_toggle_action(&mut state, Some(0), 3), "blinker_warn_toggle");
+        assert_eq!(state, 3);
+        assert_eq!(indicator_toggle_action(&mut state, Some(3), 3), "blinker_warn_toggle");
+        assert_eq!(state, 0);
+    }
+}
+
+#[cfg(test)]
+mod steering_view_tests {
+    use super::steering_view_yaw;
+
+    #[test]
+    fn follows_both_directions_without_snapping_or_overshooting() {
+        let right = steering_view_yaw(0.0, 1.0, 0.016, true, 30.0, 0.25);
+        assert!(right > 0.0 && right < 30.0);
+        assert_eq!(steering_view_yaw(0.0, -1.0, 0.016, true, 30.0, 0.25), -right);
+        let changed = steering_view_yaw(30.0, -1.0, 0.016, true, 30.0, 0.25);
+        assert!(changed < 30.0 && changed > -30.0);
+    }
+
+    #[test]
+    fn smoothing_is_frame_rate_independent_even_at_five_fps() {
+        let mut reference: Option<f32> = None;
+        for fps in [5, 30, 60, 144] {
+            let mut yaw = 0.0;
+            for _ in 0..fps { yaw = steering_view_yaw(yaw, 0.8, 1.0 / fps as f32, true, 40.0, 0.25); }
+            if let Some(reference) = reference { assert!((yaw - reference).abs() < 0.0001); }
+            reference = Some(yaw);
+        }
+    }
+
+    #[test]
+    fn configurable_angle_response_and_return_to_center() {
+        let slow = steering_view_yaw(0.0, 1.0, 0.1, true, 45.0, 0.5);
+        let fast = steering_view_yaw(0.0, 1.0, 0.1, true, 45.0, 0.1);
+        assert!(fast > slow);
+        assert_eq!(steering_view_yaw(0.0, 2.0, 0.1, true, 45.0, 0.1), fast);
+        let centered = steering_view_yaw(30.0, 1.0, 0.1, false, 45.0, 0.25);
+        assert!(centered > 0.0 && centered < 30.0);
+        assert_eq!(steering_view_yaw(30.0, 0.0, 0.0, true, 45.0, 0.25), 30.0);
     }
 }

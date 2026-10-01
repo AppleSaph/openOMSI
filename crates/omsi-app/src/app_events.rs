@@ -794,7 +794,7 @@ impl ApplicationHandler for App {
                         let vr_on = self.vr.is_some();
                         #[cfg(not(windows))]
                         let vr_on = false;
-                        p.move_head(dt, self.settings.head_movement && !vr_on, self.settings.steer_look && !vr_on);
+                        p.move_head(dt, self.settings.head_movement && !vr_on);
                         if let Some(w) = self.world.as_ref() {
                             crate::rail_drive::frame(p, self.traffic.as_ref().map(|t| &t.net), w, dt);
                         }
@@ -869,6 +869,16 @@ impl ApplicationHandler for App {
                                 }
                             }
                             let tracked = self.headtrack.as_ref().and_then(|h| h.pose()).filter(|_| self.settings.head_tracking && matches!(self.view.as_str(), "driver" | "pax"));
+                            #[cfg(windows)]
+                            let vr_on = self.vr.is_some();
+                            #[cfg(not(windows))]
+                            let vr_on = false;
+                            // Camera smoothing uses frame time, not the head physics' clamped step.
+                            // Physical head tracking controls the view without an added automatic turn.
+                            p.steer_look = if vr_on || tracked.is_some() { 0.0 } else {
+                                crate::player::steering_view_yaw(p.steer_look, p.vehicle.physics.controls.steering, dt,
+                                    self.settings.steer_look && self.view == "driver", self.settings.steer_look_angle, self.settings.steer_look_response)
+                            };
                             if let Some(t) = tracked {
                                 p.seat += glam::Vec3::new(t.pos[0], -t.pos[2], t.pos[1]).clamp(glam::Vec3::splat(-60.0), glam::Vec3::splat(60.0)) / 100.0;
                             }

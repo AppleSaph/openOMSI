@@ -87,10 +87,10 @@ Settings → Driving → *Mouse steering sensitivity* makes it more or less sens
 Mouse steering works in the driver's, the passenger and the outside view; the wheel follows
 the cursor smoothly (a short easing, no steps).
 
-Two switches there change the steering keys (both on by default, as in OMSI): *Steering linearity* turns
+Two switches there change the steering keys (both off by default): *Steering linearity* turns
 the wheel at OMSI's own steady pace (the curvature grows by the same amount every millisecond
 the key is held, whatever the bus), and *Old Steering* is OMSI's wheel that stays where you
-leave it - turn it back yourself (off, the wheel comes back by itself). The clutch key works as in OMSI: the pedal goes down at once
+leave it - turn it back yourself. The clutch key works as in OMSI: the pedal goes down at once
 and comes up slowly (0.7 per second) when the key is released.
 
 Left-click a cockpit switch to operate it, hold the button and move the mouse to turn a knob,
@@ -276,12 +276,23 @@ the bus and the traffic; drag to move, the wheel zooms, the buttons centre on th
 zoom, Escape or a click outside closes it. **Shift+N** cycles
 map → map with the schedule of the next stops → off (N alone is the gearbox's neutral);
 `OMSI_DEBUG_NAV=1` logs it.
-**Z / X / C** are the indicators. **Shift + 1**, **Shift + 2**, … open or close a door, front
+**Z / X / C** are the indicators. Controls also offers **Indicator left (toggle)** and
+**Indicator right (toggle)** for keyboard keys or wheel buttons such as shift paddles.
+They start unbound: one press turns that side on, another turns it off, and pressing the
+other side switches direction. A script's automatic cancellation is respected.
+**Shift + 1**, **Shift + 2**, … open or close a door, front
 to back: a bus like the SD200/SD202/EN92 with one two-leaf front door and a combined
 aft/stop-brake-release door answers to Shift+1/2/3, a low-floor mod with three or four
 independent doors (the O530 Facelift) to Shift+1 through Shift+4/5 - whatever
 `bus_doorfront<n>` triggers the bus's own script defines, `bus_dooraft` last (the HUD's
 control reminder says how many).
+
+In Settings → Camera, **Driver's view turns with the steering** smoothly turns the driver's
+view into the steering direction, independently of the bus's head-motion simulation.
+**Steering view angle** sets the full-lock rotation (0–60°, default 30°), and **Steering
+view response** sets the smoothing time (50–1000 ms, default 250 ms; larger values follow
+more slowly). Manual looking remains available. The automatic turn is suppressed while
+VR or an active head tracker controls the view. It is off by default.
 
 ## Mods and the content folder
 

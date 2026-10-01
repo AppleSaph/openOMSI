@@ -4,6 +4,13 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/turbo-devv/openOMSI/releases) page.
 
+## 0.1.780 - 2026-10-01
+
+### Controls
+- The left and right turn signals can be toggled by keys or wheel buttons (automatic
+  cancelling still applies), and the driver's view can follow the steering with an
+  adjustable angle and response (#657, #646).
+
 ## 0.1.774 - 2026-10-01
 
 ### Vehicles
@@ -15,8 +22,6 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
   game's language instead of German everywhere (#629).
 
 ### Controls
-- Keyboard steering works as in OMSI by default: the keys turn the wheel at a steady pace
-  and it stays where they leave it (the self-centring mode is still in the options) (#488).
 - The combined throttle/brake axis puts the throttle on the right half, as OMSI does (#577).
 - A vJoy device no longer crashes the game when vibration starts (#655).
 
