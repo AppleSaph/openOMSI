@@ -1439,6 +1439,7 @@ impl App {
 
     /// Show one of the menu's lists in the chooser (see `game_lists`).
     pub(crate) fn open_list(&mut self, kind: crate::game_lists::ListKind) {
+        self.dropdown = None;
         self.admin_list = Some(crate::game_lists::items(self, &kind));
         self.list_kind = Some(kind);
         // (on its first line, not on a heading)
@@ -1580,6 +1581,7 @@ impl App {
 
     /// The open list is closed: back to the game menu.
     pub(crate) fn close_list(&mut self) {
+        self.dropdown = None;
         self.menu_edit = None;
         self.chooser = None;
         self.admin_list = None;
@@ -1657,6 +1659,10 @@ impl App {
 
     /// A key while the vehicle chooser is open.
     fn chooser_key(&mut self, code: KeyCode) {
+        if self.dropdown.is_some() {
+            self.dropdown_key(code);
+            return;
+        }
         if self.menu_edit.is_some() {
             self.time_edit_key(code);
             return;
@@ -1696,6 +1702,56 @@ impl App {
             KeyCode::PageDown => self.chooser = Some((sel + 15).min(n - 1)).map(|k| if self.is_heading(k) { self.chooser_next(k, 1) } else { k }),
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => self.chooser_pick(sel),
             _ => {}
+        }
+    }
+
+    /// A key while a drop-down is open: the arrows choose, Enter takes, Esc closes it.
+    fn dropdown_key(&mut self, code: KeyCode) {
+        let Some(d) = self.dropdown.as_mut() else { return };
+        let n = d.items.len().max(1);
+        match code {
+            KeyCode::Escape => {
+                self.dropdown = None;
+                return;
+            }
+            KeyCode::ArrowUp | KeyCode::KeyW => d.sel = (d.sel + n - 1) % n,
+            KeyCode::ArrowDown | KeyCode::KeyS => d.sel = (d.sel + 1) % n,
+            KeyCode::PageUp => d.sel = d.sel.saturating_sub(5),
+            KeyCode::PageDown => d.sel = (d.sel + 5).min(n - 1),
+            KeyCode::Home => d.sel = 0,
+            KeyCode::End => d.sel = n - 1,
+            KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
+                let i = d.sel;
+                self.dropdown_pick(i);
+                return;
+            }
+            _ => return,
+        }
+        self.dd_reveal();
+    }
+
+    /// The drop-down's chosen entry is in view.
+    fn dd_reveal(&mut self) {
+        let rows = self.ui.as_ref().map(|u| u.dd_rows).unwrap_or(8).max(1);
+        if let Some(d) = self.dropdown.as_mut() {
+            if d.sel < d.top {
+                d.top = d.sel;
+            } else if d.sel >= d.top + rows {
+                d.top = d.sel + 1 - rows;
+            }
+        }
+    }
+
+    /// Entry `i` of the open drop-down is taken: done, and the window's rows shown again
+    /// with the new value.
+    pub(crate) fn dropdown_pick(&mut self, i: usize) {
+        let Some(d) = self.dropdown.take() else { return };
+        let Some((_, action)) = d.items.get(i).cloned() else { return };
+        crate::game_lists::dropdown_apply(self, &action);
+        if let Some(kind) = self.list_kind.clone() {
+            self.open_list(kind);
+            let last = self.admin_list.as_ref().map(|l| l.len().saturating_sub(1)).unwrap_or(0);
+            self.chooser = Some(d.row.min(last));
         }
     }
 
@@ -1750,6 +1806,15 @@ impl App {
         // (a heading is no choice)
         if self.is_heading(k) {
             return;
+        }
+        // a row of a settings window that drops a list down (the weather preset, the clouds)
+        if self.settings_list() {
+            let id = self.admin_list.as_ref().and_then(|l| l.get(k)).map(|l| l.1.clone()).unwrap_or_default();
+            if let Some(d) = crate::game_lists::dropdown_for(self, k, &id) {
+                self.dropdown = Some(d);
+                self.dd_reveal();
+                return;
+            }
         }
         self.chooser = None;
         // a list of the menu's (the administration, the options …): done, and the list
@@ -2102,6 +2167,21 @@ impl App {
     /// The mouse wheel over the game menu: the chosen line moves (the menu scrolls with it),
     /// in a list the same; no wrapping round.
     pub(crate) fn menu_wheel(&mut self, amount: f32) {
+        // (an open drop-down scrolls, not the window under it)
+        if self.dropdown.is_some() {
+            self.wheel_acc += amount;
+            let steps = self.wheel_acc.trunc() as i64;
+            if steps == 0 {
+                return;
+            }
+            self.wheel_acc -= steps as f32;
+            let rows = self.ui.as_ref().map(|u| u.dd_rows).unwrap_or(8);
+            if let Some(d) = self.dropdown.as_mut() {
+                let max = d.items.len().saturating_sub(rows) as i64;
+                d.top = (d.top as i64 - steps).clamp(0, max) as usize;
+            }
+            return;
+        }
         self.wheel_acc += amount;
         let steps = self.wheel_acc.trunc() as i64;
         if steps == 0 {

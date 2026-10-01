@@ -314,6 +314,16 @@ pub struct Preview {
 }
 
 
+/// A drop-down open over a row of a settings window: the entries, the one the keyboard is
+/// on, the first one shown and the one in force now.
+pub struct DropdownView<'a> {
+    pub row: usize,
+    pub items: Vec<&'a str>,
+    pub sel: usize,
+    pub top: usize,
+    pub current: Option<usize>,
+}
+
 /// Everything the interface draws in a frame.
 pub struct Frame<'a> {
     /// Physical pixels per logical one.
@@ -366,6 +376,8 @@ pub struct Frame<'a> {
     /// The keyboard chose the menu's line last: that line is shown lit (else only the one
     /// under the mouse is).
     pub menu_kbd: bool,
+    /// The drop-down open over a row of the settings window.
+    pub dropdown: Option<DropdownView<'a>>,
 }
 
 pub struct Ui {
@@ -408,13 +420,17 @@ pub struct Ui {
     /// finger's drag is turned into lines with it.
     pub menu_rows: usize,
     pub menu_row_h: f32,
+    /// The entries of the drop-down shown (their rects), the first of them, and how many fit.
+    pub dd_rects: Vec<[f32; 4]>,
+    pub dd_top: usize,
+    pub dd_rows: usize,
     /// Pictures shown in the interface (a tutorial page's), by file.
     images: hashbrown::HashMap<std::path::PathBuf, Option<(TextureId, u32, u32)>>,
 }
 
 impl Ui {
     pub fn new() -> Option<Ui> {
-        Some(Ui { text: TextCache::new()?, chat: ChatWidget::default(), menu_rects: Vec::new(), menu_arrows: Vec::new(), menu_scroll_thumb: None, menu_scroll_track: None, menu_ctl: Vec::new(), menu_side: Vec::new(), menu_pane: Vec::new(), menu_pane_start: 0, menu_pane_go: None, menu_time: Vec::new(), anim: Default::default(), anim_dt: 0.0, menu_overlay_range: 0..0, vr_cursor_overlay: None, vr_tooltip_overlay: None, menu_start: 0, menu_rows: 0, menu_row_h: 1.0, images: Default::default() })
+        Some(Ui { text: TextCache::new()?, chat: ChatWidget::default(), menu_rects: Vec::new(), menu_arrows: Vec::new(), menu_scroll_thumb: None, menu_scroll_track: None, menu_ctl: Vec::new(), dd_rects: Vec::new(), dd_top: 0, dd_rows: 8, menu_side: Vec::new(), menu_pane: Vec::new(), menu_pane_start: 0, menu_pane_go: None, menu_time: Vec::new(), anim: Default::default(), anim_dt: 0.0, menu_overlay_range: 0..0, vr_cursor_overlay: None, vr_tooltip_overlay: None, menu_start: 0, menu_rows: 0, menu_row_h: 1.0, images: Default::default() })
     }
 
     /// Draw the frame's interface: its overlays go after the HUD's in `scene.overlays`.
@@ -1089,6 +1105,7 @@ impl Ui {
         self.menu_time.clear();
         self.menu_scroll_thumb = None;
         self.menu_scroll_track = None;
+        self.dd_rects.clear();
         let overlay_start = scene.overlays.len();
         let Some((sel, items)) = f.menu else {
             self.menu_overlay_range = overlay_start..overlay_start;
@@ -1580,11 +1597,13 @@ impl Ui {
         // the rows
         let any_hovered = over([x + side_w, y + header_h, x + w, y + h]);
         let px = ((15.0 * s).min(row_h * 0.34)) as u32;
+        // (the light of the row above: the line between two rows is hidden when either is lit)
+        let mut prev_a = 0.0f32;
         for (k, &(id, label)) in items.iter().enumerate().skip(start).take(rows) {
             let ry = y + header_h + row_h * (k - start) as f32;
             let rect = [cx0, ry, cx1, ry + row_h - 4.0 * s];
             // (lit by the mouse over it; by the keyboard's choice only when the keyboard chose)
-            let lit = over(rect) || (k == sel && f.menu_kbd && !any_hovered);
+            let lit = f.dropdown.is_none() && (over(rect) || (k == sel && f.menu_kbd && !any_hovered));
             // the light of the row eases in and out
             let a = self.easeq((4, id, k), if lit { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
             let a_bar = self.easeq((10, id, k), if lit { 1.0 } else { 0.0 }, 1.0 / BAR_SECS);
@@ -1594,10 +1613,11 @@ impl Ui {
             if a_bar > 0.0 {
                 self.accent_bar(r, scene, rect, a_bar, false, s);
             }
-            if a < 0.5 && k + 1 < start + rows && k + 1 < items.len() {
-                let sy = (rect[3] + 2.0 * s).round();
+            if k > start && a.max(prev_a) < 0.5 {
+                let sy = (rect[1] - 2.0 * s).round();
                 scene.overlays.push((sep, [rect[0] + tin, sy, rect[2] - tin, sy + 1.0]));
             }
+            prev_a = a;
             let ink = mix(SOFT, WHITE, a);
             let cy = (rect[1] + rect[3]) * 0.5;
             let nx = rect[0] + tin;
@@ -1658,7 +1678,13 @@ impl Ui {
                 // opens another list
                 "o" => {
                     let cw = self.put_right(r, scene, "›", px + 6, mix(MUTED, WHITE, a), rx, cy);
-                    rx - cw
+                    if value.is_empty() {
+                        rx - cw
+                    } else {
+                        // (the value now, as the stepper showed it)
+                        let vw = self.put_right(r, scene, value, (14.0 * s) as u32, SOFT, rx - cw - 8.0 * s, cy);
+                        rx - cw - 8.0 * s - vw
+                    }
                 }
                 "i" => {
                     let cw = self.put_right(r, scene, value, (14.0 * s) as u32, SOFT, rx, cy);
@@ -1688,6 +1714,60 @@ impl Ui {
             }
             self.menu_rects.push(rect);
             self.menu_ctl.push(ctl);
+        }
+        // a drop-down over a row (the weather preset, the clouds): the entries under the
+        // row's value as a select's in a page - over it where there is no room under
+        if let Some(dd) = f.dropdown.as_ref().filter(|d| d.row >= start && d.row < start + rows && !d.items.is_empty()) {
+            let ry = y + header_h + row_h * (dd.row - start) as f32;
+            let row_b = ry + row_h - 4.0 * s;
+            let item_h = (36.0 * s).min(row_h);
+            let inner = 4.0 * s;
+            let below = y + h - pad - row_b - 4.0 * s;
+            let above = ry - (y + header_h) - 4.0 * s;
+            let want = dd.items.len().min(8);
+            let fits = |room: f32| (((room - 2.0 * inner) / item_h).floor().max(0.0) as usize).min(want);
+            let down = fits(below) >= want || fits(below) >= fits(above);
+            let n_vis = (if down { fits(below) } else { fits(above) }).max(1);
+            let ph = n_vis as f32 * item_h + 2.0 * inner;
+            let pw = (300.0 * s).min(cx1 - cx0);
+            let (px1, py0) = (cx1 - 6.0 * s, if down { row_b + 4.0 * s } else { ry - 4.0 * s - ph });
+            let px0 = px1 - pw;
+            let panel = [px0, py0, px1, py0 + ph];
+            let top = dd.top.min(dd.items.len() - n_vis.min(dd.items.len()));
+            self.dd_top = top;
+            self.dd_rows = n_vis;
+            let rad = (CARD_R * s).min(10.0 * s);
+            self.text.shadow(r, scene, panel, rad, 18.0 * s, 6.0 * s, 150);
+            self.text.rounded(r, scene, panel, rad, [38, 38, 38, 255]);
+            let more = dd.items.len() > n_vis;
+            let dpx = (14.0 * s) as u32;
+            let tin = TEXT_IN * s;
+            for i in 0..n_vis {
+                let idx = top + i;
+                let rect = [px0 + inner, py0 + inner + i as f32 * item_h, px1 - inner - if more { 8.0 * s } else { 0.0 }, py0 + inner + (i + 1) as f32 * item_h];
+                let cur = dd.current == Some(idx);
+                let hot = over(rect) || (idx == dd.sel && f.menu_kbd && !over(panel));
+                let a = self.easeq((15, "dropdown", idx), if hot { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
+                if cur {
+                    self.text.rounded(r, scene, rect, ROW_R * s, SELECTED);
+                }
+                if a > 0.0 {
+                    self.text.rounded(r, scene, rect, ROW_R * s, fade(LIT, a));
+                }
+                if cur {
+                    self.accent_bar(r, scene, rect, 1.0, false, s);
+                }
+                let text = clip_to(&self.text, dd.items[idx], dpx as f32, rect[2] - rect[0] - tin * 2.0);
+                self.put(r, scene, &text, dpx, if cur { WHITE } else { mix(SOFT, WHITE, a) }, rect[0] + tin, (rect[1] + rect[3]) * 0.5);
+                self.dd_rects.push(rect);
+            }
+            if more {
+                let track = [px1 - 7.0 * s, py0 + inner, px1 - 4.0 * s, py0 + ph - inner];
+                self.text.rounded(r, scene, track, 1.5 * s, [255, 255, 255, 22]);
+                let th = track[3] - track[1];
+                let n = dd.items.len() as f32;
+                self.text.rounded(r, scene, [track[0], track[1] + th * top as f32 / n, track[2], track[1] + th * (top + n_vis) as f32 / n], 1.5 * s, ACCENT);
+            }
         }
     }
 }

@@ -23,6 +23,8 @@ pub(crate) struct App {
     /// The object editor, while it is on (`crate::editor`).
     pub(crate) editor: Option<crate::editor::Editor>,
     pub(crate) vehicle_list: Vec<(String, String)>,
+    /// The drop-down open over a row of the settings window, if one is.
+    pub(crate) dropdown: Option<crate::game_lists::Dropdown>,
     /// (manufacturer, type) of each vehicle of `vehicle_list`, by its path.
     pub(crate) vehicle_meta: std::collections::HashMap<String, (String, String)>,
     pub(crate) world: Option<Arc<World>>,

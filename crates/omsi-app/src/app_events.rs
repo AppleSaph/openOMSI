@@ -1504,6 +1504,9 @@ impl ApplicationHandler for App {
                         t.time_scale = speed;
                     }
                     self.tick_weather(dt * speed as f32);
+                } else if self.weather_blend.is_some() {
+                    // (a preset picked in the paused menu: the change goes over in real time)
+                    self.tick_weather(dt);
                 }
                 let daylight = omsi_sim::Daylight::compute(&self.clock, self.envir.as_ref());
                 if self.lamps_on != Some(daylight.lamps_on) {
@@ -1860,6 +1863,13 @@ impl ApplicationHandler for App {
                             || ui.chat.hovered
                             || map_open
                             || self.navigator.as_ref().is_some_and(|n| n.over_panel(cx, cy));
+                        let dropdown = self.dropdown.as_ref().filter(|_| self.chooser.is_some()).map(|d| ui::DropdownView {
+                            row: d.row,
+                            items: d.items.iter().map(|x| x.0.as_str()).collect(),
+                            sel: d.sel,
+                            top: d.top,
+                            current: d.current,
+                        });
                         let chooser_list = self.admin_list.as_ref().unwrap_or(&self.vehicle_list);
                         let (chooser_items, chooser_sel): (Vec<(&str, &str)>, Option<usize>) = match self.chooser {
                             Some(sel) => {
@@ -1897,6 +1907,7 @@ impl ApplicationHandler for App {
                             menu_head,
                             menu_preview,
                             menu_tabs,
+                            dropdown,
                             menu_kbd: self.menu_kbd,
                             menu_top: self.menu_top,
                             // (not over the city map, which has the stops and their times: it
@@ -2532,6 +2543,17 @@ impl App {
                 if self.menu_scroll_drag {
                     self.menu_scroll_drag = false;
                     self.menu_top = self.menu_top.map(f32::round);
+                }
+                return;
+            }
+
+            // an open drop-down takes the click: an entry is chosen, anywhere else closes it
+            if self.dropdown.is_some() {
+                let inside = |r: &[f32; 4]| self.cursor.0 >= r[0] && self.cursor.0 <= r[2] && self.cursor.1 >= r[1] && self.cursor.1 <= r[3];
+                let hit = self.ui.as_ref().and_then(|u| u.dd_rects.iter().position(|r| inside(r)).map(|i| i + u.dd_top));
+                match hit {
+                    Some(i) => self.dropdown_pick(i),
+                    None => self.dropdown = None,
                 }
                 return;
             }

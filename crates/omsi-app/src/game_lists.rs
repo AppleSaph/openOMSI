@@ -434,9 +434,8 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
             // (the arrows and a click on a stepper only change values: no buttons)
             let step = matches!(mv, Move::Next);
             match verb {
-                "weather" => app.step_weather(),
-                "cloudkind" => step_clouds(app, if matches!(mv, Move::Dec) { -1 } else { 1 }),
-                "precipkind" => step_precip(app, if matches!(mv, Move::Dec) { -1 } else { 1 }),
+                // (the preset, the clouds and the precipitation are picked from a drop-down: `App::chooser_pick`)
+                "weather" | "cloudkind" | "precipkind" => {}
                 // the exact time: Enter starts typing it, and sets it when typed
                 "time_edit" if step => {
                     if app.menu_edit.is_some() {
@@ -683,30 +682,10 @@ fn cloud_index(kind: &str) -> Option<usize> {
     CLOUD_TYPES.iter().position(|(id, _)| id.eq_ignore_ascii_case(k) || (*id == "-1" && (k.is_empty() || k.starts_with("-1"))))
 }
 
-/// `i` moved by `dir` round a list of `n`; from a value not in the list, the first.
-fn round_step(i: Option<usize>, n: usize, dir: i32) -> usize {
-    match i {
-        Some(i) => (i as i64 + dir as i64).rem_euclid(n.max(1) as i64) as usize,
-        None => 0,
-    }
-}
-
-/// Change the cloud type (`dir` 1 or -1) of the weather set by hand.
-pub(crate) fn step_clouds(app: &mut App, dir: i32) {
+/// Set the kind of precipitation (an index of `PRECIP_KINDS`) of the weather set by hand.
+pub(crate) fn set_precip(app: &mut App, to: usize) {
+    let to = to.min(PRECIP_KINDS.len() - 1);
     app.edit_weather(|w| {
-        let to = round_step(cloud_index(&w.clouds.0), CLOUD_TYPES.len(), dir);
-        w.clouds.0 = CLOUD_TYPES[to].0.to_string();
-        if to == 0 {
-            w.clouds.1 = 0.0;
-        }
-    });
-}
-
-/// Change the kind of precipitation (`dir` 1 or -1) of the weather set by hand.
-pub(crate) fn step_precip(app: &mut App, dir: i32) {
-    app.edit_weather(|w| {
-        let now = (w.precip[0].max(0.0) as usize).min(PRECIP_KINDS.len() - 1);
-        let to = round_step(Some(now), PRECIP_KINDS.len(), dir);
         w.precip[0] = to as f32;
         w.snow = to == 2;
         // (rain or snow with no strength would be nothing: a moderate one)
@@ -1020,6 +999,97 @@ fn option_do(app: &mut App, verb: &str, arg: &str, mv: Move) -> bool {
 }
 
 /// The name of the weather in force (the file's name without its ending).
+/// The weather files (`Weather/*.owt`) of every content root, by name.
+fn weather_files() -> Vec<String> {
+    let mut files: Vec<String> = omsi_cfg::read_dir_merged("Weather")
+        .into_iter()
+        .filter(|p| p.extension().map(|e| e.eq_ignore_ascii_case("owt")).unwrap_or(false))
+        .filter_map(|p| p.file_name().map(|n| format!("Weather/{}", n.to_string_lossy())))
+        .collect();
+    files.sort_by(|a, b| bus_cmp(a.trim_start_matches("Weather/").trim_start_matches('#'), b.trim_start_matches("Weather/").trim_start_matches('#')));
+    files.dedup();
+    files
+}
+
+/// A drop-down over a row of a settings window (the weather preset, the clouds), as a
+/// select in a page: the entries drop down under the row's value.
+pub(crate) struct Dropdown {
+    /// The row of the window it belongs to.
+    pub row: usize,
+    /// (label, action) of its entries.
+    pub items: Vec<(String, String)>,
+    /// The entry the keyboard is on, the first one shown, and the one in force now.
+    pub sel: usize,
+    pub top: usize,
+    pub current: Option<usize>,
+}
+
+/// The drop-down of the row `row` whose action is `id`, if that row has one.
+pub(crate) fn dropdown_for(app: &App, row: usize, id: &str) -> Option<Dropdown> {
+    let tr = |t: &str| omsi_ui::tr(t).into_owned();
+    let mut current: Option<usize> = None;
+    let items: Vec<(String, String)> = match id {
+        "weather" => {
+            let now = weather_name(app);
+            weather_files()
+                .into_iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    let stem = f.rsplit('/').next().unwrap_or(&f).rsplit_once('.').map(|x| x.0).unwrap_or(&f).trim_start_matches('#').to_string();
+                    if stem.eq_ignore_ascii_case(&now) {
+                        current = Some(i);
+                    }
+                    (stem, format!("wx {f}"))
+                })
+                .collect()
+        }
+        "cloudkind" => {
+            current = app.weather.as_ref().and_then(|w| cloud_index(&w.clouds.0));
+            CLOUD_TYPES.iter().enumerate().map(|(i, (_, n))| (tr(*n), format!("cloud {i}"))).collect()
+        }
+        "precipkind" => {
+            current = app.weather.as_ref().map(|w| (w.precip.first().copied().unwrap_or(0.0).max(0.0) as usize).min(PRECIP_KINDS.len() - 1));
+            PRECIP_KINDS.iter().enumerate().map(|(i, n)| (tr(*n), format!("precip {i}"))).collect()
+        }
+        _ => return None,
+    };
+    if items.is_empty() {
+        return None;
+    }
+    let sel = current.unwrap_or(0);
+    Some(Dropdown { row, items, sel, top: 0, current })
+}
+
+/// Do an entry of a drop-down.
+pub(crate) fn dropdown_apply(app: &mut App, action: &str) {
+    let (verb, arg) = action.split_once(' ').unwrap_or((action, ""));
+    match verb {
+        "wx" => {
+            if app.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
+                app.service_msg = Some(("In a LAN session the host sets the weather".into(), 3.0));
+            } else {
+                app.change_weather(Some(arg.to_string()), true, 1.0);
+            }
+        }
+        "cloud" => {
+            if let Some(i) = arg.trim().parse::<usize>().ok().filter(|i| *i < CLOUD_TYPES.len()) {
+                app.edit_weather(|w| {
+                    w.clouds.0 = CLOUD_TYPES[i].0.to_string();
+                    if i == 0 {
+                        w.clouds.1 = 0.0;
+                    }
+                });
+            }
+        }
+        "precip" => {
+            if let Some(i) = arg.trim().parse::<usize>().ok().filter(|i| *i < PRECIP_KINDS.len()) {
+                set_precip(app, i);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn weather_name(app: &App) -> String {
     if app.weather.as_ref().is_some_and(|w| w.name == CUSTOM_WEATHER) {
         return CUSTOM_WEATHER.to_string();
@@ -1169,12 +1239,12 @@ fn world_pages(app: &App) -> Vec<Page> {
         if app.lan.is_none() {
             time.extend(slider_row(app, "speed", "Time speed", "How fast the world's clock runs", &|v| format!("x{v}")));
         }
-        weather.push((row("Preset", 'c', &weather_name(app), "A ready-made weather. It blends in over a few minutes; everything below adjusts it.", None), "weather".to_string()));
+        weather.push((row("Preset", 'o', &weather_name(app), "A ready-made weather. It blends in over a few minutes; everything below adjusts it.", None), "weather".to_string()));
         let cloud = app.weather.as_ref().and_then(|w| cloud_index(&w.clouds.0)).map(|i| CLOUD_TYPES[i].1.to_string()).or_else(|| app.weather.as_ref().map(|w| w.clouds.0.trim().to_string())).unwrap_or_default();
-        weather.push((row("Clouds", 'c', &cloud, "The kind of clouds in the sky.", None), "cloudkind".to_string()));
+        weather.push((row("Clouds", 'o', &cloud, "The kind of clouds in the sky.", None), "cloudkind".to_string()));
         weather.extend(slider_row(app, "visibility", "Visibility", "How far one can see; less is fog.", &|v| if v >= 1000.0 { format!("{:.1} km", v / 1000.0) } else { format!("{} m", v as i64) }));
         let kind = app.weather.as_ref().map(|w| (w.precip.first().copied().unwrap_or(0.0).max(0.0) as usize).min(PRECIP_KINDS.len() - 1)).unwrap_or(0);
-        weather.push((row("Precipitation", 'c', PRECIP_KINDS[kind], "Rain or snow.", None), "precipkind".to_string()));
+        weather.push((row("Precipitation", 'o', PRECIP_KINDS[kind], "Rain or snow.", None), "precipkind".to_string()));
         weather.extend(slider_row(app, "rain_amt", "Precipitation strength", "How hard it rains or snows.", &pct));
         weather.extend(slider_row(app, "wet", "Wet roads", "How wet the roads are now (they dry in the sun, wet in the rain).", &pct));
         climate.extend(slider_row(app, "temp", "Temperature", "The air temperature.", &|v| format!("{} °C", v as i64)));
