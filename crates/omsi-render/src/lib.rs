@@ -1312,6 +1312,9 @@ pub struct Renderer {
     /// Sort the blended draws by origin distance alone, as before the camera-enclosing
     /// objects were drawn last (only for before/after pictures, `OMSI_BLEND_AB`).
     pub blend_by_origin: bool,
+    /// Draw the models' `[isshadow]` shadow blobs (see [`RenderOptions::shadow_blobs`]).
+    /// Settable while the game runs, so the graphics list can switch it off at once.
+    pub shadow_blobs: bool,
     /// GPU time per pass (OMSI_GPU_TIMERS, when the device has timestamp queries): the
     /// mirrors and the window's picture apart, each timed on its own.
     gpu_timers: [Option<GpuTimers>; 2],
@@ -1381,6 +1384,11 @@ pub struct RenderOptions {
     /// Only the meshes the models mark `[shadow]` cast sun shadows, as in OMSI 2 (else every
     /// solid mesh does).
     pub omsi_shadow_casters: bool,
+    /// Draw the models' `[isshadow]` shadow meshes - OMSI's flat blob under a vehicle,
+    /// standing in for the sky light the body keeps off the road (see [`Instance::blob`]).
+    /// Off, the sun shadow map is all the shading under a vehicle, and the blob (which
+    /// OMSI draws whatever the depth) cannot be seen at all.
+    pub shadow_blobs: bool,
     /// The materials' reflection maps (`[matl_envmap]`: the shine of paint, chrome and
     /// glass). Off, nothing mirrors the sky photo - some players find it too strong.
     pub reflections: bool,
@@ -1404,6 +1412,7 @@ impl Default for RenderOptions {
             min_obj_size: 0.013,
             max_obj_dist: 0.0,
             omsi_shadow_casters: false,
+            shadow_blobs: true,
             reflections: true,
             no_enhanced: false,
         }
@@ -3835,6 +3844,7 @@ impl Renderer {
             shadow_sampler,
             shadow_layout,
             shadow_pipelines,
+            shadow_blobs: options.shadow_blobs,
             options,
             gpu_error,
             env_heading: Default::default(),
@@ -7762,6 +7772,10 @@ impl Renderer {
             let inst = &scene.instances[i];
             let m = &scene.meshes[inst.mesh];
             if m.ranges.is_empty() || !inst.visible || (inst.mirror_only && main_view) {
+                return None;
+            }
+            // OMSI's `[isshadow]` shadow blobs, switched off (see `RenderOptions::shadow_blobs`)
+            if inst.blob && !self.shadow_blobs {
                 return None;
             }
             let (c, r) = Self::bounding_sphere(scene, inst);
