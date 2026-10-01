@@ -395,6 +395,9 @@ pub(crate) struct ServerAdmin {
     pub next_weather: bool,
     /// An admin set the clock to this time of day (s).
     pub set_clock: Option<f64>,
+    /// An admin chose this weather (`Weather/….owt`, checked against the installed ones by
+    /// the host loop).
+    pub set_weather: Option<String>,
     /// The challenge each asking player was given (used once).
     challenges: std::collections::HashMap<u32, String>,
     /// When wrong answers came lately (the lock counts them, whoever sent them: a player
@@ -418,6 +421,12 @@ impl ServerAdmin {
         self.failures.retain(|t| t.elapsed() < LOCK_WINDOW);
         self.failures.len() >= LOCK_AFTER
     }
+}
+
+/// A weather file an admin may choose: a `Weather/….owt` path, nothing above it.
+fn weather_file_ok(file: &str) -> bool {
+    let f = file.replace('\\', "/").to_ascii_lowercase();
+    f.starts_with("weather/") && f.ends_with(".owt") && !f.contains("..") && f.matches('/').count() == 1
 }
 
 /// A command a player sent the dedicated server.
@@ -485,7 +494,12 @@ pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &
                         lan.clock_speed = s.clamp(1.0, 30.0);
                     }
                 }
-                "weather" => adm.next_weather = true,
+                // the menu offers "weather next" and "weather set <file>" for each installed
+                // weather; a server took every one of them for "next"
+                "weather" => match a.trim().split_once(' ').map(|(k, f)| (k, f.trim())) {
+                    Some(("set", file)) if weather_file_ok(file) => adm.set_weather = Some(file.replace('\\', "/")),
+                    _ => adm.next_weather = true,
+                },
                 "say" => {
                     let _ = lan.say(a);
                 }
@@ -558,5 +572,20 @@ pub(crate) fn guard_fall(app: &mut App, dt: f32) {
             app.safe_age = 0.0;
             app.safe_pose = Some((glam::DVec3::new(at.x, at.y, g), p.vehicle.heading));
         }
+    }
+}
+
+#[cfg(test)]
+mod weather_file_tests {
+    use super::weather_file_ok;
+
+    #[test]
+    fn only_a_weather_file() {
+        assert!(weather_file_ok("Weather/#CAVOK.owt"));
+        assert!(weather_file_ok("weather\\Bodennebel.OWT"));
+        assert!(!weather_file_ok("Weather/../server.cfg"));
+        assert!(!weather_file_ok("Weather/sub/x.owt"));
+        assert!(!weather_file_ok("maps/x.owt"));
+        assert!(!weather_file_ok("Weather/x.cfg"));
     }
 }
