@@ -9661,6 +9661,22 @@ fn text_alpha(materials: &[omsi_o3d::Material], slot: usize, overrides: &[Materi
 /// The decision must not depend on one creator's language or on a particular bus name:
 /// use the model metadata and the material's actual mesh volume, while keeping thin glass
 /// and explicit overlay/transparency materials on their authored paths.
+/// Words that name a pane of glass in a mesh or texture file, in the languages OMSI's
+/// add-ons are made in. The body-depth repair must not turn one of these opaque when the
+/// model.cfg declares it blended: a Czech bus's `okna.o3d` (windows) on the shared
+/// `body.png` was drawn as a black wall, where OMSI shows the tinted glass.
+const GLASS_WORDS: [&str; 20] = [
+    "window", "fenster", "glas", "scheibe", "windshield", "windscreen", // en, de ("glas" is also German: `Leuchtmelderglas.tga`)
+    "okn", "sklo", // cs, sk (okna, okno, sklo)
+    "szyb", "okien", // pl
+    "ablak", // hu
+    "steklo", // ru (transliterated)
+    "vitre", "fenetre", // fr
+    "vetro", "finestr", // it
+    "raam", "ruit", // nl
+    "ventan", "cristal", // es
+];
+
 fn is_vehicle_body_material(
     mesh_file: &str,
     texture: &str,
@@ -9673,22 +9689,8 @@ fn is_vehicle_body_material(
         return false;
     }
     let name = format!("{} {}", mesh_file, texture).to_ascii_lowercase();
-    let glass_or_overlay = [
-        "window",
-        "fenster",
-        "glas",
-        "scheibe",
-        "windshield",
-        "windscreen",
-        "regen",
-        "dirt",
-        "dreck",
-        "wiper",
-        "matrix",
-        "display",
-        "shadow",
-    ];
-    if glass_or_overlay.iter().any(|part| name.contains(part)) {
+    let overlay = ["regen", "dirt", "dreck", "wiper", "matrix", "display", "shadow"];
+    if GLASS_WORDS.iter().chain(overlay.iter()).any(|part| name.contains(part)) {
         return false;
     }
     true
@@ -11360,16 +11362,11 @@ impl World {
                     // Keep real glass/dirt/display layers blended, and keep explicit
                     // transmaps on the mask path; repair only the unambiguous body case.
                     let mesh_name = def.file.to_ascii_lowercase();
-                    let transparent_layer_name = [
-                        // ("glas" is also German glass: `Leuchtmelderglas.tga`, the warning
-                        // lamps' glass of the Thüringer Wald buses and the O 407, was a row of
-                        // white tiles)
-                        "window", "fenster", "glas", "scheibe", "windshield", "windscreen",
-                        "regen", "dreck", "dirt", "folie",
-                    ];
+                    let transparent_layer_name = ["regen", "dreck", "dirt", "folie"];
                     let material_name = format!("{} {}", mesh_name, m.texture).to_ascii_lowercase();
-                    let transparent_layer_hint = transparent_layer_name
+                    let transparent_layer_hint = GLASS_WORDS
                         .iter()
+                        .chain(transparent_layer_name.iter())
                         .any(|part| material_name.contains(part));
                     let named_body = ["body", "wagenkasten", "karos", "chassis", "kuzov"].iter().any(|part| mesh_name.contains(part));
                     let mesh_has_overlay = def.materials.iter().any(|o| o.no_z_write);
