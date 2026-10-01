@@ -60,11 +60,15 @@ pub struct PlayerInfo {
     pub destination: String,
     /// The timetable tour, `<line>/<tour>` (empty for none).
     pub tour: String,
-    /// World metres (x east, y north) and heading (degrees, clockwise from north).
+    /// World metres (x east, y north) and heading (degrees, clockwise from north): the bus
+    /// driven, or the player on foot, or the bus the player sits in.
     pub x: f64,
     pub y: f64,
     pub heading: f32,
     pub speed_kmh: f32,
+    /// Not driving: walking, or aboard another player's bus (`aboard`: that player's id).
+    pub on_foot: bool,
+    pub aboard: Option<u32>,
     /// Where that is on the earth, on a `[worldcoordinates]` map.
     pub lat_lon: Option<(f64, f64)>,
 }
@@ -77,7 +81,7 @@ impl PlayerInfo {
             None => ("null".into(), "null".into()),
         };
         format!(
-            "{{\"id\":{},\"name\":{},\"bus\":{},\"line\":{},\"destination\":{},\"tour\":{},\"x\":{},\"y\":{},\"heading\":{},\"speed_kmh\":{},\"lat\":{},\"lon\":{}}}",
+            "{{\"id\":{},\"name\":{},\"bus\":{},\"line\":{},\"destination\":{},\"tour\":{},\"x\":{},\"y\":{},\"heading\":{},\"speed_kmh\":{},\"on_foot\":{},\"aboard\":{},\"lat\":{},\"lon\":{}}}",
             self.id,
             json_str(&self.name),
             json_str(&self.bus),
@@ -88,6 +92,8 @@ impl PlayerInfo {
             num(self.y, 1),
             num(self.heading as f64, 1),
             num(self.speed_kmh as f64, 1),
+            self.on_foot,
+            self.aboard.map(|a| a.to_string()).unwrap_or_else(|| "null".into()),
             lat,
             lon
         )
@@ -706,7 +712,7 @@ mod tests {
         assert!(j.starts_with("[{\"id\":3,\"name\":\"Anna \\\"A\\\"\""), "{j}");
         assert!(j.contains("\"line\":\"37\""), "{j}");
         assert!(j.contains("\"x\":894179.7,"), "{j}");
-        assert!(j.contains("\"lat\":52.535412,\"lon\":13.199642}"), "{j}");
+        assert!(j.contains("\"on_foot\":false,\"aboard\":null,\"lat\":52.535412,\"lon\":13.199642}"), "{j}");
         assert!(j.contains("\"id\":4,") && j.contains("\"x\":null") && j.ends_with("\"lat\":null,\"lon\":null}]"), "{j}");
         assert_eq!(players_json(&[]), "[]");
     }
