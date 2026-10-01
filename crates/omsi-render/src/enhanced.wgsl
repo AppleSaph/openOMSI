@@ -233,13 +233,6 @@ fn lamp_light(p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, sf: Surface, thin: bool)
 // most of the sky, and the dashboard lies right under the windscreen.
 const CAB_AMBIENT: f32 = 1.15;
 
-/// Raindrop ripples on a puddle: cells per metre, and how far a ring grows and how wide it
-/// is as a fraction of a cell. 8 cells per metre with a ring of 0.4 is a crown about 10 cm
-/// across, a couple of drop diameters, which is what a drop makes.
-const RIPPLE_CELLS: f32 = 8.0;
-const RIPPLE_MAX: f32 = 0.4;
-const RIPPLE_WIDTH: f32 = 0.06;
-
 /// The mip level a pixel's footprint asks for, in levels of the texture whose size is
 /// `texels` (the usual `log2` of the larger derivative, held at 0 and up). An LED panel is
 /// sampled with this, held at `enh.led.y` (`Lighting::led_mips`): 0 point-samples it, which
@@ -276,7 +269,7 @@ fn perturb_normal(n: vec3<f32>, p: vec3<f32>, uv: vec2<f32>, tn: vec3<f32>) -> v
 
 // The enhanced pass's two targets: the picture, and the screen mask (r: 1 on the bus's own
 // screens, carried by the coverage of what is drawn over them; g: 1 on an LED panel's own
-// dots, see MASK_FORMAT).
+// dots, see MASK_FORMAT; b is the reflected-light weight of wet puddles).
 struct EnhancedOut {
     @location(0) color: vec4<f32>,
     @location(1) mask: vec4<f32>,
@@ -284,18 +277,24 @@ struct EnhancedOut {
 
 @fragment
 fn fs_enhanced(in: FsIn) -> EnhancedOut {
-    let c = shade_enhanced(in);
+    var puddle_weight = vec2<f32>(0.0);
+    let c = shade_enhanced(in, &puddle_weight, false, camera.cam_pos.xyz);
     let screen = material.flags.x > 0.5;
     // an LED panel's dots stay in the glow's source (`post.wgsl`), the other screens'
     // letters stay out of it
     let led = select(0.0, 1.0, material.emissive.w < -1.5);
     var out: EnhancedOut;
     out.color = c;
-    out.mask = vec4<f32>(select(0.0, 1.0, screen), led, 0.0, select(c.a, 1.0, screen));
+    // The sub-0.5 range of g carries water's occluded sky weight; LED detection uses
+    // step(0.5, g). This keeps scene hits independent of sky ambient occlusion.
+    // A vehicle's shadow is light blocked from the road, not a new dry surface. Its
+    // colour still blends normally, but it must preserve the road's reflection mask.
+    let coverage = select(select(c.a, 1.0, screen), 0.0, in.params2.w > 1.5);
+    out.mask = vec4<f32>(select(0.0, 1.0, screen), max(led, puddle_weight.y * 0.49), puddle_weight.x, coverage);
     return out;
 }
 
-fn shade_enhanced(in: FsIn) -> vec4<f32> {
+fn shade_enhanced(in: FsIn, puddle_weight: ptr<function, vec2<f32>>, capture: bool, eye: vec3<f32>) -> vec4<f32> {
     if (material.emissive.w > 1.5) {
         // a pane's film of water: drops, not the sliding texture (see `rain_glass`), each a
         // lens that mirrors the sky probe and shows it upside down through itself
@@ -362,7 +361,7 @@ fn shade_enhanced(in: FsIn) -> vec4<f32> {
     // Keep the filtered fractional coverage, but tighten its transition around the cutout
     // edge before MSAA turns it into sample coverage. The MSAA depth prepass skips these
     // draws so uncovered samples keep the depth and colour of the scene behind them.
-    if (ALPHA_TEST && mode > 0.5 && mode < 1.5) {
+    if ((ALPHA_TEST || capture) && mode > 0.5 && mode < 1.5) {
         if (ALPHA_TO_COVERAGE) {
             let aa = max(fwidth(tex.a) * 0.5, 1.0 / 255.0);
             if (tex.a < 0.5 - aa) {
@@ -379,7 +378,7 @@ fn shade_enhanced(in: FsIn) -> vec4<f32> {
     }
     alpha = alpha * in.params.x;
     let pre = enh.exposure.x;
-    let to_cam = camera.cam_pos.xyz - in.world;
+    let to_cam = eye - in.world;
     let dist = length(to_cam);
     let v = to_cam / max(dist, 1e-4);
     let h_cam = camera.cam_pos.z - enh.fog.z;
@@ -458,10 +457,12 @@ fn shade_enhanced(in: FsIn) -> vec4<f32> {
         n = normalize(n - (t * inv * slope.x + b * inv * slope.y) * 0.6);
     }
     var albedo = tex.rgb * material.color.rgb;
+    var detail_factor = 1.0;
     if (camera.flags.x > 0.5 && (terrain || in.params2.w > 0.5)) {
         let k = clamp(1.0 - (dist - 25.0) / 120.0, 0.0, 1.0);
         let pattern_xy = world_pattern_xy(in.world);
-        albedo = albedo * (1.0 + (detail_noise(pattern_xy) - 0.5) * 0.42 * k);
+        detail_factor = 1.0 + (detail_noise(pattern_xy) - 0.5) * 0.42 * k;
+        albedo = albedo * detail_factor;
     }
     // --- the material in physical terms
     var refl = 0.0;
@@ -533,6 +534,7 @@ fn shade_enhanced(in: FsIn) -> vec4<f32> {
     let dry_snow = 1.0 - clamp(enh.weather.y, 0.0, 1.0);
     let wet_road = camera.shadow.w * material.params2.z * outside * dry_snow;
     let wet_any = camera.shadow.w * outside * select(0.35, 0.0, glass) * dry_snow;
+    var puddle = 0.0;
     if (wet_road > 0.0) {
         albedo = albedo * mix(1.0, 0.5, wet_road);
         rough = mix(rough, 0.12, wet_road);
@@ -553,28 +555,22 @@ fn shade_enhanced(in: FsIn) -> vec4<f32> {
         // and a road that is wet through is one sheet of water (the old threshold never
         // passed three quarters of the carriageway, leaving dry islands in a downpour).
         let puddle_t = 1.0 - wet_road * 1.15;
-        let puddle = smoothstep(puddle_t - 0.06, puddle_t + 0.06, pn) * smoothstep(0.75, 0.95, n.z);
+        puddle = smoothstep(puddle_t - 0.06, puddle_t + 0.06, pn) * smoothstep(0.75, 0.95, n.z);
         if (puddle > 0.001) {
             // A drop is a few millimetres across and its ring dies away within a hand's
-            // breadth, so the grid is 12.5 cm wide (RIPPLE_CELLS per metre) and a ring grows
+            // breadth, so the shared ripple grid is 12.5 cm wide and a ring grows
             // to RIPPLE_MAX of a cell, about 5 cm: at 2 m cells with rings a metre and a half
             // across, every drop looked like a puddle of its own. Cells run at their own pace
             // and only some of them carry a drop at a time, so the surface reads as many small
             // impacts rather than one pulsing pattern.
-            let cell = floor(pattern_xy * RIPPLE_CELLS);
-            let seed = hash_cell(cell, PATTERN_PERIOD * RIPPLE_CELLS);
-            let phase = fract(camera.post.y * (0.8 + seed * 0.9) + seed * 13.0);
-            let local = fract(pattern_xy * RIPPLE_CELLS) - vec2<f32>(0.5);
-            let ring = abs(length(local) - phase * RIPPLE_MAX);
             let raining = enh.weather.z * (1.0 - enh.weather.y);
-            // the heavier the rain, the more of the cells are hit at once
-            let hit = step(1.0 - clamp(0.25 + 0.6 * raining, 0.0, 0.9), fract(seed * 31.7));
-            let ripple = (1.0 - smoothstep(0.0, RIPPLE_WIDTH, ring)) * (1.0 - phase) * raining * puddle * hit;
-            albedo = albedo * (1.0 - 0.55 * puddle);
-            rough = clamp(mix(rough, 0.03, puddle) - ripple * 0.12, 0.02, 1.0);
-            f0 = mix(f0, vec3<f32>(0.02, 0.02, 0.02), puddle);
-            let bump = normalize(local + vec2<f32>(1e-5, 0.0)) * ripple * 0.12;
-            n = normalize(mix(n, vec3<f32>(0.0, 0.0, 1.0), puddle) + vec3<f32>(bump, 0.0));
+            let ripple = puddle_ripple(pattern_xy, camera.post.y, raining, puddle);
+            // Standing water hides most of the fine asphalt grain. Keep dry and damp
+            // asphalt's detail, but let the reflected image read across a filled pool.
+            albedo = albedo * (1.0 - 0.68 * puddle) / mix(1.0, detail_factor, puddle * 0.8);
+            rough = clamp(mix(rough, 0.03, puddle) - ripple.z * 0.12, 0.02, 1.0);
+            f0 = mix(f0, vec3<f32>(enh.debug.y), puddle);
+            n = normalize(mix(n, geo_n, puddle) + vec3<f32>(ripple.xy, 0.0));
         }
     } else if (wet_any > 0.0 && !terrain) {
         rough = mix(rough, rough * 0.6, wet_any);
@@ -636,7 +632,7 @@ fn shade_enhanced(in: FsIn) -> vec4<f32> {
     }
     // --- sky and ground
     var ao = 1.0;
-    if (camera.clouds.w > 0.5) {
+    if (camera.clouds.w > 0.5 && !capture) {
         ao = ao_at(in.clip.xy, in.world);
     }
     // AO is generated from the opaque depth buffer.  A transparent bus pane therefore
@@ -846,5 +842,31 @@ fn shade_enhanced(in: FsIn) -> vec4<f32> {
         return vec4<f32>(c * aer.a + aer.rgb * pre, a2);
     }
     rgb = rgb + reflection * pre;
+    // The later screen-space pass replaces only this fraction of the sky reflection.
+    // A miss adds zero, so the existing sky, Fresnel and fog stay the fallback. Colour
+    // and coverage are resolved together, including terrain painting and glass over roads.
+    if (!glass && !reflective_env) {
+        let weight = clamp(puddle * env_brdf(f0, rough, nv).g
+            * select(wet_road, 1.0, pbr_reflects) * aer.a, 0.0, 1.0);
+        *puddle_weight = vec2<f32>(weight, weight * spec_occ);
+    }
     return vec4<f32>(rgb * aer.a + aer.rgb * pre, alpha);
+}
+
+// Shade the complete local vehicle from the reflected eye. Main-camera ambient
+// occlusion is not applicable to this view beneath the road.
+@fragment
+fn fs_puddle_vehicle(input: FsIn) -> @location(0) vec4<f32> {
+    // One reflected camera for the complete vehicle, including its transparent panes.
+    let plane = vehicle_reflection.plane;
+    let height = dot(plane.xyz, input.world) - plane.w;
+    if (height < 0.0 || material.emissive.w > 1.5) { discard; }
+    var unused = vec2<f32>(0.0);
+    let eye = camera.cam_pos.xyz - 2.0 * plane.xyz * (dot(plane.xyz, camera.cam_pos.xyz) - plane.w);
+    return shade_enhanced(input, &unused, true, eye);
+}
+
+@fragment
+fn fs_puddle_chassis() -> @location(0) vec4<f32> {
+    return vec4<f32>(sh_irradiance(vec3<f32>(0.0, 0.0, -1.0)) * enh.exposure.x * 0.025, 1.0);
 }

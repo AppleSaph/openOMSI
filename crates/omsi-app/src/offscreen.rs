@@ -1073,6 +1073,11 @@ pub(crate) fn run_offscreen(
                         .bounding_box
                         .map(|bb| (p.vehicle.position, p.vehicle.heading, bb))
                 });
+                let puddle_surface = lighting.inside.and_then(|(o, _, _)| world.puddle_surface(o));
+                lighting.puddle_ground = puddle_surface.map(|(h, _)| h);
+                lighting.puddle_normal = puddle_surface.map_or(glam::Vec3::Z, |(_, n)| n);
+                lighting.puddle_parts = player.as_ref().into_iter().flat_map(|p| &p.vehicle.trailers)
+                    .filter_map(|t| t.ty.def.bounding_box.map(|bb| (t.position, t.heading, bb))).take(3).collect();
                 lighting.detail = settings.detail_textures;
                 world.finish_texture_upgrades(&renderer, &mut scene);
                 let pixels = renderer.render_to_image(&mut scene, w, h, &cam, &lighting)?;
@@ -2273,6 +2278,11 @@ pub(crate) fn run_offscreen(
             .bounding_box
             .map(|bb| (p.vehicle.position, p.vehicle.heading, bb))
     });
+    let puddle_surface = lighting.inside.and_then(|(o, _, _)| world.puddle_surface(o));
+    lighting.puddle_ground = puddle_surface.map(|(h, _)| h);
+    lighting.puddle_normal = puddle_surface.map_or(glam::Vec3::Z, |(_, n)| n);
+    lighting.puddle_parts = player_ref.as_ref().or(player.as_ref()).into_iter().flat_map(|p| &p.vehicle.trailers)
+        .filter_map(|t| t.ty.def.bounding_box.map(|bb| (t.position, t.heading, bb))).take(3).collect();
     lighting.detail = settings.detail_textures;
     lighting.glass_wind = player_ref.as_ref().or(player.as_ref()).map(|p| crate::lights::vehicle_velocity(&p.vehicle)).unwrap_or_default();
     // OMSI_GLASS_WIND=<m/s>: the rain on the glass as the bus would meet it at that speed
