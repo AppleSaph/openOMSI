@@ -253,8 +253,22 @@ physically based renderer: high-range lighting with energy-conserving diffuse an
 reflections (roughness from `[matl_envmap]`), a computed sky (Rayleigh/Mie scattering,
 lit cumulus) that also lights the scene, contact-hardening sun shadows, aerial perspective
 and height fog, automatic exposure, a glow only real highlights produce and the PBR
-Neutral tone curve with FXAA (`post_aa`); no light shafts, vignette or grading. The
-vanilla look stays the default. The navigator (`crates/omsi-app/src/navigator.rs`) sits in a corner of the screen (lower
+Neutral tone curve with FXAA (`post_aa`); no light shafts, vignette or grading.
+
+The enhanced renderer also reflects buses, buildings and scenery in wet road puddles
+when `reflections=1`. Shallow rain ripples and depth-aware filtering soften the image.
+The player's nearby bus and up to three coupled sections use one local geometry capture,
+mirrored around the actual road face's height and slope. Its windows are shaded from the
+reflected eye, and an open legacy chassis gets a dark underside in that same depth-tested
+view. This avoids mixing offset screen-space and geometry projections on the bus.
+Other objects use the current frame's colour and a private hit-depth texture that includes
+reflective windows. Rays run at half resolution, capped at 518400 pixels and 48 steps;
+the local bus capture has the same pixel cap and a 60 m distance limit. Dry roads,
+snow-covered roads and mirror views skip these passes. Reflections beyond the local road
+plane use screen-space rays; objects unavailable to those rays keep the sky reflection.
+OpenGL uses the sky reflection too.
+
+The vanilla look stays the default. The navigator (`crates/omsi-app/src/navigator.rs`) sits in a corner of the screen (lower
 left by default), after the Route Advisor of Euro Truck Simulator 2: small, dark and half
 transparent, a tilted 3D map that turns with the bus and zooms out with speed - the roads
 of the lane network, the trip's route with arrows along it, coloured stretch by stretch by
@@ -383,6 +397,7 @@ Environment variables, all off unless set. The useful ones:
 | `OMSI_FLEET_IDLE=s`, `OMSI_FLEET_AHEAD=min` | how long an unused vehicle set is kept, how far ahead the fleet is read |
 | `OMSI_NO_BC=1`, `OMSI_NO_TEXCOMPRESS=1`, `OMSI_KEEP_ALLOCATOR=1` | textures as RGBA, no compression of loose pictures, no allocator restart |
 | `OMSI_NO_SHADOWS`, `OMSI_NO_CORONAS`, `OMSI_NO_ENVMAP`, `OMSI_NO_BUMP`, `OMSI_NO_CULL`, `OMSI_ENV_PHOTO=0` | leave one part of the picture out for an A/B |
+| `OMSI_NO_PUDDLE_REFLECTIONS=1` | leave wet-road scene reflections out for a screenshot or performance comparison |
 | `OMSI_DEBUG_ENHANCED`, `OMSI_DEBUG_SKY`, `OMSI_DEBUG_EXPOSURE`, `OMSI_METER=…` | the enhanced renderer's lamps, sky, adaptation and metering |
 | `OMSI_DEBUG_TRAFFIC`, `OMSI_DEBUG_PAX`, `OMSI_DEBUG_PHYSICS`, `OMSI_DEBUG_LAN`, `OMSI_DEBUG_IBIS`, `OMSI_DEBUG_VARS=a,b` | why a car, a passenger, a wheel, a peer, an IBIS or a script variable does what it does |
 | `OMSI_CHECK_ROADS=1`, `OMSI_ROAD_PHOTO=1`, `OMSI_CHECK_ENTRIES=1` | walk the lanes as a bus wheel, photograph the carriageway from above, check every entry point |

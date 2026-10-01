@@ -2342,6 +2342,20 @@ impl World {
         drive_probe(&self.terrains, &self.surfaces, x, y, top).below
     }
 
+    /// Local visible road plane under a vehicle. Exact faces include the same draw lift
+    /// as the road; raster heights do not. Choose the nearby deck, never a roof above it.
+    pub fn puddle_surface(&self, position: DVec3) -> Option<(f64, glam::Vec3)> {
+        let height = self.camera_ground(position.x, position.y, position.z + 0.35)?;
+        let key = tile_key(position.x, position.y);
+        let x = (position.x - key.0 as f64 * tile_size()) as f32;
+        let y = (position.y - key.1 as f64 * tile_size()) as f32;
+        let normal = self.surfaces.read().get(&key)
+            .and_then(|s| s.drive.surface_below(x, y, height as f32 + 0.002))
+            .filter(|(z, _)| (*z as f64 - height).abs() < 0.005)
+            .map(|(_, n)| n).unwrap_or(glam::Vec3::Z);
+        Some((height, normal))
+    }
+
     /// The ground painting of one tile: `texture/map/<tile>.map.<layer>.dds`, one 8-bit
     /// alpha mask per `[groundtex]` above the first that the editor's brush has touched on
     /// this tile. That is how OMSI puts asphalt under a car park, cobbles on a side street

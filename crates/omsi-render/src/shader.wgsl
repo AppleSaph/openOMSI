@@ -502,6 +502,49 @@ fn vs_main(in: VsIn) -> VsOut {
     return out;
 }
 
+struct VehicleBox { a: vec4<f32>, b: vec4<f32>, c: vec4<f32> };
+struct VehicleReflection { plane: vec4<f32>, parts: array<VehicleBox, 4> };
+@group(2) @binding(0) var<uniform> vehicle_reflection: VehicleReflection;
+
+@vertex
+fn vs_puddle_vehicle(in: VsIn) -> VsOut {
+    let e = draw_list[in.inst];
+    let m = model_matrix(e);
+    var out: VsOut;
+    out.world = (m * vec4<f32>(in.pos, 1.0)).xyz;
+    out.normal = safe_normal((m * vec4<f32>(in.normal, 0.0)).xyz);
+    let pr = inst_params[e * 2u];
+    out.uv = in.uv + pr.zw;
+    out.params = pr;
+    out.params2 = inst_params[e * 2u + 1u];
+    out.spec_sun = vec3<f32>(0.0);
+    out.spec_sky = vec3<f32>(0.0);
+    let plane = vehicle_reflection.plane;
+    let reflected = out.world - 2.0 * plane.xyz * (dot(plane.xyz, out.world) - plane.w);
+    out.clip = camera.view_proj * vec4<f32>(reflected, 1.0);
+    if (out.params.y < 0.5) { out.clip = vec4<f32>(0.0, 0.0, 2.0, 1.0); }
+    return out;
+}
+
+// Close an open legacy underbody with one depth-tested face in the same reflected
+// view. Wheels and authored panels occlude it normally; no screen-space bands.
+@vertex
+fn vs_puddle_chassis(@builtin(vertex_index) i: u32, @builtin(instance_index) part: u32) -> @builtin(position) vec4<f32> {
+    let corners = array<vec2<f32>, 6>(vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));
+    let box = vehicle_reflection.parts[part];
+    let local = corners[i] * max(box.b.yz - vec2<f32>(0.12, 0.18), vec2<f32>(0.0)) + box.c.xy;
+    let sh = box.a.w;
+    let ch = box.b.x;
+    let xy = box.a.xy + vec2<f32>(local.x * ch + local.y * sh, -local.x * sh + local.y * ch);
+    let plane = vehicle_reflection.plane;
+    let road_z = (plane.w - dot(plane.xy, xy)) / plane.z;
+    let z = max(road_z + 0.18, box.a.z + box.c.z - box.b.w + 0.04);
+    let world = vec3<f32>(xy, z);
+    let reflected = world - 2.0 * plane.xyz * (dot(plane.xyz, world) - plane.w);
+    return camera.view_proj * vec4<f32>(reflected, 1.0);
+}
+
 // Shadow map passes: depth from the sun, alpha-tested materials cut out by their texture.
 // A surface that casts - a spline standing clear of the ground, a bridge deck - casts from
 // half a metre further away from the sun: what lies right under it (the embankment object
@@ -579,6 +622,21 @@ fn vs_shadow_far(in: VsIn) -> VsOut {
 
 @fragment
 fn fs_shadow(in: FsIn) {
+}
+
+// Reflection rays need the window surface as well as the opaque interior behind it.
+// This writes a private hit-depth texture after colour compositing; ordinary depth and
+// AO still leave glass transparent. Reject absent/fully faded layers and texture holes.
+@fragment
+fn fs_puddle_glass_depth(in: FsIn) {
+    var a = diffuse_border(textureSample(t_diffuse, s_diffuse, tex_address(in.uv)), in.uv).a;
+    if (material.params.z > 0.5) {
+        let tm = sample_transmap(tex_address(in.uv - in.params.zw));
+        a = select(1.0, tm.a, material.params.w > 0.5);
+    }
+    if (a * material.color.a * in.params.x < 0.002) {
+        discard;
+    }
 }
 
 @fragment

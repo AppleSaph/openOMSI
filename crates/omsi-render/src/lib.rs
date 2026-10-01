@@ -2,6 +2,7 @@
 
 pub mod atmosphere;
 pub mod clouds;
+mod puddles;
 
 use anyhow::{anyhow, Context, Result};
 use glam::{DVec3, Mat4, Vec3, Vec4};
@@ -114,6 +115,8 @@ struct HdrTargets {
     /// Tone mapping with the adapted exposure in `adapt[k]`.
     tonemap_bg: [wgpu::BindGroup; 2],
     fxaa_bg: wgpu::BindGroup,
+    /// Allocated only when wet roads need scene reflections in the main view.
+    puddles: Option<puddles::Targets>,
 }
 
 /// The enhanced path's reflection probe: a cube map of the sky around the camera with a
@@ -527,6 +530,14 @@ pub struct Lighting {
     /// The player's vehicle (origin, heading in degrees, `[boundingbox]` w l h cx cy cz):
     /// no rain sheen or snow cover is shaded inside it.
     pub inside: Option<(DVec3, f64, [f32; 6])>,
+    /// Actual road height beneath the player's vehicle; independent of suspension motion.
+    /// The local puddle capture is skipped when no road height is known.
+    pub puddle_ground: Option<f64>,
+    /// Upward normal of that actual road face (including road grade and camber).
+    pub puddle_normal: Vec3,
+    /// Coupled parts of the player's vehicle (same layout as `inside`). Their own
+    /// origins keep shared AI meshes out of the local puddle capture.
+    pub puddle_parts: Vec<(DVec3, f64, [f32; 6])>,
     /// Procedural (fractal) detail texturing of the ground and roads up close - the
     /// `detail_textures` setting; independent of `enhanced`.
     pub detail: bool,
@@ -591,6 +602,9 @@ impl Default for Lighting {
             enhanced: false,
             classic: false,
             inside: None,
+            puddle_ground: None,
+            puddle_normal: Vec3::Z,
+            puddle_parts: Vec::new(),
             detail: true,
             overcast: 0.0,
             rain: 0.0,
@@ -1212,6 +1226,7 @@ pub struct Renderer {
     pub options: RenderOptions,
     /// Enhanced path: the HDR targets per size, the post pipelines and their resources.
     hdr_targets: HashMap<(u32, u32), HdrTargets>,
+    puddles: Option<puddles::Pipelines>,
     post: PostPipelines,
     post_layout: wgpu::BindGroupLayout,
     post_buf: wgpu::Buffer,
@@ -1435,9 +1450,10 @@ pub const LAMP_CODE_STRIDE: u32 = 64;
 /// The enhanced pass's second target: r is 1 where the bus's own screens are
 /// (`MaterialExtra::screen`), 0 elsewhere - the glow takes no light from them and FXAA
 /// passes them through; g is 1 on an LED panel's own dots (`MaterialExtra::led`), which the
-/// glow's source keeps and multiplies up (see `post.wgsl`). (Two channels, not one: an
-/// R8Unorm target drops what a shader writes into its g.)
-const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
+/// glow's source keeps and multiplies up (see `post.wgsl`). b carries the puddle's
+/// reflected-light weight; a is blend coverage. Sharing this attachment avoids another
+/// geometry pass or a full normal/material buffer just for water.
+const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// The colour targets of a pipeline drawing into `format`: in the enhanced pass (the only
@@ -3760,6 +3776,10 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let gpu_timers = [GpuTimers::new(&device), GpuTimers::new(&device)];
+        // GLES cannot reliably read the depth buffer (the same limitation as SSAO).
+        let puddles = (!gl && !leave_out_enhanced).then(|| {
+            puddles::Pipelines::new(&device, &shader, &camera_layout, &material_layout)
+        });
         Renderer {
             _device_poller: DevicePoller::start(&device),
             upscale_pipeline,
@@ -3790,6 +3810,7 @@ impl Renderer {
             lm_uniform,
             lm_place: std::cell::Cell::new((0.0, 0.0, 0.0)),
             hdr_targets: HashMap::new(),
+            puddles,
             post,
             post_layout,
             post_buf,
@@ -5779,7 +5800,8 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+                | if self.puddles.is_some() { wgpu::TextureUsages::COPY_SRC } else { wgpu::TextureUsages::empty() },
             view_formats: &[],
         });
         // the AO itself at half size: four times fewer pixels, and the blur hides the rest
@@ -6017,6 +6039,7 @@ impl Renderer {
                 meter_bg,
                 tonemap_bg,
                 fxaa_bg,
+                puddles: None,
             },
         );
         true
@@ -6208,7 +6231,9 @@ impl Renderer {
             sun_disc: st.sun_disc.extend(dt).to_array(),
             debug: [
                 debug_view(),
-                0.0,
+                omsi_cfg::env::var("OMSI_PUDDLE_F0")
+                    .ok().and_then(|v| v.parse::<f32>().ok())
+                    .filter(|v| v.is_finite()).unwrap_or(0.08).clamp(0.02, 0.2),
                 omsi_cfg::env::var("OMSI_ENV_PHOTO")
                     .ok()
                     .and_then(|v| v.parse().ok())
@@ -7585,6 +7610,12 @@ impl Renderer {
         let probe_redraw = enhanced
             && (with_overlays || self.sky_state.is_none())
             && self.prepare_enhanced(lighting, cam_rel, ro, dt);
+        let puddles_wanted = enhanced
+            && with_overlays
+            && self.options.reflections
+            && lighting.wetness * (1.0 - lighting.snow.clamp(0.0, 1.0)) > 0.05
+            && debug_view() == 0.0
+            && omsi_cfg::env::var_os("OMSI_NO_PUDDLE_REFLECTIONS").is_none();
         // --- what every pass draws, as batches over one draw list (see `Batch`): the shadow
         // casters of each cascade, the depth prepass and the main pass. The list is built
         // and uploaded before any pass is encoded.
@@ -8839,6 +8870,14 @@ impl Renderer {
                 }
             }
         }
+        // Weather alone is insufficient: leave the allocation and reflection passes out when
+        // the visible batches contain no moisture-tagged surface (a showroom, bare terrain).
+        let puddles_on = puddles_wanted
+            && main_batches.iter().any(|b| scene.materials[b.material as usize].uniform.params2[2] > 0.0)
+            && self.prepare_puddle_reflections(width, height, camera, aspect, projection, &cu, lighting);
+        if puddles_on {
+            self.encode_puddle_reflections(&mut encoder, width, height, scene, &main_batches, &list, lighting, camera, tset.as_ref(), &mut timed);
+        }
         if enhanced {
             // --- the post passes: glow, metering and adaptation, tone curve, FXAA
             let secs = |tau: f32| {
@@ -8876,6 +8915,7 @@ impl Renderer {
             // (a mirror's small picture goes without FXAA)
             let fxaa = with_overlays && self.options.fxaa && omsi_cfg::env::var_os("OMSI_NO_FXAA").is_none();
             if let Some(h) = self.hdr_targets.get(&(width, height)) {
+                let puddles = h.puddles.as_ref().filter(|_| puddles_on);
                 let levels = h.down.len();
                 for i in 0..levels {
                     post_pass(
@@ -8887,7 +8927,7 @@ impl Renderer {
                         } else {
                             &self.post.down
                         },
-                        &h.down_bg[i],
+                        if i == 0 { puddles.map(|p| &p.down_bg).unwrap_or(&h.down_bg[i]) } else { &h.down_bg[i] },
                     );
                 }
                 // the exposure: meter the smallest level, move the adapted value towards it
@@ -8927,7 +8967,7 @@ impl Renderer {
                     post_pass(&mut encoder, &h.up[i], timer, &self.post.up, &h.up_bg[i]);
                 }
                 let final_view = if fxaa { &h.ldr } else { scene_view };
-                let tonemap_bg = &h.tonemap_bg[self.adapt_front];
+                let tonemap_bg = &puddles.map(|p| &p.tonemap_bg).unwrap_or(&h.tonemap_bg)[self.adapt_front];
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("tone map"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -9617,6 +9657,7 @@ fn scene_shader_source(gl: bool) -> String {
     let src = [
         include_str!("shader.wgsl"),
         include_str!("enhanced_common.wgsl"),
+        include_str!("puddle_common.wgsl"),
         include_str!("enhanced.wgsl"),
     ]
     .join("\n");
@@ -11330,6 +11371,7 @@ mod tests {
             ("corona", corona_shader_source()),
             ("post", include_str!("post.wgsl").to_string()),
             ("ssao", include_str!("ssao.wgsl").to_string()),
+            ("puddles", puddles::shader_source()),
             ("upscale", include_str!("upscale.wgsl").to_string()),
             ("mip", include_str!("mip.wgsl").to_string()),
             ("xr_ui", include_str!("xr_ui.wgsl").to_string()),
@@ -11337,6 +11379,8 @@ mod tests {
         let sizes: &[(&str, usize)] = &[
             ("Enhanced", std::mem::size_of::<EnhancedUniform>()),
             ("PostParams", std::mem::size_of::<PostUniform>()),
+            ("PuddleParams", std::mem::size_of::<puddles::Uniform>()),
+            ("VehicleReflection", std::mem::size_of::<puddles::VehicleUniform>()),
             ("PointLight", std::mem::size_of::<GpuPointLight>()),
             ("Camera", std::mem::size_of::<CameraUniform>()),
             ("MaterialParams", std::mem::size_of::<MaterialUniform>()),
