@@ -2118,7 +2118,6 @@ impl ApplicationHandler for App {
                                 Some((*cam, s.config.width as f32 / s.config.height.max(1) as f32))
                             };
                             self.mirror_budget = (self.mirror_budget + raw_dt.min(0.1) * rate).min(2.5);
-                            let mut drawn = 0;
                             // (in the cab, and from outside too while the bus is near: its
                             // mirrors are seen from the pavement and stood frozen)
                             let near = self.player.as_ref().zip(self.camera.as_ref()).is_some_and(|(p, c)| (p.vehicle.position - c.position).length() < 12.0);
