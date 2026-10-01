@@ -2071,11 +2071,7 @@ impl App {
         match code {
             // P changes only the simulation state, even while a menu is open.
             KeyCode::KeyP if !modified => self.toggle_pause(),
-            // (from the full list back to the short one first)
-            KeyCode::Escape if self.menu_more => {
-                self.menu_more = false;
-                self.game_menu = Some(0);
-            }
+            KeyCode::Escape => self.close_game_menu(),
             KeyCode::ArrowUp | KeyCode::KeyW => self.game_menu = Some(self.menu_step(sel, n, false)),
             KeyCode::ArrowDown | KeyCode::KeyS => self.game_menu = Some(self.menu_step(sel, n, true)),
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => self.menu_choose(event_loop, sel),
