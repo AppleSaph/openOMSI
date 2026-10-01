@@ -10,34 +10,26 @@ use anyhow::{anyhow, Context, Result};
 use omsi_content::font::{Font, FontAtlas, FontChar, TextAlign};
 use omsi_sim::VehicleInstance;
 use omsi_texture::Image;
-use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-const PAPER_X: u32 = 100;
-const COLUMN_GAP: u32 = 32;
-const PAPER_TOP: u32 = 88;
-const ROWS_TOP_GAP: u32 = 32;
-// Schedule.bmp's lower 290 pixels are the grey area outside the sheet.
-const PAPER_HEIGHT: u32 = 734;
-const PAPER_BOTTOM_MARGIN: u32 = 24;
-const FONT_HEIGHT: u32 = 23;
+// Omsi.exe (0x7e72a0) writes the paper as one text with DrawTextW into the rectangle from
+// (60, 90) to the bitmap's right edge, in its typewriter font (Courier New) bold at 16 pt.
+const PAPER_X: u32 = 60;
+const PAPER_TOP: u32 = 90;
+/// 16 pt at 96 DPI: the font's em in pixels (`-MulDiv(16, 96, 72)`).
+const FONT_EM: f32 = 21.0;
+/// A label is cut, or filled with dots, to this many characters.
+const LABEL_CHARS: usize = 25;
+/// Rows of the first column; the next 24 make the second, the rest are left out.
+const ROWS_PER_COLUMN: usize = 24;
 const TEXT_COLOR: [u8; 3] = [17, 15, 14];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PaperRow {
     name: String,
     time: String,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PaperLayout {
-    columns: usize,
-    rows_per_column: usize,
-    column_width: u32,
-    scale: f32,
-    line_height: u32,
 }
 
 /// Update `file_schedule` to a cached drawing of the current trip. The renderer already
@@ -49,8 +41,9 @@ pub(crate) fn update_vehicle(
 ) -> Result<()> {
     let (arr, dep) = tt_labels();
     let (title, rows) = paper_content(&duty.line, &duty.tour, &duty.trips, duty.trip_index, (arr, dep));
-    let signature = content_signature(&title, &rows);
-    let path = cache_dir()?.join(format!("schedule-v5-{signature:016x}.png"));
+    let lines = paper_lines(&title, &rows);
+    let signature = content_signature(&lines);
+    let path = cache_dir()?.join(format!("schedule-v6-{signature:016x}.png"));
     let filename = path.to_string_lossy().into_owned();
 
     if vehicle.str_var("file_schedule") == filename {
@@ -58,14 +51,14 @@ pub(crate) fn update_vehicle(
     }
 
     if !path.is_file() {
-        let Some(font) = schedule_font(fonts, &title, &rows) else {
+        let Some(font) = schedule_font(fonts, &lines) else {
             set_filename(vehicle, "");
             return Err(anyhow!(
                 "no OMSI bitmap font is available for the driver's timetable"
             ));
         };
         let mut image = paper_base();
-        draw_schedule(&mut image, &font, &title, &rows);
+        draw_schedule(&mut image, &font, &lines);
         save_png(&image, &path)?;
     }
     set_filename(vehicle, &filename);
@@ -93,10 +86,9 @@ fn set_filename(vehicle: &mut VehicleInstance, value: &str) {
 
 fn schedule_font(
     fonts: &mut omsi_sim::texttex::FontLibrary,
-    title: &str,
-    rows: &[PaperRow],
+    lines: &[String],
 ) -> Option<std::sync::Arc<FontAtlas>> {
-    typewriter_font(title, rows)
+    typewriter_font(lines)
         .map(std::sync::Arc::new)
         .or_else(|| {
             ["19_HHAschedule_font", "DIN Narrow", "DIN_Narrow", "DIN"]
@@ -107,7 +99,7 @@ fn schedule_font(
 
 /// OMSI prints the schedule in a bold typewriter face, rather than a bus display's
 /// proportional bitmap font. Rasterize an installed equivalent into fixed-width cells.
-fn typewriter_font(title: &str, rows: &[PaperRow]) -> Option<FontAtlas> {
+fn typewriter_font(lines: &[String]) -> Option<FontAtlas> {
     static FONT: OnceLock<Option<FontVec>> = OnceLock::new();
     let font = FONT
         .get_or_init(|| {
@@ -131,19 +123,22 @@ fn typewriter_font(title: &str, rows: &[PaperRow]) -> Option<FontAtlas> {
                 .find_map(|path| FontVec::try_from_vec(std::fs::read(path).ok()?).ok())
         })
         .as_ref()?;
-    let scaled = font.as_scaled(PxScale::from(FONT_HEIGHT as f32));
-    let cell_width = scaled.h_advance(scaled.glyph_id('M')).ceil().max(1.0) as u32;
+    // GDI sizes a font by its em; ab_glyph by ascent - descent
+    let units = font.units_per_em().unwrap_or(2048.0);
+    let px = PxScale::from(FONT_EM * font.height_unscaled() / units);
+    let scaled = font.as_scaled(px);
+    // a line is the font's height (Courier New: 24 pixels at 16 pt), the baseline at its ascent
+    let line_height = (scaled.ascent() - scaled.descent()).round().max(1.0) as u32;
+    let cell_width = scaled.h_advance(scaled.glyph_id('M')).round().max(1.0) as u32;
     let mut characters: Vec<char> = (32u8..=126).map(char::from).collect();
-    characters.extend(title.chars());
-    for row in rows {
-        characters.extend(row.name.chars());
-        characters.extend(row.time.chars());
+    for line in lines {
+        characters.extend(line.chars());
     }
     characters.sort_unstable();
     characters.dedup();
     characters.retain(|&ch| scaled.glyph_id(ch).0 != 0);
     let width = cell_width * characters.len() as u32;
-    let mut alpha = vec![0; (width * FONT_HEIGHT * 4) as usize];
+    let mut alpha = vec![0; (width * line_height * 4) as usize];
     let mut chars = Vec::with_capacity(characters.len());
     for (index, ch) in characters.into_iter().enumerate() {
         let x0 = index as u32 * cell_width;
@@ -153,16 +148,15 @@ fn typewriter_font(title: &str, rows: &[PaperRow]) -> Option<FontAtlas> {
             x1: (x0 + cell_width) as i32,
             y: 0,
         });
-        let glyph = scaled.glyph_id(ch).with_scale_and_position(
-            PxScale::from(FONT_HEIGHT as f32),
-            ab_glyph::point(0.0, scaled.ascent()),
-        );
+        let glyph = scaled
+            .glyph_id(ch)
+            .with_scale_and_position(px, ab_glyph::point(0.0, scaled.ascent().round()));
         if let Some(outline) = font.outline_glyph(glyph) {
             let bounds = outline.px_bounds();
             outline.draw(|px, py, coverage| {
                 let x = px as i32 + bounds.min.x as i32;
                 let y = py as i32 + bounds.min.y as i32;
-                if x >= 0 && x < cell_width as i32 && y >= 0 && y < FONT_HEIGHT as i32 {
+                if x >= 0 && x < cell_width as i32 && y >= 0 && y < line_height as i32 {
                     let offset = ((y as u32 * width + x0 + x as u32) * 4) as usize;
                     let a = (coverage * 255.0).round() as u8;
                     alpha[offset..offset + 4].fill(a);
@@ -173,13 +167,13 @@ fn typewriter_font(title: &str, rows: &[PaperRow]) -> Option<FontAtlas> {
     Some(FontAtlas::new(
         Font {
             name: "openOMSI timetable".into(),
-            height: FONT_HEIGHT as i32,
+            height: line_height as i32,
             gap: 0,
             chars,
             ..Default::default()
         },
         width,
-        FONT_HEIGHT,
+        line_height,
         vec![0; alpha.len()],
         alpha,
     ))
@@ -257,13 +251,33 @@ fn format_time(seconds: f64) -> String {
     format!("{:02}:{:02}", minute / 60, minute % 60)
 }
 
-fn content_signature(title: &str, rows: &[PaperRow]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    title.hash(&mut hasher);
-    for row in rows {
-        row.name.hash(&mut hasher);
-        row.time.hash(&mut hasher);
+/// The text Omsi.exe draws: the title, a rule of 67 '=', then the rows - each the label
+/// cut or filled with dots to 25 characters, a blank and the time; rows 25 to 48 stand
+/// beside the first 24, five blanks apart.
+fn paper_lines(title: &str, rows: &[PaperRow]) -> Vec<String> {
+    let cell = |row: &PaperRow| {
+        let mut label: String = row.name.chars().take(LABEL_CHARS).collect();
+        let n = label.chars().count();
+        label.extend(std::iter::repeat_n('.', LABEL_CHARS - n));
+        format!("{label} {}", row.time)
+    };
+    let (a, b) = rows.split_at(rows.len().min(ROWS_PER_COLUMN));
+    let b = &b[..b.len().min(ROWS_PER_COLUMN)];
+    let mut lines = vec![title.to_string(), "=".repeat(67)];
+    for (i, row) in a.iter().enumerate() {
+        let mut line = cell(row);
+        if let Some(other) = b.get(i) {
+            line.push_str("     ");
+            line.push_str(&cell(other));
+        }
+        lines.push(line);
     }
+    lines
+}
+
+fn content_signature(lines: &[String]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    lines.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -284,141 +298,17 @@ fn paper_base() -> Image {
         })
 }
 
-fn draw_schedule(image: &mut Image, font: &FontAtlas, title: &str, rows: &[PaperRow]) {
-    let native_height = font.font.height.max(1) as u32;
-    let layout = paper_layout(image.width, image.height, native_height, rows.len());
-    let title = fit_text(
-        font,
-        title,
-        layout.scale,
-        image.width.saturating_sub(2 * PAPER_X),
-    );
-    draw_text(image, font, &title, PAPER_X, PAPER_TOP, layout.scale);
-
-    let equal_width = scaled_text_width(font, "=", layout.scale).max(1);
-    let count = (image.width.saturating_sub(2 * PAPER_X) / equal_width).min(120) as usize;
-    draw_text(
-        image,
-        font,
-        &"=".repeat(count),
-        PAPER_X,
-        PAPER_TOP + scaled_height(native_height, layout.scale) + 4,
-        layout.scale,
-    );
-
-    for (index, row) in rows.iter().enumerate() {
-        let (column_x, y) = row_position(index, native_height, &layout);
-        if y + layout.line_height > paper_height(image.height) {
-            continue;
-        }
-        let time_width = scaled_text_width(font, &row.time, layout.scale);
-        let time_x = column_x + layout.column_width.saturating_sub(time_width);
-        let name_limit = time_x.saturating_sub(column_x + scaled_size(12, layout.scale));
-        let name = fit_text(font, &row.name, layout.scale, name_limit);
-        let name_width = scaled_text_width(font, &name, layout.scale);
-        let dot_width = scaled_text_width(font, ".", layout.scale).max(1);
-        let available =
-            time_x.saturating_sub(column_x + name_width + scaled_size(12, layout.scale));
-        let dots = (available / dot_width).min(96) as usize;
-        draw_text(image, font, &name, column_x, y, layout.scale);
-        draw_text(
-            image,
-            font,
-            &".".repeat(dots),
-            column_x + name_width + scaled_size(9, layout.scale),
-            y,
-            layout.scale,
-        );
-        draw_text(image, font, &row.time, time_x, y, layout.scale);
+/// Draw the lines from (60, 90) down, one font height apart, as DrawTextW does; what
+/// runs off the bitmap is cut off.
+fn draw_schedule(image: &mut Image, font: &FontAtlas, lines: &[String]) {
+    let line_height = font.font.height.max(1) as u32;
+    for (i, line) in lines.iter().enumerate() {
+        draw_text(image, font, line, PAPER_X, PAPER_TOP + i as u32 * line_height);
     }
 }
 
-fn paper_layout(
-    image_width: u32,
-    image_height: u32,
-    line_height: u32,
-    row_count: usize,
-) -> PaperLayout {
-    let single_column_rows = full_size_rows(image_height, line_height);
-    let columns = if row_count > single_column_rows { 2 } else { 1 };
-    let rows_per_column = if columns == 2 {
-        single_column_rows.max(row_count.div_ceil(2))
-    } else {
-        row_count
-    };
-    let column_width = image_width.saturating_sub(2 * PAPER_X + COLUMN_GAP) / 2;
-    let scale = fit_scale(image_height, line_height, rows_per_column);
-    PaperLayout {
-        columns,
-        rows_per_column,
-        column_width,
-        scale,
-        line_height: scaled_height(line_height, scale),
-    }
-}
-
-fn row_position(index: usize, native_height: u32, layout: &PaperLayout) -> (u32, u32) {
-    let column = usize::from(layout.columns == 2 && index >= layout.rows_per_column);
-    let row = index.saturating_sub(column * layout.rows_per_column);
-    let x = PAPER_X + column as u32 * (layout.column_width + COLUMN_GAP);
-    let y = PAPER_TOP + native_height + ROWS_TOP_GAP + row as u32 * layout.line_height;
-    (x, y)
-}
-
-fn full_size_rows(image_height: u32, line_height: u32) -> usize {
-    let rows_top = PAPER_TOP + line_height + ROWS_TOP_GAP;
-    let available = paper_height(image_height).saturating_sub(rows_top + PAPER_BOTTOM_MARGIN);
-    (available / line_height.max(1)) as usize
-}
-
-fn fit_scale(image_height: u32, line_height: u32, row_count: usize) -> f32 {
-    if row_count == 0 {
-        return 1.0;
-    }
-    let rows_top = PAPER_TOP + line_height + ROWS_TOP_GAP;
-    let available = paper_height(image_height).saturating_sub(rows_top + PAPER_BOTTOM_MARGIN);
-    ((available as f32 / (row_count as f32 * line_height as f32)).min(1.0)).max(0.01)
-}
-
-fn paper_height(image_height: u32) -> u32 {
-    image_height.saturating_mul(PAPER_HEIGHT) / 1024
-}
-
-fn scaled_size(size: u32, scale: f32) -> u32 {
-    ((size as f32 * scale).round() as u32).max(1)
-}
-
-fn scaled_height(size: u32, scale: f32) -> u32 {
-    ((size as f32 * scale).floor() as u32).max(1)
-}
-
-fn scaled_text_width(font: &FontAtlas, text: &str, scale: f32) -> u32 {
-    scaled_size(font.text_width(text).max(0) as u32, scale)
-}
-
-/// Keep the font size and the clock's position fixed. Long labels end with dots before
-/// they reach the time field; remove whole characters so UTF-8 stop names stay valid.
-fn fit_text<'a>(font: &FontAtlas, text: &'a str, scale: f32, max_width: u32) -> Cow<'a, str> {
-    if scaled_text_width(font, text, scale) <= max_width {
-        return Cow::Borrowed(text);
-    }
-    if scaled_text_width(font, "...", scale) > max_width {
-        return Cow::Borrowed("");
-    }
-    let mut shortened = text.to_string();
-    loop {
-        let length = shortened.len();
-        shortened.push_str("...");
-        if scaled_text_width(font, &shortened, scale) <= max_width {
-            return Cow::Owned(shortened);
-        }
-        shortened.truncate(length);
-        shortened.pop();
-    }
-}
-
-fn draw_text(image: &mut Image, font: &FontAtlas, text: &str, x: u32, y: u32, scale: f32) {
-    if x >= image.width || y >= image.height {
+fn draw_text(image: &mut Image, font: &FontAtlas, text: &str, x: u32, y: u32) {
+    if x >= image.width || y >= image.height || text.is_empty() {
         return;
     }
     let source_width = (font.text_width(text).max(0) as u32).max(1);
@@ -434,14 +324,11 @@ fn draw_text(image: &mut Image, font: &FontAtlas, text: &str, x: u32, y: u32, sc
             grid: 1,
         },
     );
-    let width = scaled_size(source_width, scale).min(image.width - x);
-    let height = scaled_height(source_height, scale).min(image.height - y);
+    let width = source_width.min(image.width - x);
+    let height = source_height.min(image.height - y);
     for py in 0..height {
         for px in 0..width {
-            let source_x = ((px as f32 / scale).floor() as u32).min(source_width - 1);
-            let source_y = ((py as f32 / scale).floor() as u32).min(source_height - 1);
-            let source = ((source_y * source_width + source_x) * 4) as usize;
-            let alpha = rgba[source + 3] as u32;
+            let alpha = rgba[((py * source_width + px) * 4 + 3) as usize] as u32;
             if alpha == 0 {
                 continue;
             }
@@ -472,6 +359,8 @@ fn save_png(image: &Image, path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::schedule::{PlannedStop, PlannedTrip, StopDir};
+
+    const FONT_HEIGHT: u32 = 24;
     use omsi_content::font::FontChar;
 
     fn stop(id: i64, name: &str, arr: f64, dep: f64) -> PlannedStop {
@@ -548,117 +437,39 @@ mod tests {
     }
 
     #[test]
-    fn long_schedule_uses_two_columns_and_keeps_every_row_on_the_paper() {
-        let layout = paper_layout(1024, 1024, FONT_HEIGHT, 36);
-        assert_eq!(layout.columns, 2);
-        assert_eq!(layout.rows_per_column, 24);
-        assert_eq!(layout.scale, 1.0);
-
-        let short = paper_layout(1024, 1024, FONT_HEIGHT, 9);
-        assert_eq!(short.columns, 1);
-        assert_eq!(short.scale, 1.0);
-
-        let extra_long = paper_layout(1024, 1024, FONT_HEIGHT, 72);
-        assert_eq!(extra_long.columns, 2);
-        assert!(extra_long.scale < 1.0);
-        let rows_top = PAPER_TOP + FONT_HEIGHT + ROWS_TOP_GAP;
-        assert!(
-            rows_top + extra_long.line_height * extra_long.rows_per_column as u32
-                <= PAPER_HEIGHT - PAPER_BOTTOM_MARGIN
-        );
-
-        let font = test_font();
-        let rows: Vec<_> = (0..36)
+    fn paper_text_is_two_columns_of_25_character_labels() {
+        let rows: Vec<_> = (0..50)
             .map(|i| PaperRow {
-                name: format!("Stop {i:02}"),
+                name: if i == 0 { "Gustav-Adolf-Str./Langhansstr.  ".into() } else { format!("Stop {i:02}  ") },
                 time: "12:34".into(),
             })
             .collect();
-        let mut image = Image {
-            width: 1024,
-            height: 1024,
-            rgba: [255, 255, 255, 255]
-                .into_iter()
-                .cycle()
-                .take(1024 * 1024 * 4)
-                .collect(),
-            has_alpha: false,
-        };
-        draw_schedule(&mut image, &font, "76 - Dense - 1", &rows);
+        let lines = paper_lines("76 - Bauernhof - 1", &rows);
+        assert_eq!(lines.len(), 2 + 24);
+        assert_eq!(lines[0], "76 - Bauernhof - 1");
+        assert_eq!(lines[1], "=".repeat(67));
+        assert_eq!(
+            lines[2],
+            "Gustav-Adolf-Str./Langhan 12:34     Stop 24  ................ 12:34"
+        );
+        assert_eq!(lines[25], "Stop 23  ................ 12:34     Stop 47  ................ 12:34");
+        // rows past the second column are left out
+        assert!(!lines.iter().any(|l| l.contains("Stop 48")));
 
-        for i in 0..36 {
-            let (x, y) = row_position(i, FONT_HEIGHT, &layout);
-            let has_ink = (y..y + layout.line_height).any(|py| {
-                (x..x + 80).any(|px| {
-                    let pixel = ((py * image.width + px) * 4) as usize;
-                    image.rgba[pixel] < 100
-                })
-            });
-            assert!(has_ink, "schedule row {i} was not rendered");
-        }
+        let short = paper_lines("t", &rows[1..3]);
+        assert_eq!(short[2], "Stop 01  ................ 12:34");
+        assert_eq!(short.len(), 4);
     }
 
     #[test]
-    fn long_names_keep_the_clock_and_column_gap_clear() {
+    fn paper_lines_are_drawn_from_60_90_one_font_height_apart() {
         let font = test_font();
-        for row_count in [9, 36, 72] {
-            let rows: Vec<_> = (0..row_count)
-                .map(|i| PaperRow {
-                    name: "Gustav-Adolf-Str./Langhansstr.".repeat(4),
-                    time: if i % 2 == 0 { "12:34" } else { "12:34 - 12:36" }.into(),
-                })
-                .collect();
-            let layout = paper_layout(1024, 1024, FONT_HEIGHT, row_count);
-            let mut image = Image {
-                width: 1024,
-                height: 1024,
-                rgba: vec![255; 1024 * 1024 * 4],
-                has_alpha: false,
-            };
-            let mut clocks = image.clone();
-            draw_schedule(
-                &mut image,
-                &font,
-                "156 - Stad. Buschall/Hansastr. - 3 (Mo-Fr)",
-                &rows,
-            );
-            for (i, row) in rows.iter().enumerate() {
-                let (x, y) = row_position(i, FONT_HEIGHT, &layout);
-                let time_x =
-                    x + layout.column_width - scaled_text_width(&font, &row.time, layout.scale);
-                draw_text(&mut clocks, &font, &row.time, time_x, y, layout.scale);
-                for py in y..y + layout.line_height {
-                    for px in time_x..x + layout.column_width {
-                        let pixel = ((py * image.width + px) * 4) as usize;
-                        assert_eq!(
-                            &image.rgba[pixel..pixel + 4],
-                            &clocks.rgba[pixel..pixel + 4],
-                            "name overlaps time at row {i} of {row_count}"
-                        );
-                    }
-                    for px in x + layout.column_width..x + layout.column_width + COLUMN_GAP {
-                        let pixel = ((py * image.width + px) * 4) as usize;
-                        assert_eq!(image.rgba[pixel], 255, "name overflows column at row {i}");
-                    }
-                }
-            }
-            assert!(image.rgba[(PAPER_HEIGHT * image.width * 4) as usize..]
-                .iter()
-                .all(|&v| v == 255));
-        }
-    }
-
-    #[test]
-    fn fitted_labels_keep_complete_unicode_characters() {
-        let font = test_font();
-        let name = "Südstadt/Gustav-Adolf-Straße Ankunft";
-        for scale in [1.0, 0.75, 0.5] {
-            let fitted = fit_text(&font, name, scale, 60);
-            assert!(fitted.ends_with("..."));
-            assert!(name.starts_with(fitted.trim_end_matches('.')));
-            assert!(scaled_text_width(&font, &fitted, scale) <= 60);
-        }
-        assert_eq!(fit_text(&font, "Kurz", 1.0, 60), "Kurz");
-        assert_eq!(fit_text(&font, name, 1.0, 5), "");
+        let mut image = Image { width: 1024, height: 1024, rgba: vec![255; 1024 * 1024 * 4], has_alpha: false };
+        draw_schedule(&mut image, &font, &["AB".to_string(), "CD".to_string()]);
+        let ink = |x: u32, y: u32| image.rgba[((y * image.width + x) * 4) as usize] < 100;
+        assert!(ink(PAPER_X, PAPER_TOP));
+        assert!(ink(PAPER_X, PAPER_TOP + FONT_HEIGHT));
+        assert!(!ink(PAPER_X - 1, PAPER_TOP));
+        assert!(!ink(PAPER_X, PAPER_TOP - 1));
     }
 }
