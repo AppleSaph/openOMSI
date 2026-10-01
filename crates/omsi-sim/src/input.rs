@@ -163,7 +163,11 @@ impl KeyboardAxes {
         if self.left_key || self.right_key {
             self.centering = false;
         }
-        if self.left_key {
+        if self.left_key && self.right_key {
+            // Omsi.exe keeps the wheel where it is while both steering keys are held.
+            // Releasing either key immediately hands control to the direction still held.
+            self.steer_vel = 0.0;
+        } else if self.left_key {
             self.steering = (self.steering - rate * dt).max(-1.0);
             self.steer_vel = 0.0;
         } else if self.right_key {
@@ -299,6 +303,56 @@ mod tests {
         a.right_key = false;
         a.update(0.5);
         assert!(a.steering > 0.5, "old steering stays: {}", a.steering);
+    }
+
+    /// Omsi.exe treats the two steering keys symmetrically: either one works alone,
+    /// both together hold the current wheel position, and releasing one immediately lets
+    /// the other continue steering.
+    #[test]
+    fn opposite_steering_keys_hold_then_resume_remaining_direction() {
+        let mut a = KeyboardAxes {
+            steering: 0.25,
+            ..Default::default()
+        };
+
+        a.left_key = true;
+        a.update(0.1);
+        let after_left = a.steering;
+        assert!(after_left < 0.25, "left alone must steer left: {after_left}");
+
+        a.right_key = true;
+        a.update(0.2);
+        assert!(
+            (a.steering - after_left).abs() < 1e-6,
+            "both keys must hold the wheel: {} -> {}",
+            after_left,
+            a.steering
+        );
+
+        a.left_key = false;
+        a.update(0.1);
+        let after_right_resume = a.steering;
+        assert!(
+            after_right_resume > after_left,
+            "releasing left while right remains held must steer right: {after_left} -> {after_right_resume}"
+        );
+
+        a.left_key = true;
+        a.update(0.2);
+        assert!(
+            (a.steering - after_right_resume).abs() < 1e-6,
+            "both keys must hold symmetrically: {} -> {}",
+            after_right_resume,
+            a.steering
+        );
+
+        a.right_key = false;
+        a.update(0.1);
+        assert!(
+            a.steering < after_right_resume,
+            "releasing right while left remains held must steer left: {after_right_resume} -> {}",
+            a.steering
+        );
     }
 
     #[test]
