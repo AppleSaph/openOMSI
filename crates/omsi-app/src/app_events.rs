@@ -359,6 +359,11 @@ impl ApplicationHandler for App {
                 }
                 let dt = raw_dt.min(0.1);
                 self.last = now;
+                // (the cursor over the game menu: a hand over what can be clicked)
+                if self.game_menu.is_some() {
+                    let kind = self.menu_cursor_kind();
+                    self.set_cursor_kind(kind);
+                }
                 self.run_input_script(event_loop);
                 if let Some(m) = self.menu.as_ref() {
                     if let Some(limit) = self.args.exit_after {
@@ -1253,6 +1258,10 @@ impl ApplicationHandler for App {
                             if self.chooser.is_none() && was.is_none() {
                                 self.game_menu = None;
                             }
+                        } else {
+                            // (a line of the vehicle or world pages)
+                            self.menu_prev_pause = self.paused;
+                            self.page_action(&c);
                         }
                     }
                 } else {
@@ -1682,6 +1691,11 @@ impl ApplicationHandler for App {
                 // (the game menu's lines, for the interface below)
                 let menu_lines = if self.game_menu.is_some() { self.game_menu_items() } else { Vec::new() };
                 // the interface over the picture
+                // (the pages of an open settings window)
+                let menu_tabs = match self.list_kind.as_ref() {
+                    Some(k) if self.chooser.is_some() => crate::game_lists::page_titles(self, k),
+                    _ => None,
+                };
                 if let (true, Some(r), Some(scene)) = (
                     self.world.is_some(),
                     self.renderer.as_ref(),
@@ -1829,6 +1843,9 @@ impl ApplicationHandler for App {
                             }
                             None => (Vec::new(), None),
                         };
+                        // (the game menu's greyed-out lines: the timetable needs an active route)
+                        let menu_disabled: &[&str] = &[];
+                        let (menu_kind, menu_head, menu_preview) = crate::game_lists::menu_extras(self.list_kind.as_ref(), self.admin_list.as_deref(), chooser_sel, self.schedule.as_ref(), self.clock.time);
                         let frame = ui::Frame {
                             scale,
                             ui_scale: ui::size_factor(h, scale, self.settings.ui_scale, self.settings.ui_scale_window),
@@ -1850,6 +1867,12 @@ impl ApplicationHandler for App {
                                 Some(k) => Some((k, &chooser_items[..])),
                                 None => self.game_menu.map(|k| (k, &menu_lines[..])),
                             },
+                            menu_disabled,
+                            menu_kind,
+                            menu_head,
+                            menu_preview,
+                            menu_tabs,
+                            menu_kbd: self.menu_kbd,
                             menu_top: self.menu_top,
                             // (not over the city map, which has the stops and their times: it
                             // covered the map's zoom and close buttons)
@@ -2454,8 +2477,13 @@ impl App {
         }
         // the game menu takes the clicks while it is open
         if self.game_menu.is_some() {
+            if state == ElementState::Pressed {
+                // (a tap or a click: only what is under the finger or the mouse is lit)
+                self.menu_kbd = false;
+            }
             // Releasing the mouse button finishes scrollbar dragging.
             if state == ElementState::Released {
+                self.menu_drag = None;
                 if self.menu_scroll_drag {
                     self.menu_scroll_drag = false;
                     self.menu_top = self.menu_top.map(f32::round);
@@ -2480,6 +2508,37 @@ impl App {
                     }
                 }
 
+                // The sidebar of a settings window: a page, or the way back.
+                if self.chooser.is_some() {
+                    let side = self.ui.as_ref().and_then(|u| {
+                        u.menu_side.iter().position(|r| {
+                            self.cursor.0 >= r[0]
+                                && self.cursor.0 <= r[2]
+                                && self.cursor.1 >= r[1]
+                                && self.cursor.1 <= r[3]
+                        })
+                    });
+                    if let Some(i) = side {
+                        self.settings_side_click(i);
+                        return;
+                    }
+                }
+
+                // The timetable beside a line's tours: a stop to start from, or the button.
+                if self.chooser.is_some() {
+                    let pane = self.ui.as_ref().and_then(|u| {
+                        let inside = |r: &[f32; 4]| self.cursor.0 >= r[0] && self.cursor.0 <= r[2] && self.cursor.1 >= r[1] && self.cursor.1 <= r[3];
+                        if u.menu_pane_go.as_ref().is_some_and(inside) {
+                            return Some(usize::MAX);
+                        }
+                        u.menu_pane.iter().position(inside).map(|i| i + u.menu_pane_start)
+                    });
+                    if let Some(i) = pane {
+                        self.tour_pane_click(i);
+                        return;
+                    }
+                }
+
                 // Otherwise check whether a menu row was clicked.
                 let hit = self.ui.as_ref().and_then(|u| {
                     u.menu_rects.iter().position(|r| {
@@ -2491,15 +2550,43 @@ impl App {
                 });
 
                 if let Some(row) = hit {
+                    // (a click on a slider or a stepper sets the value there)
                     let k = row
                         + self
                         .ui
                         .as_ref()
                         .map(|u| u.menu_start)
                         .unwrap_or(0);
+                    let ctl = self.ui.as_ref().and_then(|u| u.menu_ctl.get(k).copied().flatten());
+
+                    // (a greyed-out line cannot be clicked)
+                    if self.menu_item_off(k) {
+                        return;
+                    }
+
+                    if let Some(c) = ctl {
+                        if self.chooser.is_some() && self.cursor.0 >= c[0] && self.cursor.0 <= c[2] {
+                            let fx = ((self.cursor.0 - c[0]) / (c[2] - c[0]).max(1.0)).clamp(0.0, 1.0);
+                            self.chooser = Some(k);
+                            // (a slider is held: it follows the cursor till the button is let go)
+                            if self.list_click(k, fx) {
+                                self.menu_drag = Some(k);
+                            }
+                            return;
+                        }
+                    }
 
                     if self.chooser.is_none() {
                         self.game_menu = Some(k);
+                    }
+
+                    // (a click on a tour shows its stops: the trip starts with the button)
+                    if matches!(self.list_kind, Some(crate::game_lists::ListKind::Tours(..))) && crate::game_lists::tour_at(self, k).is_some() {
+                        self.chooser = Some(k);
+                        if let Some(crate::game_lists::ListKind::Tours(line, _)) = self.list_kind.clone() {
+                            self.list_kind = Some(crate::game_lists::ListKind::Tours(line, None));
+                        }
+                        return;
                     }
 
                     // on the arrows round a line's value: one step down or up; elsewhere on

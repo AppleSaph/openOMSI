@@ -136,8 +136,8 @@ impl TripTimes {
         for i in 1..n {
             along[i] = along[i - 1]
                 + link_length(stations[i - 1], stations[i])
-                    .unwrap_or(500.0)
-                    .max(1.0);
+                .unwrap_or(500.0)
+                .max(1.0);
         }
         let timed: Vec<usize> = (0..n)
             .filter(|&i| arr[i].is_some() || dep[i].is_some())
@@ -1120,7 +1120,7 @@ impl Schedule {
                 let gap = (b.start() - a.end()).truncate().length();
                 if gap > 2.0
                     || a.key.map(|k| (k.tile, k.id, k.path))
-                        == b.key.map(|k| (k.tile, k.id, k.path))
+                    == b.key.map(|k| (k.tile, k.id, k.path))
                 {
                     log::info!("route: step {k}: lane {} {:?} rev {} -> lane {} {:?} rev {}: gap {gap:.1} m, linked {}, lane change {}", w[0], a.key, a.reversed, w[1], b.key, b.reversed, a.next.contains(&w[1]), net.parallel(w[0], w[1]));
                 }
@@ -1758,11 +1758,11 @@ impl Schedule {
                         };
                         let v = self.served.contains(&first)
                             || self.served.iter().any(|sid| {
-                                positions
-                                    .get(sid)
-                                    .map(|p| (p.0 - here).length() < 30.0)
-                                    .unwrap_or(false)
-                            });
+                            positions
+                                .get(sid)
+                                .map(|p| (p.0 - here).length() < 30.0)
+                                .unwrap_or(false)
+                        });
                         if omsi_cfg::env::var_os("OMSI_DEBUG_TRAFFIC").is_some() {
                             let nearest = self
                                 .served
@@ -2243,12 +2243,12 @@ impl Schedule {
             return Placed::Spawned;
         }
         let Some(Choice {
-            ty,
-            number,
-            hof,
-            scheme,
-            train,
-        }) = self.choose(i, world)
+                     ty,
+                     number,
+                     hof,
+                     scheme,
+                     train,
+                 }) = self.choose(i, world)
         else {
             log::warn!(
                 "trip {trip_name}: no vehicles for AI group '{}'",
@@ -2332,9 +2332,9 @@ impl Schedule {
         // serving the stop and every car behind them waiting as well.)
         if departure > day_time + 30.0
             && traffic
-                .cars
-                .iter()
-                .any(|c| c.is_bus() && !c.gone && (c.vehicle.position - at_pos).length() < 50.0)
+            .cars
+            .iter()
+            .any(|c| c.is_bus() && !c.gone && (c.vehicle.position - at_pos).length() < 50.0)
         {
             log::debug!(
                 "trip {trip_name}: its stand is taken, the bus comes at its departure time"
@@ -2700,8 +2700,8 @@ pub fn player_ibis(
     // number that pushed the destination aside.
     if has_roller_blind(v)
         && v.var("elec_busbar_main_sw")
-            .map(|x| x > 0.5)
-            .unwrap_or(false)
+        .map(|x| x > 0.5)
+        .unwrap_or(false)
     {
         set_line_to(v, line);
         v.set_var("AI_target_index", target.terminus_index as f32);
@@ -2781,11 +2781,11 @@ pub fn ibis_target(
                 let ident = ident.split('#').next().unwrap_or("").trim();
                 ident.eq_ignore_ascii_case(name)
                     || hof.bus_stops.iter().any(|b| {
-                        b.ident.trim().eq_ignore_ascii_case(ident)
-                            && b.strings
-                                .iter()
-                                .any(|s| s.trim().eq_ignore_ascii_case(name))
-                    })
+                    b.ident.trim().eq_ignore_ascii_case(ident)
+                        && b.strings
+                        .iter()
+                        .any(|s| s.trim().eq_ignore_ascii_case(name))
+                })
             };
             list.iter()
                 .enumerate()
@@ -2967,9 +2967,9 @@ pub fn ibis_codes(
         .filter(|(_, t)| {
             omsi_cfg::parse_i32(&t.route) == code
                 && (t.line.trim().eq_ignore_ascii_case(line.trim())
-                    || (!line_digits.is_empty() && t.line.trim() == line_digits)
-                    || (line_number.is_some()
-                        && t.code.trim().parse::<u32>().ok().map(|c| c / 100) == line_number))
+                || (!line_digits.is_empty() && t.line.trim() == line_digits)
+                || (line_number.is_some()
+                && t.code.trim().parse::<u32>().ok().map(|c| c / 100) == line_number))
         })
         .map(|(i, _)| i)
         .collect();
@@ -2983,8 +2983,8 @@ pub fn ibis_codes(
             (Some(f), Some(s)) => {
                 !f.is_empty()
                     && (f == s.trim().to_ascii_lowercase()
-                        || f.starts_with(&s.trim().to_ascii_lowercase())
-                        || s.trim().to_ascii_lowercase().starts_with(&f))
+                    || f.starts_with(&s.trim().to_ascii_lowercase())
+                    || s.trim().to_ascii_lowercase().starts_with(&f))
             }
             _ => false,
         }
@@ -3248,6 +3248,52 @@ pub struct PlayerDuty {
 }
 
 impl Schedule {
+    /// The stops of a tour in the order it drives them, over all its trips: (trip number in
+    /// the duty, stop number in the trip, name, departure there in seconds). Passing stations
+    /// are left out.
+    pub fn tour_stops(&self, line: &str, tour: &str) -> Vec<(usize, usize, String, f64)> {
+        let Some(l) = self.data.lines.iter().find(|l| l.name.eq_ignore_ascii_case(line)) else { return Vec::new() };
+        let Some(t) = l.tours.iter().find(|t| t.number.eq_ignore_ascii_case(tour)) else { return Vec::new() };
+        let mut out = Vec::new();
+        let mut k = 0;
+        for tt in &t.trips {
+            let Some(ti) = self.data.trips.iter().position(|x| x.name.eq_ignore_ascii_case(&tt.trip)) else { continue };
+            let trip = &self.data.trips[ti];
+            let departure = tt.departure as f64 * 60.0;
+            let times = &self.times[ti][usize::try_from(tt.profile).unwrap_or(0).min(self.times[ti].len() - 1)];
+            for (i, id) in trip_stations(trip).iter().enumerate() {
+                if !times.stops.get(i).copied().unwrap_or(true) {
+                    continue;
+                }
+                let name = self
+                    .data
+                    .bus_stops
+                    .iter()
+                    .find(|b| b.object_id == *id)
+                    .map(|b| b.name.clone())
+                    .filter(|n| !n.trim().is_empty())
+                    .or_else(|| trip.stations.is_empty().then(|| trip.stations_legacy.get(i).and_then(|r| r.get(2)).map(|n| n.trim().to_string())).flatten())
+                    .unwrap_or_else(|| format!("{}", i + 1));
+                out.push((k, i, name, departure + times.stations[i].1));
+            }
+            k += 1;
+        }
+        out
+    }
+
+    /// The stops of the trip of a tour that is under way or next to start at `now` (seconds
+    /// of the day): the first trip with a stop still to come (a minute of grace), and only
+    /// that trip's stops from there on. A tour with nothing left today lists its first trip
+    /// whole. Same entries and numbering as `tour_stops`.
+    pub fn tour_stops_from(&self, line: &str, tour: &str, now: f64) -> Vec<(usize, usize, String, f64)> {
+        let all = self.tour_stops(line, tour);
+        let limit = now - 60.0;
+        let Some(k) = all.iter().find(|s| s.3 >= limit).map(|s| s.0).or_else(|| all.first().map(|s| s.0)) else { return Vec::new() };
+        let trip: Vec<_> = all.into_iter().filter(|s| s.0 == k).collect();
+        let rest: Vec<_> = trip.iter().filter(|s| s.3 >= limit).cloned().collect();
+        if rest.is_empty() { trip } else { rest }
+    }
+
     /// The player drives this tour (line and tour as `player_duty` names them): OMSI leaves
     /// it to the player, so no AI bus runs it as well - one of line 76 tour 1 appeared
     /// 5 m beside the player's own bus at the Bauernhof, where the passengers queued.
@@ -3819,13 +3865,13 @@ fn terminus_text(hof: Option<&omsi_vehicle::Hof>, terminus: &str) -> String {
         h.termini.iter().find(|t| {
             t.texture_id.trim().eq_ignore_ascii_case(name)
                 || t.strings
-                    .iter()
-                    .any(|s| s.trim().eq_ignore_ascii_case(name))
+                .iter()
+                .any(|s| s.trim().eq_ignore_ascii_case(name))
         })
     })
-    .and_then(|t| t.strings.first())
-    .map(|s| s.trim().to_string())
-    .unwrap_or_else(|| name.to_uppercase())
+        .and_then(|t| t.strings.first())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| name.to_uppercase())
 }
 
 /// Where a timetable bus on the road is in its trip, for the departure boards.
@@ -4019,6 +4065,14 @@ impl PlayerDuty {
             self.trip_changed = true;
             self.next_stop = stop.min(self.trips[k].stops.len().saturating_sub(1));
         }
+    }
+
+    /// Like `start_at`, for a bus that stays where it is (the stop was chosen in the menu,
+    /// the bus is not put there): the first update does not look where the bus stands and
+    /// does not move the chosen stop to one it happens to be near.
+    pub fn start_at_here(&mut self, k: usize, stop: usize) {
+        self.start_at(k, stop);
+        self.placed = true;
     }
 
     /// A page sets the stop the duty goes on with (`omsi.setNextStop`), forwards or
@@ -4397,7 +4451,7 @@ mod tests {
                 }),
                 &link
             )
-            .duration,
+                .duration,
             1500.0
         );
     }

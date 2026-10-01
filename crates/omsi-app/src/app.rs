@@ -114,8 +114,13 @@ pub(crate) struct App {
     /// (in lines, fractional while dragged); `None`: the chosen line is kept in view.
     pub(crate) menu_top: Option<f32>,
     pub(crate) menu_scroll_drag: bool,
-    /// The game menu shows all its lines ("More..."), not only the everyday ones.
-    pub(crate) menu_more: bool,
+    /// The digits of a time being typed in the world page of the game menu (None: not typing).
+    pub(crate) menu_edit: Option<String>,
+    /// The line of the open list whose slider the mouse button holds (it follows the cursor).
+    pub(crate) menu_drag: Option<usize>,
+    /// The keyboard chose the line of the menu last (the mouse moved since: false), so the
+    /// chosen line is shown lit; with the mouse only the line under it is.
+    pub(crate) menu_kbd: bool,
     /// Keys pressed (true) and let go since the Lua plugins' last frame.
     pub(crate) plugin_keys: Vec<(String, bool)>,
     /// Seconds Ctrl+Shift+Page Up/Down has been held (the clock runs faster the longer).
