@@ -97,7 +97,7 @@ impl UiAnchor {
         desktop_size: (u32, u32),
     ) -> Self {
         let mut anchor = Self::at(origin, camera, fov, distance);
-        anchor.half_height *= 0.75;
+        anchor.half_height *= 0.60;
         anchor.half_width =
             anchor.half_height * desktop_size.0.max(1) as f32 / desktop_size.1.max(1) as f32;
         anchor
@@ -523,6 +523,10 @@ impl Vr {
         Some((camera.position, direction, spread))
     }
 
+    pub(crate) fn navigator_edit_camera(&self) -> Option<Camera> {
+        self.mirror_camera.map(|(camera, _)| camera)
+    }
+
     pub(crate) fn render(
         &mut self,
         renderer: &mut Renderer,
@@ -536,6 +540,7 @@ impl Vr {
         tooltip_overlay: Option<usize>,
         cursor_position: (f32, f32),
         bus_pose: Option<(DVec3, Mat4)>,
+        navigator: Option<(usize, crate::vr_navigator::Display)>,
         head_smoothing_ms: f32,
         cockpit_pointer_enabled: bool,
         zoom_active: bool,
@@ -812,6 +817,12 @@ impl Vr {
                     }
                 })
         });
+        let navigator = navigator.zip(bus_pose).and_then(|((index, display), (position, body))| {
+            let (texture, rect) = scene.overlays.get(index)?;
+            let aspect = (rect[2] - rect[0]) / (rect[3] - rect[1]);
+            if !aspect.is_finite() || aspect <= 0.0 { return None; }
+            Some((*texture, [0, 1].map(|eye| display.transform(position, body, &eye_cameras[eye], eye_projections[eye], aspect))))
+        });
         renderer.render_xr_ui(
             scene,
             &targets,
@@ -822,6 +833,7 @@ impl Vr {
             cursor_overlay,
             tooltip_overlay,
             cursor_transforms,
+            navigator,
         );
         if let Some(mirror) = self.mirror.as_ref().filter(|_| self.desktop_mirror) {
             let mirror_start = Instant::now();
