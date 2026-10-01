@@ -558,6 +558,8 @@ impl Controllers {
                     for (k, v) in c.axes.iter().copied() {
                         let Some((f, inverted)) = d.axes[k] else { continue };
                         let v = if inverted { -v } else { v };
+                        // the characteristic set up for the axis (gamectrler.cfg flags)
+                        let v = axis_shape((v + 1.0) * 0.5, d.axis_flags[k]) * 2.0 - 1.0;
                         // the dead zone: round the wheel's centre, or at a pedal's rest
                         let v = match f {
                             Func::Steering | Func::ThrottleBrake => v.signum() * ((v.abs() - dz).max(0.0) / (1.0 - dz)),
@@ -1003,6 +1005,46 @@ fn code_button(code: u32) -> Option<usize> {
         (hi == 0).then_some(lo)
     } else {
         None
+    }
+}
+
+/// An axis' characteristic from its gamectrler.cfg flags, on 0..1 (after the inversion),
+/// as Omsi.exe applies it (poll sub_6466b8): 2 extends the range by a quarter, 4 is
+/// degressive, 8 progressive, 0x10 makes either of them symmetric round the centre.
+pub(crate) fn axis_shape(v: f32, flags: i32) -> f32 {
+    use std::f32::consts::PI;
+    let mut v = v;
+    if flags & 2 != 0 {
+        v = v * 1.25 - 0.125;
+    }
+    let bi = flags & 0x10 != 0;
+    if flags & 4 != 0 {
+        v = if bi { ((v - 0.5) * PI).sin() * 0.5 + 0.5 } else { (v * PI * 0.5).sin() };
+    } else if flags & 8 != 0 {
+        v = if bi {
+            let d = (v - 0.5) * 2.0;
+            0.5 + d.signum() * d * d * 0.5
+        } else {
+            v * v
+        };
+    }
+    v.clamp(0.0, 1.0)
+}
+
+/// The characteristics the set-up offers, with their flag bits (Omsi.exe's combo, 0x652ac4).
+pub(crate) const AXIS_SHAPES: [(&str, i32); 5] = [("Linear", 0), ("Progressive", 8), ("Degressive", 4), ("Bi-progressive", 8 | 0x10), ("Bi-degressive", 4 | 0x10)];
+
+#[cfg(test)]
+mod axis_shape_tests {
+    use super::axis_shape;
+    #[test]
+    fn characteristics_match_omsi() {
+        assert!((axis_shape(0.75, 24) - 0.625).abs() < 1e-6);
+        assert!((axis_shape(0.5, 24) - 0.5).abs() < 1e-6);
+        assert!((axis_shape(0.5, 8) - 0.25).abs() < 1e-6);
+        assert!((axis_shape(0.5, 4) - (std::f32::consts::PI / 4.0).sin()).abs() < 1e-6);
+        assert!((axis_shape(0.3, 0) - 0.3).abs() < 1e-6);
+        assert_eq!(axis_shape(1.0, 2), 1.0);
     }
 }
 

@@ -306,7 +306,10 @@ pub(crate) fn weather_lighting(
         if w.snow { 1.0 } else { 0.0 },
     );
     lighting.wetness = wetness;
-    lighting.shadows = shadows;
+    // Omsi.exe hides the sun under an 'ovc' cloud type (the Overcast ones in clouds.cfg) and
+    // draws no sun shadows below 350 m visibility
+    let overcast = w.clouds.0.trim().to_ascii_lowercase().starts_with("overcast");
+    lighting.shadows = shadows && !overcast && w.fog.0 > 350.0;
     lighting
 }
 

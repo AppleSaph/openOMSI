@@ -4,6 +4,33 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/turbo-devv/openOMSI/releases) page.
 
+## 0.1.592 - 2026-10-01
+
+### Passengers
+- People getting off wait at the exit they chose when they pressed the stop button, as in
+  OMSI, instead of running to whichever door opens first, usually the front one (#493, #336).
+- As many people wait at a stop as the map's passenger counts for it and the passengers
+  setting give, up to its waiting places, as in OMSI. Before, never more than seven: 200%
+  changed nothing (#458, from #513).
+
+### Controls
+- Game controller axes use their characteristic from gamectrler.cfg (progressive,
+  degressive, bi-..., range extension), as in OMSI; the launcher's controller page sets it.
+  Before, a G25 set to bi-progressive steered linearly (#479).
+- Plain Left/Right switch the interior camera again unless a wheel steers (#464, #519).
+- The hints for a bus that does not move name the player's own keys (#461).
+- P pauses and resumes without opening the menu; a LAN session cannot be paused (#527).
+
+### Graphics
+- Sun shadows stay until the sun is about a degree below the horizon, as in OMSI (they went
+  at 4.6°), and overcast weather or fog under 350 m casts none (#518, #506).
+- Route arrows cast no shadow (#508).
+- Scenery text textures (street signs) are lit like their object and no longer glow at night
+  (#470).
+
+### Fixes
+- A crash in the interface's texture cleanup (#534).
+
 ## 0.1.576 - 2026-10-01
 
 ### Passengers

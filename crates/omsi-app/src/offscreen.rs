@@ -165,9 +165,11 @@ pub(crate) fn run_offscreen(
                 h.money = Some(money::Money::new(&args.root, &world.global.money_system));
             }
         }
+        // (with the passengers setting, as in the window)
         h.density = world
             .global
-            .passenger_density((parse_time(&args.time) / 3600.0) as f32);
+            .passenger_density((parse_time(&args.time) / 3600.0) as f32)
+            * settings.pax_density;
         h.time_of_day = parse_time(&args.time);
         h.stop_targets = schedule.as_ref().map(|s| s.stop_targets());
         h.populate(&world, &renderer, &mut scene, center);
@@ -749,7 +751,7 @@ pub(crate) fn run_offscreen(
                 // what the window's HUD would say about a bus that does not move
                 // (once per reason: the numbers in a line change all the time)
                 if i % 30 == 0 {
-                    let why = standing_reasons(&player.vehicle);
+                    let why = standing_reasons(&player.vehicle, &|a| crate::diagnostics::rebound_key(&player.bindings, a));
                     let key = |l: &String| l.split('(').next().unwrap_or_default().to_string();
                     for line in why
                         .iter()

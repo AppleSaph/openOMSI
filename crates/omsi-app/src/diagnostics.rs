@@ -1,9 +1,21 @@
 //! Why a bus does not move, and its physics in the log.
 
+/// The player's key for `action` when `bindings` (the vehicle's `Inputs/keyboard.cfg`) bind it
+/// to another key than OMSI's own file does; `None` for the stock key or no key at all.
+pub(crate) fn rebound_key(bindings: &[omsi_content::KeyBinding], action: &str) -> Option<String> {
+    use omsi_content::input::KEY_HOLD;
+    let b = bindings.iter().find(|b| b.action.eq_ignore_ascii_case(action) && b.scan_code != 0)?;
+    let stock = crate::stock_keys::STOCK_KEYS
+        .iter()
+        .any(|(a, s, m)| a.eq_ignore_ascii_case(action) && *s == b.scan_code && (m & !KEY_HOLD) == (b.modifier & !KEY_HOLD));
+    (!stock).then(|| crate::keys::key_name(b.scan_code as i64, b.modifier as i64))
+}
+
 /// Why the bus is not moving although the throttle is pressed: the things a driver checks
 /// first (empty when it moves or nothing is pressed). The window's HUD shows them, an
-/// offscreen run logs them.
-pub(crate) fn standing_reasons(v: &omsi_sim::VehicleInstance) -> Vec<String> {
+/// offscreen run logs them. `key(action)` names the player's own key for an action of
+/// `Inputs/keyboard.cfg` when it is not the stock one (see [`rebound_key`]).
+pub(crate) fn standing_reasons(v: &omsi_sim::VehicleInstance, key: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
     let mut lines = Vec::new();
     let throttle = v.var("throttle").unwrap_or(0.0) > 0.05;
     let slow = v.physics.velocity_kmh().abs() < 3.0;
@@ -11,7 +23,8 @@ pub(crate) fn standing_reasons(v: &omsi_sim::VehicleInstance) -> Vec<String> {
         return lines;
     }
     if !omsi_sim::startup::engine_running(v) {
-        lines.push("The engine is off  (E electrics, M starter; mod buses with an ignition key turn it with E: press again and hold. Shift+U does it all)".to_string());
+        let m = key("kw_m_enginestart").unwrap_or_else(|| "M".into());
+        lines.push(format!("The engine is off  (E electrics, {m} starter; mod buses with an ignition key turn it with E: press again and hold. Shift+U does it all)"));
     } else if v
         .var("antrieb_getr_gangwahl")
         .map(|g| (g - 1.0).abs() < 0.1)
@@ -19,7 +32,8 @@ pub(crate) fn standing_reasons(v: &omsi_sim::VehicleInstance) -> Vec<String> {
         .unwrap_or(false)
     {
         // gear position 1 is N in the stock gearboxes and the mods built on them
-        lines.push("The gearbox is in N: press D (Shift+D when W A S D drive), or click it. Buses like the Citaro take D only with the brake held".to_string());
+        let d = key("automatic_D").unwrap_or_else(|| "D (Shift+D when W A S D drive)".into());
+        lines.push(format!("The gearbox is in N: press {d}, or click it. Buses like the Citaro take D only with the brake held"));
     } else if v.var("antrieb_getr_gangwahl").is_none()
         && v.var("cockpit_gangwahltaster").is_none()
         && v.var("antrieb_getr_gang").map(|g| g.abs() < 0.1).unwrap_or(false)
@@ -30,7 +44,8 @@ pub(crate) fn standing_reasons(v: &omsi_sim::VehicleInstance) -> Vec<String> {
     }
     let parking = v.var("bremse_feststell").or_else(|| v.var("parking_brake")).unwrap_or(0.0) > 0.5;
     if parking {
-        lines.push("Parking brake is on  (. releases it)".to_string());
+        let k = key("parking_brake_toggle").unwrap_or_else(|| ".".into());
+        lines.push(format!("Parking brake is on  ({k} releases it)"));
     }
     // a bus that stood long enough to lose its air (the stock scripts start with 4-9 bar):
     // the spring brake is released by air (`bremse_p_Brzyl_FBA`, absolute; the stock
@@ -160,4 +175,23 @@ pub(crate) fn log_physics(v: &omsi_sim::VehicleInstance, t: f32) {
         v.var("bremse_ABS_eingriff"),
         v.var("Wheel_RotationSpeed_1_L"),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rebound_key;
+    use omsi_content::KeyBinding;
+
+    fn bind(action: &str, scan_code: i32, modifier: i32) -> KeyBinding {
+        KeyBinding { action: action.into(), scan_code, modifier }
+    }
+
+    #[test]
+    fn hint_names_the_players_own_key_only() {
+        // the stock D (scan 32) keeps the hint's own wording; Ctrl+D is named (#461)
+        assert_eq!(rebound_key(&[bind("automatic_D", 32, 0)], "automatic_D"), None);
+        assert_eq!(rebound_key(&[bind("automatic_D", 32, 4)], "automatic_D").as_deref(), Some("Ctrl+D"));
+        assert_eq!(rebound_key(&[bind("automatic_D", 0, 0)], "automatic_D"), None);
+        assert_eq!(rebound_key(&[], "automatic_D"), None);
+    }
 }

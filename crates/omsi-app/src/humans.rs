@@ -720,9 +720,12 @@ impl Cabin {
     fn nearest_exit(&self, p: Vec3) -> usize {
         (0..self.exits.len())
             .min_by(|a, b| {
-                (self.exits[*a].inside - p)
-                    .length()
-                    .total_cmp(&(self.exits[*b].inside - p).length())
+                // Omsi.exe weights the height difference by 5 (sub_7f3a24)
+                let d = |e: usize| {
+                    let v = self.exits[e].inside - p;
+                    Vec3::new(v.x, v.y, v.z * 5.0).length()
+                };
+                d(*a).total_cmp(&d(*b))
             })
             .unwrap_or(0)
     }
@@ -1530,6 +1533,9 @@ struct StopInfo {
     seeded: bool,
     /// Seconds until the next person arrives on foot.
     next_arrival: f32,
+    /// How many wait here at 100% passengers: the mean of pass_enter_max and _min times
+    /// the stop's random factor (Omsi.exe sub_61bf94).
+    enter_mean: f32,
 }
 
 /// Inside a bus, to where.
@@ -3188,6 +3194,11 @@ impl Humans {
             log::info!("stop {id} '{name}' at ({:.1}, {:.1}) heading {heading:.0}: {} waiting places ({from_map} from the map), pavement {:?}", pos.x, pos.y, spots.len(), lane);
         }
         let next_arrival = 5.0 + (self.rand_f() * 30.0) as f32;
+        // Omsi.exe draws the stop's factor 1 + (2r - 1) * k, k = (max - min) / (2 * mean)
+        let (max, min) = world.stop_enter(id);
+        let mean = (max + min) * 0.5;
+        let k = if mean != 0.0 { (max - min) / (2.0 * mean) } else { 0.0 };
+        let f38 = 1.0 + (2.0 * self.rand_f() as f32 - 1.0) * k;
         StopInfo {
             name: name.to_string(),
             pos,
@@ -3195,7 +3206,15 @@ impl Humans {
             lane,
             seeded: false,
             next_arrival,
+            enter_mean: mean * f38,
         }
+    }
+
+    /// How many people wait at stop `id` (Omsi.exe sub_61bf94): its mean times its factor
+    /// times the passenger density, at most one per waiting place.
+    fn stop_target(&self, id: i64) -> usize {
+        let s = &self.stops[&id];
+        (s.enter_mean * self.density.max(0.0)).round().clamp(0.0, s.spots.len() as f32) as usize
     }
 
     /// Put people at the bus stops near `center`: at the start everywhere, later only at
@@ -3271,8 +3290,7 @@ impl Humans {
             }
             self.stops.get_mut(&id).unwrap().seeded = true;
             let n_spots = self.stops[&id].spots.len();
-            let mut want = ((1 + (self.rand() % 5) as usize) as f32 * self.density.clamp(0.0, 3.0))
-                .round() as usize;
+            let mut want = self.stop_target(id);
             // OMSI_PAX_WAITING=n: exactly n people at every stop, all taking the next bus (a crowd test)
             let forced = omsi_cfg::env::var("OMSI_PAX_WAITING")
                 .ok()
@@ -3500,7 +3518,7 @@ impl Humans {
             st.next_arrival = (25.0 + 50.0 * (1.0 / dens)) * 0.5;
             let st_rand = self.rand_f() as f32;
             self.stops.get_mut(&id).unwrap().next_arrival *= 0.6 + st_rand;
-            if free_spots <= 1 || waiting >= 7 {
+            if free_spots <= 1 || waiting >= self.stop_target(id) {
                 continue;
             }
             // somewhere 40-90 m away along the pavement, out of sight
@@ -6389,27 +6407,8 @@ impl Humans {
                     return w;
                 }
                 if !bn.exit_open.get(exit).copied().unwrap_or(false) {
-                    // another exit is open: go there
-                    if let Some(other) = (0..bn.cabin.exits.len()).find(|&x| bn.exit_open[x]) {
-                        let o = &bn.cabin.exits[other];
-                        let mut route = bn.cabin.route(door.wait, o.wait);
-                        route.retain(|p| (p.truncate() - door.wait.truncate()).length() > 0.05);
-                        if route.is_empty() {
-                            route.push(o.wait);
-                        }
-                        let start = self.people[i].local().unwrap_or(door.wait);
-                        self.set_state(
-                            i,
-                            State::Aboard {
-                                bus,
-                                route,
-                                idx: 0,
-                                seg: start,
-                                goal: Goal::ExitWait(other),
-                            },
-                        );
-                        return w;
-                    }
+                    // Omsi.exe keeps the exit picked at the stop request and waits for
+                    // that door (it does not switch to whichever door opens first)
                     self.people[i].why = "the exit door is shut";
                     let t = self.people[i].t_state;
                     if bus == BusId::Player

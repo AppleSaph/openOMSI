@@ -3265,6 +3265,12 @@ impl World {
         self.index().stop_weights.get(&id).copied().unwrap_or(0.5)
     }
 
+    /// Stop object `id`'s (pass_enter_max, pass_enter_min) (see `tiles::stop_enter`; a
+    /// stop without strings: the defaults, 1 and 0).
+    pub fn stop_enter(&self, id: i64) -> (f32, f32) {
+        self.index().stop_enter.get(&id).copied().unwrap_or((1.0, 0.0))
+    }
+
     pub fn index(&self) -> Arc<MapIndex> {
         let mut g = self.index.lock();
         if let Some(ix) = g.as_ref() {
@@ -6816,12 +6822,14 @@ impl World {
                                         },
                                         false,
                                     );
+                                    // (lit like the rest of the object: Omsi.exe only swaps
+                                    // the slot's texture, a sign does not shine at night)
                                     let mat = renderer.add_material(
                                         scene,
                                         Some(tex),
                                         alpha,
                                         [1.0; 4],
-                                        true,
+                                        false,
                                     );
                                     let mat = gpu.material(renderer, scene, mat);
                                     gpu.text_textures.insert(key.clone(), (tex, mat, 1));
@@ -7420,6 +7428,11 @@ impl World {
         let xf = Mat4::from_rotation_z((-heading).to_radians() as f32);
         for (mi, (mesh_id, mats)) in meshes.iter().enumerate() {
             let new = renderer.add_instance(scene, *mesh_id, pos, xf, mats.clone());
+            renderer.set_omsi_caster(scene, new, ot.mesh_casts.get(mi).copied().unwrap_or(false));
+            // a route arrow casts no shadow (only [shadow] meshes do in Omsi.exe)
+            if ot.sco.is_help_arrow {
+                renderer.set_casts_shadow(scene, new, false);
+            }
             let inst = gpu.instance(renderer, scene, new);
             tg.instances.push(inst);
             let Some((_, o3d_mats, overrides)) = ot.meshes.get(mi) else { continue };
@@ -7447,7 +7460,7 @@ impl World {
                     None => vec![0u8; (w * h * 4) as usize],
                 };
                 let tex = gpu.add_image(renderer, scene, &Image { width: w, height: h, rgba, has_alpha: true }, false);
-                let mat = renderer.add_material(scene, Some(tex), alpha, [1.0; 4], true);
+                let mat = renderer.add_material(scene, Some(tex), alpha, [1.0; 4], false);
                 let mat = gpu.material(renderer, scene, mat);
                 gpu.text_textures.insert(key.clone(), (tex, mat, 1));
                 tg.texts.push(key);

@@ -150,3 +150,26 @@ mod scan_name_tests {
         assert_eq!(super::scan_name(52).as_deref(), Some("."));
     }
 }
+
+/// A key and its modifiers as the player reads them ("Ctrl+D"); `(unbound)` for scan 0.
+pub(crate) fn key_name(scan: i64, modifier: i64) -> String {
+    if scan == 0 {
+        return "(unbound)".into();
+    }
+    let k = scan_name(scan as i32).unwrap_or_else(|| format!("scan {scan}"));
+    let mut mods = Vec::new();
+    if modifier & omsi_content::input::KEY_SHIFT as i64 != 0 {
+        mods.push("Shift");
+    }
+    if modifier & omsi_content::input::KEY_CTRL as i64 != 0 {
+        mods.push("Ctrl");
+    }
+    if modifier & omsi_content::input::KEY_ALT as i64 != 0 {
+        mods.push("Alt");
+    }
+    if mods.is_empty() {
+        k
+    } else {
+        format!("{}+{k}", mods.join("+"))
+    }
+}

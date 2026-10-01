@@ -1706,10 +1706,13 @@ impl ApplicationHandler for App {
                     // the trip, the launcher the keys): only what the driver has to act on,
                     // in the interface font, top left.
                     let mut lines: Vec<String> = Vec::new();
+                    if self.paused {
+                        lines.push("Paused · P to go on".into());
+                    }
                     // why the bus is not moving, whenever the throttle is pressed and nothing
                     // happens: the things a driver checks first
                     if let Some(p) = self.player.as_ref() {
-                        lines.extend(standing_reasons(&p.vehicle));
+                        lines.extend(standing_reasons(&p.vehicle, &|a| crate::diagnostics::rebound_key(&p.bindings, a)));
                     }
                     // what is under the cursor, in the player's language (the scripts only
                     // know internal, mostly German names)
@@ -1857,10 +1860,10 @@ impl ApplicationHandler for App {
                                 #[cfg(windows)] { self.vr.is_some() }
                                 #[cfg(not(windows))] { false }
                             },
-                            tooltip: tooltip.filter(|_| self.settings.tooltips && !self.dragging && !covered),
+                            tooltip: tooltip.filter(|_| self.settings.tooltips && !self.dragging && !covered && self.game_menu.is_none()),
                             // (switched off: none, `Settings::notes`; nor over the city map,
                             // whose header they covered once they stood on the timetable's line)
-                            notes: if self.settings.notes && !map_open { &notes } else { &[] },
+                            notes: if self.settings.notes && !map_open && self.game_menu.is_none() { &notes } else { &[] },
                             fps: self.settings.show_fps.then_some(self.fps),
                             paused: self.paused,
                             menu: match chooser_sel {
@@ -1878,7 +1881,7 @@ impl ApplicationHandler for App {
                             // covered the map's zoom and close buttons)
                             timetable: (self.timetable && !map_open).then(|| timetable_rows(self.duty.as_ref(), self.player.as_ref().map(|p| p.vehicle.host.tt_delay as f64))).flatten(),
                             info: self.info_bar.then(|| info_line(&self.clock, self.player.as_ref(), self.duty.as_ref())),
-                            tutorial: self.tutorial.as_ref().filter(|t| !t.hidden).and_then(|t| t.page().map(|p| (p.title.as_str(), p.text.as_str(), p.image.as_deref(), t.at, t.pages.len()))),
+                            tutorial: self.tutorial.as_ref().filter(|t| !t.hidden && self.game_menu.is_none()).and_then(|t| t.page().map(|p| (p.title.as_str(), p.text.as_str(), p.image.as_deref(), t.at, t.pages.len()))),
                             chat,
                             tags,
                         };

@@ -711,7 +711,7 @@ impl TextCache {
         }
         let img = omsi_texture::Image { width: 1, height: 1, rgba, has_alpha: true };
         let tex = r.add_texture(scene, &img, false);
-        self.labels.insert(key, Label { tex, w: 1, h: 1, used: u64::MAX / 2 });
+        self.labels.insert(key, Label { tex, w: 1, h: 1, used: self.frame });
         tex
     }
 

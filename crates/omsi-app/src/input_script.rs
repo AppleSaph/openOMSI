@@ -217,10 +217,11 @@ impl App {
                     && !own
                     && (fallback_action(code, &self.args.drive_keys).is_some()
                     || matches!(code, KeyCode::KeyZ | KeyCode::KeyX | KeyCode::KeyC | KeyCode::KeyI | KeyCode::KeyL));
-                // the arrows are never the camera keys without Ctrl (they move: drive, or turn the
-                // head when held, with any other modifier and in every layout); only Ctrl+Left/Right
-                // switch the interior camera, below.
-                let plain_arrow = matches!(code, KeyCode::ArrowLeft | KeyCode::ArrowRight) && !ctrl;
+                // plain Left/Right are OMSI's view_interiorcam_minus/plus, except when a wheel
+                // steers: then the arrows glance (held, the head turns) and only Ctrl+Left/Right
+                // switch the interior camera, below. (Where the arrows drive, `ours` skips this.)
+                let plain_arrow = matches!(code, KeyCode::ArrowLeft | KeyCode::ArrowRight) && !ctrl
+                    && self.controllers.as_ref().is_some_and(|c| c.wheel_steering());
                 if let Some(scan) = keys::dik_code(code).filter(|_| !ours) {
                     let action = self.game_keys.iter().find(|b| b.scan_code == scan && b.matches(m)
                         && !b.action.starts_with("vr_")
@@ -2063,11 +2064,18 @@ impl App {
         }
         let n = self.game_menu_items().len();
         let sel = self.game_menu.unwrap_or(0);
+        let modified = self.keys.iter().any(|key| {
+            matches!(*key, KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::AltLeft | KeyCode::AltRight | KeyCode::ShiftLeft | KeyCode::ShiftRight)
+        });
         self.menu_top = None;
         match code {
-            // P: the pause ends, as it began
-            KeyCode::KeyP if (self.paused || self.lan.is_some()) && !self.keys.contains(&KeyCode::ControlLeft) && !self.keys.contains(&KeyCode::AltLeft) => self.toggle_pause(),
-            KeyCode::Escape => self.close_game_menu(),
+            // P changes only the simulation state, even while a menu is open.
+            KeyCode::KeyP if !modified => self.toggle_pause(),
+            // (from the full list back to the short one first)
+            KeyCode::Escape if self.menu_more => {
+                self.menu_more = false;
+                self.game_menu = Some(0);
+            }
             KeyCode::ArrowUp | KeyCode::KeyW => self.game_menu = Some(self.menu_step(sel, n, false)),
             KeyCode::ArrowDown | KeyCode::KeyS => self.game_menu = Some(self.menu_step(sel, n, true)),
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => self.menu_choose(event_loop, sel),
@@ -2688,27 +2696,15 @@ impl App {
     }
 
     pub(crate) fn toggle_pause(&mut self) {
+        // (a LAN session goes on for the others: it cannot be paused)
         if self.lan.is_some() {
-            // (a LAN session goes on for the others: the menu, without the pause)
-            if self.game_menu.is_some() {
-                self.close_game_menu();
-            } else {
-                self.open_game_menu();
-                self.service_msg = Some(("A LAN session goes on while the menu is open".into(), 3.0));
-            }
+            self.service_msg = Some(("A LAN session cannot be paused".into(), 3.0));
             return;
         }
-        // the pause shows the pause menu (the everyday lines, "More..." for the rest); P
-        // or Resume go on
+        self.paused = !self.paused;
         if self.game_menu.is_some() {
-            self.close_game_menu();
-            self.paused = false;
-        } else if self.paused {
-            self.paused = false;
-        } else {
-            self.open_game_menu();
-            self.menu_prev_pause = false;
-            self.paused = true;
+            // Keep the state a menu close should restore in step with P.
+            self.menu_prev_pause = self.paused;
         }
     }
 

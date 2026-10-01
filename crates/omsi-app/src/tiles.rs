@@ -56,6 +56,9 @@ pub struct MapIndex {
     /// Object id → how many passengers get off at it, as Omsi.exe weighs a `[busstop]`'s
     /// strings (see [`stop_exit_weight`]); only objects that carry strings.
     pub stop_weights: HashMap<i64, f32>,
+    /// Object id → its `[busstop]`'s (pass_enter_max, pass_enter_min) (see
+    /// [`stop_enter`]); only objects that carry strings.
+    pub stop_enter: HashMap<i64, (f32, f32)>,
 }
 
 /// How many passengers get off at a bus stop, as Omsi.exe reads the stop object's strings
@@ -65,10 +68,18 @@ pub struct MapIndex {
 /// off among the stops ahead by these numbers (0x61baa8), so a stop with twice the number
 /// takes twice the riders; the stock maps put 10 on every stop.
 pub fn stop_exit_weight(strings: &[String]) -> f32 {
-    let num = |i: usize| strings.get(i).map(|s| s.trim()).filter(|s| !s.is_empty()).and_then(|s| s.replace(',', ".").parse::<f64>().ok()).filter(|v| v.is_finite()).map(|v| v.round() as f32);
-    let max = num(1).unwrap_or(1.0);
-    let min = num(2).unwrap_or(0.0);
-    num(3).unwrap_or((min + max) / 2.0).max(0.0)
+    let (max, min) = stop_enter(strings);
+    stop_num(strings, 3).unwrap_or((min + max) / 2.0).max(0.0)
+}
+
+fn stop_num(strings: &[String], i: usize) -> Option<f32> {
+    strings.get(i).map(|s| s.trim()).filter(|s| !s.is_empty()).and_then(|s| s.replace(',', ".").parse::<f64>().ok()).filter(|v| v.is_finite()).map(|v| v.round() as f32)
+}
+
+/// A bus stop's `pass_enter_max` (string 1, else 1) and `pass_enter_min` (string 2, else
+/// 0), rounded, as Omsi.exe sets the station up (0x620058): how many people wait there.
+pub fn stop_enter(strings: &[String]) -> (f32, f32) {
+    (stop_num(strings, 1).unwrap_or(1.0), stop_num(strings, 2).unwrap_or(0.0))
 }
 
 impl MapIndex {
@@ -131,10 +142,12 @@ impl MapIndex {
                     part.objects.insert(o.id, ((*tx, *ty), DVec3::new(origin.x + o.pos[0], origin.y + o.pos[1], o.pos[2] + ground), o.rot));
                     if o.extra.len() >= 2 {
                         part.stop_weights.insert(o.id, stop_exit_weight(&o.extra));
+                        part.stop_enter.insert(o.id, stop_enter(&o.extra));
                     }
                 }
                 for a in tile.spline_attachments.iter().filter(|a| a.repeater.is_none() && a.strings.len() >= 2) {
                     part.stop_weights.insert(a.id, stop_exit_weight(&a.strings));
+                    part.stop_enter.insert(a.id, stop_enter(&a.strings));
                 }
                 // an object put on a spline (`[splineAttachement]`: an entry point or a stop
                 // on the road): where the row's first object stands on its own spline - enough
@@ -164,6 +177,7 @@ impl MapIndex {
                     }
                     index.covers.extend(p.covers);
                     index.stop_weights.extend(p.stop_weights);
+                    index.stop_enter.extend(p.stop_enter);
                     for (f, (n, t)) in p.files {
                         index.files.entry(f).or_insert((0, t)).0 += n;
                     }
