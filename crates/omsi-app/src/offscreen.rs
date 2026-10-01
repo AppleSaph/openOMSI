@@ -283,7 +283,7 @@ pub(crate) fn run_offscreen(
                 .ok()
                 .as_ref(),
         )
-        .brightness
+            .brightness
             < 0.75;
         t.populate(&world, &renderer, &mut scene, center);
     }
@@ -356,6 +356,16 @@ pub(crate) fn run_offscreen(
         let t_s = i as f32 * dt;
         if server {
             srv_clock += dt as f64 * lan_off.as_ref().map(|l| l.clock_speed).unwrap_or(1.0);
+            // a server on the real time (server.cfg): its clock reads this machine's
+            if i % 30 == 0 && crate::real_time::server_real() {
+                if let Some(n) = crate::real_time::now() {
+                    let have = (parse_time(&args.time) + srv_clock + srv_admin.shift).rem_euclid(86400.0);
+                    let off = (n.secs - have + 43_200.0).rem_euclid(86_400.0) - 43_200.0;
+                    if off.abs() > 0.5 {
+                        srv_admin.shift += off;
+                    }
+                }
+            }
             if let Some(l) = lan_off.as_mut() {
                 let positions = |id: u32| remotes_off.remotes.get(&id).map(|r| (r.vehicle().position, r.vehicle().heading));
                 srv_admin.prune(l);
@@ -404,10 +414,10 @@ pub(crate) fn run_offscreen(
                 Some(c) => c,
                 None => match player.as_ref() {
                     Some(p)
-                        if args.cam.is_none() && args.view != "free" && args.follow.is_none() =>
-                    {
-                        p.camera(&args.view, &camera)
-                    }
+                    if args.cam.is_none() && args.view != "free" && args.follow.is_none() =>
+                        {
+                            p.camera(&args.view, &camera)
+                        }
                     _ => Camera {
                         position: camera.position,
                         yaw: camera.yaw,
@@ -508,7 +518,7 @@ pub(crate) fn run_offscreen(
             t.others = lan_outlines(&remotes_off);
             t.others.extend(own_outlines(player.as_ref(), &[]));
             t.player_priority = player.as_ref().and_then(|p| p.vehicle.var("TrafficPriority")).is_some_and(|v| v > 0.5);
-                        t.tick(dt, player.as_ref().map(|p| player_outline(p)));
+            t.tick(dt, player.as_ref().map(|p| player_outline(p)));
             world.set_switches(&t.switch_requests());
             world.set_signals(&t.signal_aspects(&world.signal_routes, None));
             if let Some(p) = player.as_mut() {
@@ -1577,7 +1587,7 @@ pub(crate) fn run_offscreen(
                     let run = |v: &mut omsi_sim::VehicleInstance,
                                name: Option<&str>,
                                d: (f32, f32)|
-                     -> (bool, Vec<f32>, Vec<f32>, Vec<String>) {
+                               -> (bool, Vec<f32>, Vec<f32>, Vec<String>) {
                         restore(v);
                         v.host.fired_triggers.clear();
                         v.host.fired_file_triggers.clear();
@@ -1629,7 +1639,7 @@ pub(crate) fn run_offscreen(
                                 .filter(|&k| {
                                     !noisy[k]
                                         && (differs(after[k], idle[k])
-                                            || differs(held[k], idle_held[k]))
+                                        || differs(held[k], idle_held[k]))
                                 })
                                 .collect();
                             played = sounds
@@ -2754,10 +2764,10 @@ fn vehicle_camera(player: &Player, camera: &mut Camera) {
     if v.len() >= 5 {
         camera.position = player.vehicle.position
             + player
-                .vehicle
-                .body_rotation()
-                .transform_point3(Vec3::new(v[0], v[1], v[2]))
-                .as_dvec3();
+            .vehicle
+            .body_rotation()
+            .transform_point3(Vec3::new(v[0], v[1], v[2]))
+            .as_dvec3();
         camera.yaw = player.vehicle.heading as f32 + v[3];
         camera.pitch = v[4];
         camera.near = 0.02;

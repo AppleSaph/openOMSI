@@ -456,6 +456,8 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
                         app.apply_time_edit();
                     } else if app.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
                         app.service_msg = Some(("In a LAN session the host sets the clock".into(), 3.0));
+                    } else if app.real_time_locked() {
+                        app.service_msg = Some(("The time cannot be changed while the real-time sync is on".into(), 3.0));
                     } else {
                         app.menu_edit = Some(String::new());
                     }
@@ -878,6 +880,7 @@ fn toggle_now(app: &App, id: &str) -> Option<bool> {
         "mouse" => app.mouse_drive,
         "fps" => s.show_fps,
         "get_up" => s.get_up,
+        "time_sync" => s.time_sync,
         "camcoll" => s.camera_collision,
         "steer_look" => s.steer_look,
         "hands_in_cab" => s.hands_in_cab,
@@ -943,6 +946,16 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
         "get_up" => {
             app.settings.get_up = on;
             Some(("get_up", bit))
+        }
+        // the real-time sync: the clock takes the device's date and time at once (a host's
+        // clock runs at real time while it is on, at its time speed again after)
+        "time_sync" => {
+            app.settings.time_sync = on;
+            if let Some(l) = app.lan.as_mut().filter(|l| l.role == omsi_net::Role::Host) {
+                l.clock_speed = if on { 1.0 } else { app.settings.time_speed.clamp(1.0, 30.0) };
+            }
+            app.sync_real_time();
+            Some(("time_sync", bit))
         }
         "fps" => {
             app.settings.show_fps = on;
@@ -1235,33 +1248,40 @@ fn world_pages(app: &App) -> Vec<Page> {
     if !client {
         let t = app.clock.time;
         let now = format!("{:02}:{:02}", ((t / 3600.0) as i64).rem_euclid(24), ((t / 60.0) as i64) % 60);
-        // the exact time: typed as hours, minutes and seconds
-        match app.menu_edit.as_ref() {
-            Some(d) => {
-                let mut c: Vec<char> = d.chars().collect();
-                c.resize(6, '_');
-                let typed = format!("{}{}:{}{}:{}{}", c[0], c[1], c[2], c[3], c[4], c[5]);
-                time.push((row("Exact time", 'E', &typed, "Press Enter to change, Esc to cancel", None), "time_edit".to_string()));
+        time.extend(switch_row(app, "time_sync", "Real-time sync", "The game's date and time follow this device's clock; the time cannot be changed while it is on"));
+        if app.real_time_locked() {
+            let (d, m) = app.clock.day_month();
+            let text = format!("{:04}-{m:02}-{d:02}  {}:{:02}", app.clock.year, now, (t as i64) % 60);
+            time.push((row("Date and time", 'i', &text, "Synchronized with the real time", None), "noop".to_string()));
+        } else {
+            // the exact time: typed as hours, minutes and seconds
+            match app.menu_edit.as_ref() {
+                Some(d) => {
+                    let mut c: Vec<char> = d.chars().collect();
+                    c.resize(6, '_');
+                    let typed = format!("{}{}:{}{}:{}{}", c[0], c[1], c[2], c[3], c[4], c[5]);
+                    time.push((row("Exact time", 'E', &typed, "Press Enter to change, Esc to cancel", None), "time_edit".to_string()));
+                }
+                None => {
+                    let secs = format!("{}:{:02}", now, (t as i64) % 60);
+                    time.push((row("Exact time", 'e', &secs, "Change the current time (Press Enter to change)", None), "time_edit".to_string()));
+                }
             }
-            None => {
-                let secs = format!("{}:{:02}", now, (t as i64) % 60);
-                time.push((row("Exact time", 'e', &secs, "Change the current time (Press Enter to change)", None), "time_edit".to_string()));
+            time.extend(slider_row(app, "hour", "Hour", "Set the hour of the day directly", &|v| format!("{:02}", v as i64)));
+            time.extend(slider_row(app, "minute", "Minute", "Set the minute directly", &|v| format!("{:02}", v as i64)));
+            for (name, hm, secs) in [("Morning", "06:00", 6 * 3600), ("Noon", "12:00", 12 * 3600), ("Evening", "18:00", 18 * 3600), ("Night", "23:00", 23 * 3600)] {
+                time.push(button(name, hm, "Jump to this time of day.", &format!("clock_set {secs}")));
             }
-        }
-        time.extend(slider_row(app, "hour", "Hour", "Set the hour of the day directly", &|v| format!("{:02}", v as i64)));
-        time.extend(slider_row(app, "minute", "Minute", "Set the minute directly", &|v| format!("{:02}", v as i64)));
-        for (name, hm, secs) in [("Morning", "06:00", 6 * 3600), ("Noon", "12:00", 12 * 3600), ("Evening", "18:00", 18 * 3600), ("Night", "23:00", 23 * 3600)] {
-            time.push(button(name, hm, "Jump to this time of day.", &format!("clock_set {secs}")));
-        }
-        if let (Some(_), Some(p)) = (app.duty.as_ref(), app.player.as_ref()) {
-            let d = p.vehicle.host.tt_delay as f64;
-            if d.abs() >= 1.0 {
-                let text = format!("{}{}:{:02}", if d < 0.0 { "−" } else { "+" }, (d.abs() / 60.0) as i64, d.abs() as i64 % 60);
-                time.push(button("On time with the timetable", &text, "Move the clock so that the vehicle is on time", "clock_ontime"));
+            if let (Some(_), Some(p)) = (app.duty.as_ref(), app.player.as_ref()) {
+                let d = p.vehicle.host.tt_delay as f64;
+                if d.abs() >= 1.0 {
+                    let text = format!("{}{}:{:02}", if d < 0.0 { "−" } else { "+" }, (d.abs() / 60.0) as i64, d.abs() as i64 % 60);
+                    time.push(button("On time with the timetable", &text, "Move the clock so that the vehicle is on time", "clock_ontime"));
+                }
             }
-        }
-        if app.lan.is_none() {
-            time.extend(slider_row(app, "speed", "Time speed", "How fast the world's clock runs", &|v| format!("x{v}")));
+            if app.lan.is_none() {
+                time.extend(slider_row(app, "speed", "Time speed", "How fast the world's clock runs", &|v| format!("x{v}")));
+            }
         }
         weather.push((row("Preset", 'o', &weather_name(app), "A ready-made weather. It blends in over a few minutes; everything below adjusts it.", None), "weather".to_string()));
         let cloud = app.weather.as_ref().and_then(|w| cloud_index(&w.clouds.0)).map(|i| CLOUD_TYPES[i].1.to_string()).or_else(|| app.weather.as_ref().map(|w| w.clouds.0.trim().to_string())).unwrap_or_default();

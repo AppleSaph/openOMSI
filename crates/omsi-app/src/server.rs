@@ -35,6 +35,9 @@ pub(crate) struct ServerCfg {
     pub admin_password: String,
     /// How fast the server's clock runs (1 real time).
     pub time_speed: f64,
+    /// The clock follows the server machine's real date and time (the speed and the
+    /// administration's clock are ignored then).
+    pub real_time: bool,
     /// Only these buses may be driven on the server (vehicle files, empty: every bus the
     /// server has installed).
     pub vehicles: Vec<String>,
@@ -78,6 +81,10 @@ admin_password =
 
 # how fast the clock runs (1 = real time, 2 = twice as fast, up to 30)
 time_speed = 1
+
+# the clock follows this machine's real date and time (1 = on; the time and date above are
+# then only for the very first moment, and time_speed and the admin's clock are ignored)
+real_time = 0
 
 # the buses players may drive, separated by ; (vehicle files such as
 # Vehicles/MAN_SD200/MAN_SD77.bus; empty: every bus installed on the server)
@@ -124,6 +131,7 @@ impl ServerCfg {
             icon,
             admin_password: kv.get("admin_password").cloned().unwrap_or_default(),
             time_speed: kv.get("time_speed").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(1.0).clamp(1.0, 30.0),
+            real_time: flag("real_time", false),
             vehicles: kv.get("vehicles").map(|v| v.split(';').map(|x| x.trim().replace('\\', "/")).filter(|x| !x.is_empty()).collect()).unwrap_or_default(),
         })
     }
@@ -152,12 +160,16 @@ pub(crate) fn info_of(cfg: &ServerCfg) -> omsi_net::ws::ServerInfo {
 pub(crate) fn prepare(args: &mut Args, path: &Path) -> Result<ServerCfg> {
     let cfg = ServerCfg::load(path)?;
     SERVER_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
-    let _ = SERVER_ADMIN.set((cfg.admin_password.clone(), cfg.time_speed));
+    let _ = SERVER_ADMIN.set((cfg.admin_password.clone(), if cfg.real_time { 1.0 } else { cfg.time_speed }));
+    crate::real_time::set_server_real(cfg.real_time);
     let _ = SERVER_VEHICLES.set(cfg.vehicles.clone());
     args.map = cfg.map.clone();
     args.time = cfg.time.clone();
     if let Some(d) = &cfg.date {
         args.date = Some(d.clone());
+    }
+    if cfg.real_time {
+        crate::real_time::start_at_now(args);
     }
     args.weather = cfg.weather.clone();
     args.traffic = cfg.traffic;

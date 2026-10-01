@@ -687,8 +687,10 @@ fn gameplay_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, cols: [Rect; 2]) ->
     toggle_setting(ui, s, dirty, c.row(), "Collisions with people", "collision_pedestrians");
     toggle_setting(ui, s, dirty, c.row(), "Start at the real time", "use_real_time");
     toggle_setting(ui, s, dirty, c.row(), "Start on today's date", "use_real_date");
+    // the game's clock follows this device's (the host's in multiplayer); the time cannot be set
+    toggle_setting(ui, s, dirty, c.row(), "Sync the clock with the real time (locks the time)", "time_sync");
     // (in multiplayer the host's or the server's speed counts)
-    sel_setting(ui, s, dirty, "s-timespeed", c.row(), "Time speed (not in multiplayer)", "time_speed", &[("1", "Real time"), ("2", "x2"), ("4", "x4"), ("8", "x8"), ("15", "x15"), ("30", "x30")]);
+    sel_setting(ui, s, dirty, "s-timespeed", c.row(), "Time speed (not in multiplayer or with the real-time sync)", "time_speed", &[("1", "Real time"), ("2", "x2"), ("4", "x4"), ("8", "x8"), ("15", "x15"), ("30", "x30")]);
     [left, c.used()]
 }
 
@@ -775,7 +777,7 @@ fn general_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, c
         };
         ui.text_in(&text, Rect::new(r.x + 162.0, r.y, r.w - 162.0, r.h), 12.5, omsi_ui::Weight::Regular, TEXT_DIM, omsi_ui::paint::Align::Left);
     }
-    if ui.button("s-upd-github", c.row(), "github.com/openOMSI-Project/openOMSI", Some("open_in_new"), ButtonKind::Ghost) {
+    if ui.button("s-upd-github", c.row(), "github.com/turbo-devv/openOMSI", Some("open_in_new"), ButtonKind::Ghost) {
         crate::updater::open_url(crate::updater::REPO_URL);
     }
     // every setting at once: here at the end, not first on the page where it was the
@@ -1108,7 +1110,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
     if let Some(w) = pv.wizard.as_mut() {
         let done = if w.step == WIZARD_STEPS.len() {
             feedback_setup(&mut l.ui, inner, w, d, &live, live_dev, &mut pv.io, &mut pv.feedback_test, hwnd,
-                l.state.settings.get("ff_invert").and_then(|v| v.as_bool()).unwrap_or(false))
+                           l.state.settings.get("ff_invert").and_then(|v| v.as_bool()).unwrap_or(false))
         } else {
             wizard(&mut l.ui, inner, w, d, &live, live_dev.is_some(), live_dev.is_some_and(|c| c.ff_capable && !c.gamepad))
         };
@@ -1426,8 +1428,8 @@ fn feedback_setup(
         }
         if !*active {
             ui.slider("wiz-ff-strength", Rect::new(r.x, y, r.w, ROW), &mut w.test_strength,
-                crate::ffb_calibration::PULSE_FORCE, crate::ffb_calibration::MAX_PULSE_FORCE, 0.01,
-                "Test strength", &|v| format!("{:.0}%", v * 100.0));
+                      crate::ffb_calibration::PULSE_FORCE, crate::ffb_calibration::MAX_PULSE_FORCE, 0.01,
+                      "Test strength", &|v| format!("{:.0}%", v * 100.0));
             y += ROW + 8.0;
             y += ui.paragraph("If the wheel barely moves, increase Test strength and retry. Keep your hands clear.", Vec2::new(r.x, y), r.w, 13.0, Weight::Regular, TEXT_DIM) + 10.0;
             if ui.button("wiz-ff-test", Rect::new(r.x, y, 180.0, 36.0), "Start test", Some("play_arrow"), ButtonKind::Primary) {
@@ -2148,7 +2150,7 @@ mod settings_tests {
         let sound = vec!["s-vol", "s-volai", "s-volsc", "set-doppler", "s-voices"];
         let gameplay = vec![
             "s-board", "set-exact_fare", "s-pax", "set-get_up", "s-unsched", "s-maxsched", "s-maxpark",
-            "s-maint", "set-collision_vehicles", "set-collision_objects", "set-collision_pedestrians", "set-use_real_time", "set-use_real_date", "s-timespeed",
+            "s-maint", "set-collision_vehicles", "set-collision_objects", "set-collision_pedestrians", "set-use_real_time", "set-use_real_date", "set-time_sync", "s-timespeed",
         ];
         let general = vec![
             "s-lang", "set-machine_translation", "s-uiscale", "set-ui_scale_window", "s-uiop", "set-tooltips", "set-show_fps", "set-notes", "set-chat", "set-name_tags",

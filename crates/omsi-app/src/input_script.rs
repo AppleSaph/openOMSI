@@ -1510,6 +1510,8 @@ impl App {
                 self.service_msg = Some((format!("{:02}:{:02}:{:02} is no time of day", h, m, sec), 3.0));
             } else if self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
                 self.service_msg = Some(("In a LAN session the host sets the clock".into(), 3.0));
+            } else if self.real_time_locked() {
+                self.service_msg = Some(("The time cannot be changed while the real-time sync is on".into(), 3.0));
             } else {
                 let t = self.clock.time;
                 let day_start = t - t.rem_euclid(86400.0);
@@ -2377,6 +2379,9 @@ impl App {
     /// How fast the clock runs: the session's in LAN play (the host's, which its time speed
     /// setting or its administration set), else the settings'.
     pub(crate) fn time_speed(&self) -> f64 {
+        if self.real_time_locked() {
+            return 1.0;
+        }
         match self.lan.as_ref() {
             Some(l) => l.clock_speed,
             None => self.settings.time_speed.clamp(1.0, 30.0),
@@ -2499,8 +2504,40 @@ impl App {
         self.service_msg = Some((format!("Now driving: {}", name.trim()), 4.0));
     }
 
+    /// The clock follows the real time and cannot be changed (the `time_sync` setting). In a
+    /// LAN session as a client the host's clock counts: the host or the server syncs, not us.
+    pub(crate) fn real_time_locked(&self) -> bool {
+        self.settings.time_sync && !self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client)
+    }
+
+    /// With the real-time sync on: hold the clock to this device's date and time (a second
+    /// off at most; a bigger gap - the game was paused - is jumped, the traffic's clock with it).
+    pub(crate) fn sync_real_time(&mut self) {
+        if !self.real_time_locked() {
+            return;
+        }
+        let Some(real) = crate::real_time::clock_now(&self.clock) else { return };
+        let gap = crate::real_time::gap(&self.clock, &real);
+        if gap.abs() < 0.25 {
+            return;
+        }
+        self.clock.year = real.year;
+        self.clock.day_of_year = real.day_of_year;
+        self.clock.time = real.time;
+        if let Some(tr) = self.traffic.as_mut() {
+            tr.day_time += gap;
+        }
+        if let Some(p) = self.player.as_mut() {
+            p.vehicle.host.clock = self.clock.clone();
+        }
+    }
+
     /// Move the clock by `secs` (the traffic's clock with it), as OMSI's time dialog does.
     pub(crate) fn shift_clock(&mut self, secs: f64) {
+        if self.real_time_locked() {
+            self.service_msg = Some(("The time cannot be changed while the real-time sync is on".into(), 3.0));
+            return;
+        }
         let mut t = self.clock.time + secs;
         while t < 0.0 {
             t += 86400.0;
@@ -2563,7 +2600,9 @@ impl App {
             clock.time -= 86400.0;
             clock.day_of_year = clock.day_of_year % omsi_sim::clock::days_in_year(clock.year) + 1;
         }
-        self.clock = clock;
+        if !self.settings.time_sync || self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
+            self.clock = clock;
+        }
         p.vehicle.host.clock = self.clock.clone();
         for line in &msg {
             log::info!("{line}");

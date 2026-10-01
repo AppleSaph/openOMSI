@@ -245,7 +245,8 @@ impl ApplicationHandler for App {
                     self.save_last_situation();
                 }
                 // the time of day a script set last frame (the nearer way round the clock)
-                if let Some(t) = self.pending_time.take() {
+                // (not with the real-time sync on: the clock stays the device's)
+                if let Some(t) = self.pending_time.take().filter(|_| !self.real_time_locked()) {
                     let d = (t - self.clock.time + 43_200.0).rem_euclid(86_400.0) - 43_200.0;
                     self.shift_clock(d);
                 }
@@ -877,7 +878,7 @@ impl ApplicationHandler for App {
                             // Physical head tracking controls the view without an added automatic turn.
                             p.steer_look = if vr_on || tracked.is_some() { 0.0 } else {
                                 crate::player::steering_view_yaw(p.steer_look, p.vehicle.physics.controls.steering, dt,
-                                    self.settings.steer_look && self.view == "driver", self.settings.steer_look_angle, self.settings.steer_look_response)
+                                                                 self.settings.steer_look && self.view == "driver", self.settings.steer_look_angle, self.settings.steer_look_response)
                             };
                             if let Some(t) = tracked {
                                 p.seat += glam::Vec3::new(t.pos[0], -t.pos[2], t.pos[1]).clamp(glam::Vec3::splat(-60.0), glam::Vec3::splat(60.0)) / 100.0;
@@ -1418,9 +1419,15 @@ impl ApplicationHandler for App {
                         };
                         let client = self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client);
                         if ctrl && shift && dir != 0.0 && !client {
+                            if self.clock_hold == 0.0 && self.real_time_locked() {
+                                // (says once why the clock stays)
+                                self.shift_clock(dir as f64);
+                            }
                             self.clock_hold += dt;
-                            let rate = 900.0 * (1.0 + self.clock_hold * 1.5).min(8.0);
-                            self.shift_clock(dir * rate as f64 * dt as f64);
+                            if !self.real_time_locked() {
+                                let rate = 900.0 * (1.0 + self.clock_hold * 1.5).min(8.0);
+                                self.shift_clock(dir * rate as f64 * dt as f64);
+                            }
                         } else {
                             self.clock_hold = 0.0;
                         }
@@ -1514,6 +1521,8 @@ impl ApplicationHandler for App {
                     // (the time speed: the settings', or the session's in LAN play)
                     let speed = self.time_speed();
                     self.clock.advance(dt * speed as f32);
+                    // (the real-time sync: the device's date and time, whatever the speed was)
+                    self.sync_real_time();
                     if let Some(t) = self.traffic.as_mut() {
                         t.time_scale = speed;
                     }
