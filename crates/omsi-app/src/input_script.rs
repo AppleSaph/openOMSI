@@ -3143,7 +3143,7 @@ pub(crate) const GAME_MENU: [(&str, &str); 11] = [
     ("world", "World options..."),
     ("map", "City map"),
     ("duty", "Line and tour..."),
-    ("endduty", "End the route"),
+    ("endduty", "End the tour"),
     ("save", "Save the situation"),
     ("load", "Load the quicksave"),
     ("shot", "Screenshot"),
