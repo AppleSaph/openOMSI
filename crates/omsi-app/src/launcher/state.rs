@@ -186,7 +186,10 @@ pub struct State {
     pub keybindings_error: String,
     pub instances: Vec<core::Instance>,
     pub queued_launch: Option<core::Duty>,
+    /// Start was pressed: the graphics device stays given up until the list of games has the
+    /// game started (its process, once it is known), 15 s at most.
     pub launch_hold: Option<std::time::Instant>,
+    launched_pid: Option<u32>,
     /// A game started from here ended on an error: what it said, and the end of its log
     /// (see `crash_of`), for the dialog that asks to report it.
     pub crash: Option<(String, String)>,
@@ -251,6 +254,7 @@ impl State {
             instances: Vec::new(),
             queued_launch: None,
             launch_hold: None,
+            launched_pid: None,
             crash: None,
             jobs: Vec::new(),
             mods: None,
@@ -298,8 +302,14 @@ impl State {
         self.status = (t, err, Instant::now());
     }
 
+    /// A game is about to start, starting (not in the list of games yet) or running.
+    pub fn in_game(&self) -> bool {
+        self.queued_launch.is_some() || self.launch_hold.is_some_and(|t| t.elapsed().as_secs_f32() < 15.0) || self.instances.iter().any(|i| i.running)
+    }
+
     pub fn spawn_launch(&mut self, d: core::Duty) {
         self.launch_hold = Some(std::time::Instant::now());
+        self.launched_pid = None;
         self.spawn(move || Msg::Launched(core::launch(&d).map_err(|e| format!("{e:#}"))));
     }
 
@@ -796,6 +806,12 @@ impl State {
                             }
                         }
                         self.instances = p.instances;
+                        // the game started from here is in the list: whether it runs is known
+                        // (one that ended at once left the launcher blank until the 15 s were out)
+                        if game_listed(self.launched_pid, &self.instances) {
+                            self.launch_hold = None;
+                            self.launched_pid = None;
+                        }
                         for i in &self.instances {
                             if !i.running {
                                 self.stopping.remove(&i.pid);
@@ -838,6 +854,7 @@ impl State {
             }
             Msg::Launched(Ok(l)) => {
                 core::log_to_file(&format!("launched pid {} ({} other game(s) running): {}", l.pid, l.others, l.command));
+                self.launched_pid = Some(l.pid);
                 self.set_status(format!("Game started (process {}), log {}{}", l.pid, l.log, if l.others > 0 { format!(" - {} other game(s) keep running", l.others) } else { String::new() }), false);
                 self.poll_now();
             }
@@ -988,6 +1005,11 @@ impl State {
     }
 }
 
+/// Whether the game started from here (its process `pid`) is in a list of games.
+fn game_listed(pid: Option<u32>, instances: &[core::Instance]) -> bool {
+    pid.is_some_and(|p| instances.iter().any(|i| i.pid == p))
+}
+
 /// The trip a tour starts with at `now`, shared by the route preview and the launch choice.
 pub(super) fn trip_index_at(tour: &core::TourInfo, now: f64) -> Option<usize> {
     tour.trips.iter().position(|x| x.departure >= now - 120.0).or(if tour.trips.is_empty() { None } else { Some(tour.trips.len() - 1) })
@@ -1085,6 +1107,28 @@ mod choice_tests {
         c.plate = "B-AB 1234".into();
         let back: super::Choice = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back.plate, "B-AB 1234");
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use omsi_launcher_lib::Instance;
+
+    fn game(pid: u32, running: bool) -> Instance {
+        Instance { pid, running, ..Default::default() }
+    }
+
+    /// The wait after Start ends with the first list of games that has the one started,
+    /// running or ended already - a game that died at once left the launcher blank for the
+    /// whole 15 seconds.
+    #[test]
+    fn the_wait_after_start_ends_once_the_game_is_listed() {
+        // (a list asked for before the game was started)
+        assert!(!super::game_listed(Some(7), &[game(3, true)]));
+        assert!(super::game_listed(Some(7), &[game(3, true), game(7, true)]));
+        assert!(super::game_listed(Some(7), &[game(7, false)]));
+        // (Start pressed, the game not started yet)
+        assert!(!super::game_listed(None, &[game(7, true)]));
     }
 }
 

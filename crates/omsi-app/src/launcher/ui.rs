@@ -979,6 +979,13 @@ impl Ui {
             ranges.push((a..verts.len() as u32, tex));
         }
         // the input of this frame is used up
+        self.discard_input();
+        (layers, verts, ranges)
+    }
+
+    /// Forget the clicks, keys and text since the last frame (used up by a frame, or come
+    /// while nothing was drawn).
+    pub fn discard_input(&mut self) {
         self.input.pressed = false;
         self.input.released = false;
         self.input.right_pressed = false;
@@ -987,7 +994,6 @@ impl Ui {
         self.input.keys.clear();
         self.input.raw_key = None;
         self.input.double_click = false;
-        (layers, verts, ranges)
     }
 
     fn draw_popup(&mut self) {
@@ -1192,5 +1198,25 @@ mod tests {
         assert_eq!(days_in_month(2024, 2), 29);
         assert_eq!(days_in_month(1900, 2), 28);
         assert_eq!(parse_date("1989-05-30"), (1989, 5, 30));
+    }
+
+    /// What was clicked and typed while the launcher drew nothing (a game ran) is gone:
+    /// the first frame drawn afterwards pressed the button under the mouse, Start again.
+    #[test]
+    fn input_while_nothing_is_drawn_is_not_used_afterwards() {
+        let mut ui = Ui::new();
+        ui.input.pressed = true;
+        ui.input.released = true;
+        ui.input.right_pressed = true;
+        ui.input.double_click = true;
+        ui.input.wheel = Vec2::new(0.0, -3.0);
+        ui.input.text.push_str("abc");
+        ui.input.keys.push(Key::Enter);
+        ui.input.raw_key = Some(winit::keyboard::KeyCode::Enter);
+        ui.discard_input();
+        let i = &ui.input;
+        assert!(!i.pressed && !i.released && !i.right_pressed && !i.double_click);
+        assert_eq!(i.wheel, Vec2::ZERO);
+        assert!(i.text.is_empty() && i.keys.is_empty() && i.raw_key.is_none());
     }
 }
