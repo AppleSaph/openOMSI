@@ -371,6 +371,9 @@ pub struct Frame<'a> {
     pub menu_head: Option<(String, String)>,
     /// The timetable of the chosen line or tour, beside the list.
     pub menu_preview: Option<Preview>,
+    /// The first stop shown of the timetable beside the tours, when the wheel has scrolled it
+    /// (`None`: the stop chosen is kept in view).
+    pub pane_first: Option<usize>,
     /// The pages of an open settings window (their titles) and the one shown.
     pub menu_tabs: Option<(Vec<String>, usize)>,
     /// The keyboard chose the menu's line last: that line is shown lit (else only the one
@@ -401,6 +404,8 @@ pub struct Ui {
     pub menu_pane: Vec<[f32; 4]>,
     pub menu_pane_start: usize,
     pub menu_pane_go: Option<[f32; 4]>,
+    /// The whole timetable pane beside the tours: the wheel over it scrolls its stops.
+    pub menu_pane_box: Option<[f32; 4]>,
     /// The two arrows beside the time of a tour: the trip before, the next one.
     pub menu_time: Vec<[f32; 4]>,
     /// The colours and positions of the menu's parts that ease to their new state (a line's
@@ -430,7 +435,7 @@ pub struct Ui {
 
 impl Ui {
     pub fn new() -> Option<Ui> {
-        Some(Ui { text: TextCache::new()?, chat: ChatWidget::default(), menu_rects: Vec::new(), menu_arrows: Vec::new(), menu_scroll_thumb: None, menu_scroll_track: None, menu_ctl: Vec::new(), dd_rects: Vec::new(), dd_top: 0, dd_rows: 8, menu_side: Vec::new(), menu_pane: Vec::new(), menu_pane_start: 0, menu_pane_go: None, menu_time: Vec::new(), anim: Default::default(), anim_dt: 0.0, menu_overlay_range: 0..0, vr_cursor_overlay: None, vr_tooltip_overlay: None, menu_start: 0, menu_rows: 0, menu_row_h: 1.0, images: Default::default() })
+        Some(Ui { text: TextCache::new()?, chat: ChatWidget::default(), menu_rects: Vec::new(), menu_arrows: Vec::new(), menu_scroll_thumb: None, menu_scroll_track: None, menu_ctl: Vec::new(), dd_rects: Vec::new(), dd_top: 0, dd_rows: 8, menu_side: Vec::new(), menu_pane: Vec::new(), menu_pane_start: 0, menu_pane_go: None, menu_pane_box: None, menu_time: Vec::new(), anim: Default::default(), anim_dt: 0.0, menu_overlay_range: 0..0, vr_cursor_overlay: None, vr_tooltip_overlay: None, menu_start: 0, menu_rows: 0, menu_row_h: 1.0, images: Default::default() })
     }
 
     /// Draw the frame's interface: its overlays go after the HUD's in `scene.overlays`.
@@ -1102,6 +1107,7 @@ impl Ui {
         self.menu_pane.clear();
         self.menu_pane_start = 0;
         self.menu_pane_go = None;
+        self.menu_pane_box = None;
         self.menu_time.clear();
         self.menu_scroll_thumb = None;
         self.menu_scroll_track = None;
@@ -1422,8 +1428,22 @@ impl Ui {
                 let go_h = 34.0 * s;
                 let go = [px0 + pad, py1 - 12.0 * s - go_h, px1 - pad, py1 - 12.0 * s];
                 let fit = (((go[1] - 10.0 * s) - top) / lh).floor().max(1.0) as usize;
-                let first = if n > fit { chosen.saturating_sub(fit / 2).min(n - fit) } else { 0 };
+                let first = match f.pane_first {
+                    Some(p) if n > fit => p.min(n - fit),
+                    _ if n > fit => chosen.saturating_sub(fit / 2).min(n - fit),
+                    _ => 0,
+                };
                 self.menu_pane_start = first;
+                self.menu_pane_box = Some([px0, py0, px1, py1]);
+                // (a long list of stops: a thin scroll bar at the pane's edge)
+                if n > fit {
+                    let (tt, tb) = (top, go[1] - 10.0 * s);
+                    let th = tb - tt;
+                    self.text.rounded(r, scene, [px1 - 6.0 * s, tt, px1 - 3.0 * s, tb], 1.5 * s, [255, 255, 255, 22]);
+                    let t0 = tt + th * first as f32 / n as f32;
+                    let t1 = tt + th * (first + fit) as f32 / n as f32;
+                    self.text.rounded(r, scene, [px1 - 6.0 * s, t0, px1 - 3.0 * s, t1], 1.5 * s, ACCENT);
+                }
                 let time_w = p.rows.iter().skip(first).take(fit).map(|row| self.text.width(&row.1, rpx as f32)).fold(0.0f32, f32::max);
                 for (i, (what, when)) in p.rows.iter().enumerate().skip(first).take(fit) {
                     let ry = top + lh * (i - first) as f32 + lh * 0.5;

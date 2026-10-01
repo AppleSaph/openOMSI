@@ -172,10 +172,10 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
         }
         ListKind::Lines => {
             if let Some(sch) = app.schedule.as_ref() {
-                let mut lines: Vec<&omsi_timetable::Line> = sch.data.lines.iter().filter(|l| l.user_allowed && !l.tours.is_empty()).collect();
+                let mut lines: Vec<&omsi_timetable::Line> = sch.data.lines.iter().filter(|l| l.user_allowed && l.tours.iter().any(|t| tour_listed(sch, &l.name, t, app.clock.time))).collect();
                 lines.sort_by(|a, b| natural(&a.name, &b.name));
                 for l in lines {
-                    out.push((format!("{} {}  ({} {})", tr("Line"), l.name, l.tours.len(), tr("tours")), format!("line {}", l.name)));
+                    out.push((format!("{} {}  ({} {})", tr("Line"), l.name, l.tours.iter().filter(|t| tour_listed(sch, &l.name, t, app.clock.time)).count(), tr("tours")), format!("line {}", l.name)));
                 }
             }
             if out.is_empty() {
@@ -184,7 +184,7 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
         }
         ListKind::Tours(line, _) => {
             if let Some(l) = app.schedule.as_ref().and_then(|s| s.data.lines.iter().find(|l| l.name == *line)) {
-                for t in sorted_tours(l) {
+                for t in sorted_tours(l).into_iter().filter(|t| app.schedule.as_ref().is_some_and(|s| tour_listed(s, line, t, app.clock.time))) {
                     // (the tours in order of the time they start)
                     out.push((format!("{} {}", tr("Tour"), t.number.trim()), format!("tour {}\u{1}{}", line, t.number)));
                 }
@@ -354,9 +354,10 @@ pub(crate) fn menu_extras(
                 let line = schedule?.data.lines.iter().find(|l| l.name == name)?;
                 let rows = sorted_tours(line)
                     .into_iter()
+                    .filter(|t| schedule.is_some_and(|s| tour_listed(s, &line.name, t, now)))
                     .map(|t| {
                         // (the trip and the time the tour has from the game's time on)
-                        let next = schedule.and_then(|s| s.tour_stops_from(&line.name, &t.number, tour_start(t).unwrap_or(0.0)).first().cloned());
+                        let next = schedule.and_then(|s| s.tour_stops_from(&line.name, &t.number, now).first().cloned());
                         let end = match (schedule, next.as_ref()) {
                             (Some(s), Some(n)) => tour_trip_name(s, t, n.0).map(|name| trip_of(&name).1).unwrap_or_default(),
                             _ => t.trips.first().map(|tt| trip_of(&tt.trip).1).unwrap_or_default(),
@@ -369,11 +370,21 @@ pub(crate) fn menu_extras(
                         (what, when)
                     })
                     .collect();
-                Some(Preview { title: format!("{} {}", tr("Line"), line.name), meta: format!("{} {}", line.tours.len(), tr("tours")), rows, chosen: None, button: None, time: None })
+                Some(Preview { title: format!("{} {}", tr("Line"), line.name), meta: format!("{} {}", line.tours.iter().filter(|t| schedule.is_some_and(|s| tour_listed(s, &line.name, t, now))).count(), tr("tours")), rows, chosen: None, button: None, time: None })
             });
             (MenuKind::Lines, head("Line and tour..."), preview)
         }
         ListKind::Tours(line_name, pick) => {
+            // (the line number of the trip of a tour shown: a tour may run trips of several lines)
+            let tour_line = |ln: &str, num: &str| -> Option<String> {
+                let sch = schedule?;
+                let line = sch.data.lines.iter().find(|l| l.name == ln)?;
+                let tour = line.tours.iter().find(|t| t.number == num)?;
+                let n_trips = sch.tour_trip_count(ln, num);
+                let trip = pick.as_ref().filter(|p| p.0 == num).map(|p| p.2).unwrap_or_else(|| sch.tour_trip_now(ln, num, now)).min(n_trips.saturating_sub(1));
+                let stops = sch.tour_trip_stops(ln, num, trip);
+                stops.first().and_then(|s| tour_trip_name(sch, tour, s.0)).map(|n| trip_of(&n).0).filter(|l| !l.is_empty())
+            };
             let preview = action.strip_prefix("tour ").and_then(|rest| rest.split_once('\u{1}')).and_then(|(ln, num)| {
                 let sch = schedule?;
                 let line = sch.data.lines.iter().find(|l| l.name == ln)?;
@@ -384,9 +395,10 @@ pub(crate) fn menu_extras(
                 let at = stops.first().map(|s| s.3).unwrap_or_else(|| tour_start(tour).unwrap_or(0.0));
                 let chosen = pick.as_ref().filter(|p| p.0 == num).map(|p| p.1).unwrap_or(0).min(stops.len().saturating_sub(1));
                 let rows = stops.iter().map(|s| (s.2.trim().to_string(), hm((s.3 / 60.0) as f32))).collect();
+                let trip_line = tour_line(ln, num).unwrap_or_else(|| line_sign(schedule, line));
                 Some(Preview {
                     title: format!("{} {}", tr("Tour"), num.trim()),
-                    meta: format!("{} {}  ·  {} {}/{}  ·  {}", tr("Line"), ln, tr("Trip"), trip + 1, n_trips.max(1), tr("Choose the stop to start from")),
+                    meta: format!("{} {}  ·  {} {}/{}  ·  {}", tr("Line"), trip_line, tr("Trip"), trip + 1, n_trips.max(1), tr("Choose the stop to start from")),
                     rows,
                     chosen: Some(chosen),
                     button: Some(tr("Start trip")),
@@ -394,7 +406,9 @@ pub(crate) fn menu_extras(
                     time: Some(hm((at / 60.0) as f32)),
                 })
             });
-            (MenuKind::Tours, Some((title("Line and tour..."), format!("{} {}", tr("Line"), line_name))), preview)
+            let chosen_line = action.strip_prefix("tour ").and_then(|rest| rest.split_once('\u{1}')).and_then(|(ln, num)| tour_line(ln, num));
+            let sign = chosen_line.or_else(|| schedule.and_then(|s| s.data.lines.iter().find(|l| l.name == *line_name)).map(|l| line_sign(schedule, l))).unwrap_or_else(|| line_name.clone());
+            (MenuKind::Tours, Some((title("Line and tour..."), format!("{} {}", tr("Line"), sign))), preview)
         }
         ListKind::Drivers => (MenuKind::List, head("Driver..."), None),
         ListKind::Numbers => (MenuKind::List, head("Fleet number..."), None),
@@ -1290,6 +1304,29 @@ pub(crate) fn page_titles(app: &App, kind: &ListKind) -> Option<(Vec<String>, us
 /// The time (seconds of the day) a tour starts: its earliest trip's departure.
 pub(crate) fn tour_start(tour: &omsi_timetable::Tour) -> Option<f64> {
     tour.trips.iter().map(|t| t.departure as f64 * 60.0).fold(None, |a: Option<f64>, d| Some(a.map_or(d, |x| x.min(d))))
+}
+
+/// Whether a tour is listed now: it runs on this day and is current at `now` (seconds of the
+/// day) - under way, or leaving within half an hour; one that has finished is not.
+fn tour_listed(sch: &crate::schedule::Schedule, line: &str, tour: &omsi_timetable::Tour, now: f64) -> bool {
+    if !sch.tour_available(tour) {
+        return false;
+    }
+    let start = tour_start(tour).unwrap_or(0.0);
+    let end = sch.tour_stops(line, &tour.number).iter().map(|s| s.3).fold(start, f64::max);
+    // (a night tour's times go on past 24:00: the early hours of the next day count too)
+    [now, now + 86400.0].iter().any(|n| *n >= start - 1800.0 && *n <= end + 60.0)
+}
+
+/// The line number a line's trips carry (`.ttp` line), else the name of the line's file.
+fn line_sign(schedule: Option<&crate::schedule::Schedule>, line: &omsi_timetable::Line) -> String {
+    let sign = schedule.and_then(|sch| {
+        line.tours.iter().flat_map(|t| t.trips.iter()).find_map(|tt| {
+            let t = sch.data.trips.iter().find(|x| x.name.eq_ignore_ascii_case(&tt.trip))?;
+            Some(t.line.trim().to_string()).filter(|n| !n.is_empty())
+        })
+    });
+    sign.unwrap_or_else(|| line.name.clone())
 }
 
 /// A line's tours in alphabetical order of their numbers (numbers inside them as numbers:

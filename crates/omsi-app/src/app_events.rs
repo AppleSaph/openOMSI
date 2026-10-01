@@ -1920,6 +1920,7 @@ impl ApplicationHandler for App {
                             menu_kind,
                             menu_head,
                             menu_preview,
+                            pane_first: self.pane_scroll.filter(|p| Some(p.0) == chooser_sel).map(|p| p.1),
                             menu_tabs,
                             dropdown,
                             menu_kbd: self.menu_kbd,

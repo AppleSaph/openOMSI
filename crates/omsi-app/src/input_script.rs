@@ -1751,6 +1751,7 @@ impl App {
         let (Some((line, tour)), Some((_, _, trip, trips))) = (crate::game_lists::tour_at(self, k), crate::game_lists::tour_choice(self, k)) else { return };
         let to = if forward { (trip + 1).min(trips.saturating_sub(1)) } else { trip.saturating_sub(1) };
         if to != trip {
+            self.pane_scroll = None;
             self.list_kind = Some(crate::game_lists::ListKind::Tours(line, Some((tour, 0, to))));
         }
     }
@@ -1760,6 +1761,7 @@ impl App {
         let k = self.chooser.unwrap_or(0);
         let (Some((line, tour)), Some((n, at, trip, _))) = (crate::game_lists::tour_at(self, k), crate::game_lists::tour_choice(self, k)) else { return };
         let to = if forward { (at + 1).min(n - 1) } else { at.saturating_sub(1) };
+        self.pane_scroll = None;
         self.list_kind = Some(crate::game_lists::ListKind::Tours(line, Some((tour, to, trip))));
     }
 
@@ -1774,6 +1776,7 @@ impl App {
         }
         let (Some((line, tour)), Some((n, at, trip, _))) = (crate::game_lists::tour_at(self, k), crate::game_lists::tour_choice(self, k)) else { return };
         if i < n {
+            self.pane_scroll = None;
             self.list_kind = Some(crate::game_lists::ListKind::Tours(line, Some((tour, i, trip))));
             return;
         }
@@ -2172,6 +2175,15 @@ impl App {
             return;
         }
         self.wheel_acc -= steps as f32;
+        // the wheel over the timetable beside the tours scrolls its stops
+        if let (Some(u), Some(k)) = (self.ui.as_ref(), self.chooser) {
+            let (x, y) = self.cursor;
+            if u.menu_pane_box.is_some_and(|r| x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3]) {
+                let first = (u.menu_pane_start as i64 - steps).max(0) as usize;
+                self.pane_scroll = Some((k, first));
+                return;
+            }
+        }
         // the list scrolls under the mouse; what is chosen stays chosen (the wheel used to
         // walk the highlight up and down the lines)
         let n = self.menu_len() as f32;

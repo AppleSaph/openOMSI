@@ -404,6 +404,8 @@ pub struct Schedule {
     /// school); `set_day` moves them on at midnight.
     day: i32,
     day_bits: (i32, i32),
+    /// The weekday bit of the next day (night tours run on into it).
+    next_day_bit: i32,
     /// Where today's midnight lies on the traffic's clock (`Traffic::day_time` counts on past
     /// 24:00): a departure leaves at `day_base + time` (`dep_time`), and the date moves on
     /// when the clock passes the next midnight.
@@ -688,6 +690,7 @@ impl Schedule {
             calendar,
             day: date,
             day_bits: (day_bit, school_bit),
+            next_day_bit: 1 << ((clock.weekday() + 1) % 7),
             day_base: 0.0,
             date_clock: clock.clone(),
             car_use,
@@ -788,6 +791,18 @@ impl Schedule {
         }
     }
 
+    /// Whether a tour is offered on the current day (the lists of lines and tours): its day
+    /// mask has the day (and school day or holiday), or - for a night tour with trips after
+    /// 24:00 - the next day's weekday, as the night belongs to both.
+    pub(crate) fn tour_available(&self, tour: &omsi_timetable::Tour) -> bool {
+        let m = tour.extra.trim().parse::<i32>().unwrap_or(1023);
+        if m & self.day_bits.0 != 0 && m & self.day_bits.1 != 0 {
+            return true;
+        }
+        let night = tour.trips.iter().any(|t| t.departure >= 24.0 * 60.0);
+        night && m & self.next_day_bit != 0 && m & self.day_bits.1 != 0
+    }
+
     /// Whether departure `i`'s tour runs on the current day.
     fn runs(&self, i: usize) -> bool {
         let m = self.departures[i].mask;
@@ -806,6 +821,7 @@ impl Schedule {
         }
         self.day = date;
         self.day_bits = day_bits(&self.calendar, clock);
+        self.next_day_bit = 1 << ((clock.weekday() + 1) % 7);
         let busy: HashSet<usize> = self
             .pending
             .iter()

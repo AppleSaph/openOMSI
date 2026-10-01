@@ -118,6 +118,9 @@ pub(crate) struct App {
     /// (in lines, fractional while dragged); `None`: the chosen line is kept in view.
     pub(crate) menu_top: Option<f32>,
     pub(crate) menu_scroll_drag: bool,
+    /// The timetable beside the tours scrolled with the wheel: (the tour's line in the list,
+    /// the first stop shown).
+    pub(crate) pane_scroll: Option<(usize, usize)>,
     /// The digits of a time being typed in the world page of the game menu (None: not typing).
     pub(crate) menu_edit: Option<String>,
     /// The line of the open list whose slider the mouse button holds (it follows the cursor).
