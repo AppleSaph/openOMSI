@@ -1843,6 +1843,8 @@ pub struct Humans {
     next_id: u32,
     /// Seconds since the start.
     time: f64,
+    wall_cells: HashMap<(i32, i32, i32), Vec<(Block, f64, f64)>>,
+    wall_key: (usize, usize, usize, f64),
     /// Passenger cabins by vehicle files (the front vehicle and its coupled parts).
     cabins: HashMap<Vec<PathBuf>, Option<Arc<Cabin>>>,
     player_cabin: Option<Arc<Cabin>>,
@@ -2116,6 +2118,8 @@ impl Humans {
             rng: 0x1234_5678_9ABC_DEF1,
             next_id: 1,
             time: 0.0,
+            wall_cells: HashMap::new(),
+            wall_key: (0, 0, 0, 0.0),
             cabins: HashMap::new(),
             player_cabin: None,
             seats: HashMap::new(),
@@ -4134,7 +4138,12 @@ impl Humans {
         const CELL: f64 = 12.0;
         let collision = world.collision.lock();
         let places: Vec<DVec2> = world.waiting_places.lock().iter().map(|w| w.1.truncate()).collect();
-        let mut cells: HashMap<(i32, i32), Vec<(Block, f64, f64)>> = HashMap::new();
+        let (boxes, meshes, since) = (collision.boxes.len(), collision.meshes.len(), self.wall_key.3);
+        if (boxes, meshes, places.len()) != (self.wall_key.0, self.wall_key.1, self.wall_key.2) || self.time - since > 2.0 || self.time < since {
+            self.wall_cells.clear();
+            self.wall_key = (boxes, meshes, places.len(), self.time);
+        }
+        let mut cells = std::mem::take(&mut self.wall_cells);
         for (k, w) in ground.iter_mut() {
             let i = who[*k];
             if w.fixed || self.people[i].place != Place::Ground {
@@ -4145,28 +4154,29 @@ impl Humans {
                 continue;
             }
             let z = self.people[i].position.z;
-            let key = ((p0.x / CELL).floor() as i32, (p0.y / CELL).floor() as i32);
+            let key = ((p0.x / CELL).floor() as i32, (p0.y / CELL).floor() as i32, z.floor() as i32);
             let walls = cells.entry(key).or_insert_with(|| {
                 let c = DVec2::new((key.0 as f64 + 0.5) * CELL, (key.1 as f64 + 0.5) * CELL);
                 let probe = omsi_sim::collision::Obb {
                     center: c,
                     half: DVec2::splat(CELL * 0.5 + 2.0),
                     heading: 0.0,
-                    z0: z - 1.0,
-                    z1: z + 2.5,
+                    z0: key.2 as f64 - 1.0,
+                    z1: key.2 as f64 + 3.5,
                     velocity: DVec2::ZERO,
                     mass: 0.0,
                     pole: None,
                     id: -1,
                 };
-                collision
-                    .obstacles_near(&probe)
-                    .into_iter()
+                let near = collision.obstacles_near(&probe);
+                let reach = near.iter().map(|o| (o.center - c).length() + o.half.length() + 1.0).fold(0.0, f64::max);
+                let local: Vec<DVec2> = places.iter().copied().filter(|q| (*q - c).length() < reach).collect();
+                near.into_iter()
                     .filter(|o| {
                         // a shelter given as one solid box has its waiting places inside:
                         // people go in there
                         let b = Block { center: o.center, half: o.half, heading: o.heading, vel: DVec2::ZERO };
-                        !places.iter().any(|q| (*q - o.center).length() < o.half.length() + 1.0 && b.near(*q, 0.3))
+                        !local.iter().any(|q| (*q - o.center).length() < o.half.length() + 1.0 && b.near(*q, 0.3))
                     })
                     .map(|o| {
                         (
@@ -4187,7 +4197,7 @@ impl Humans {
                 if *z0 > z + 1.6 || *z1 < z + 0.5 {
                     continue;
                 }
-                if !b.near(w.pos, 0.0) || b.near(p0, -0.01) {
+                if (w.pos - b.center).length_squared() >= b.half.length_squared() || !b.near(w.pos, 0.0) || b.near(p0, -0.01) {
                     continue;
                 }
                 let (q, inside) = b.closest(w.pos);
@@ -4226,6 +4236,7 @@ impl Humans {
                 }
             }
         }
+        self.wall_cells = cells;
     }
 
     /// `OMSI_CHECK_OVERLAP=1`: measure how often somebody on the ground stands inside a
