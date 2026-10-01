@@ -867,6 +867,9 @@ pub struct VehicleInstance {
     /// Faces the wheels cannot climb stop the vehicle (see `RigidBody::wheel_walls`); the
     /// player's bus follows the setting for collisions with objects.
     pub wheel_walls: bool,
+    /// What the radio plays, cut to what a text display shows (see `show_radio_text`):
+    /// `None` leaves the scripts' own texts alone, an empty text is a radio that is off.
+    pub radio_text: Option<String>,
     /// Crashes so far and the energy of the latest (J), kept for logs and the HUD.
     pub crashes: u32,
     pub last_impact: f32,
@@ -1161,6 +1164,7 @@ impl VehicleInstance {
             collided: false,
             last_crash: 0.0,
             wheel_walls: true,
+            radio_text: None,
             crashes: 0,
             last_impact: 0.0,
             dirt: 0.0,
@@ -2030,8 +2034,34 @@ impl VehicleInstance {
         self.update_engine_vars(dt);
         let p = self.ty.program.clone();
         self.vm.run_frame(&p, &mut self.state, &mut self.host);
+        self.show_radio_text();
         self.clear_pax_requests();
         self.update_visuals(dt);
+    }
+
+    /// The station and the song on a radio whose display is a text of its script. OMSI has
+    /// no radio of its own: these radios show names from a list in the script, and a radio
+    /// plugin writes what it really plays into a string of theirs. Two kinds are known:
+    ///
+    /// - a script that reads `Snd_Radio_Text` (the plugin's variable) and puts it behind
+    ///   its frequency: the text goes there;
+    /// - Dmitrij's "Magnitola" (the radio of P3ta's SOR buses and others): the playlist
+    ///   writes `frequency@station` into `mp3_display_track_name` every frame and the
+    ///   display `magnitola_1` shows it - `@` is the line break, ten characters a line.
+    ///   While the display shows that, its second line is replaced.
+    fn show_radio_text(&mut self) {
+        let Some(text) = self.radio_text.as_ref() else { return };
+        let p = &self.ty.program;
+        if let Some(i) = p.str_var("Snd_Radio_Text") {
+            if self.state.str_vars[i as usize] != *text {
+                self.state.str_vars[i as usize] = text.clone();
+            }
+            return;
+        }
+        let (Some(display), Some(track)) = (p.str_var("magnitola_1"), p.str_var("mp3_display_track_name")) else { return };
+        if let Some(shown) = magnitola_line(&self.state.str_vars[track as usize], &self.state.str_vars[display as usize], text) {
+            self.state.str_vars[display as usize] = shown;
+        }
     }
 
     /// The passengers' door requests are pulses: Omsi.exe clears all eight of each kind
@@ -4420,6 +4450,34 @@ pub fn relative_humidity(t: f32, abs_hum: f32) -> f32 {
         (abs_hum / sat).max(0.0)
     } else {
         0.0
+    }
+}
+
+/// The "Magnitola" radio's display with `text` as its second line: `track` is what the
+/// playlist wrote (`90.9 MHz@R-ZURNAL`), `shown` what the display holds. None while the
+/// display shows something else (its welcome, the volume), while the radio is stopped (no
+/// station behind the `@`) or off (`text` empty).
+fn magnitola_line(track: &str, shown: &str, text: &str) -> Option<String> {
+    if text.is_empty() || shown != track {
+        return None;
+    }
+    let (frequency, station) = track.split_once('@')?;
+    (!station.trim().is_empty()).then(|| format!("{frequency}@{text}"))
+}
+
+#[cfg(test)]
+mod radio_text_tests {
+    use super::magnitola_line;
+
+    #[test]
+    fn the_station_line_is_replaced_while_the_display_shows_it() {
+        assert_eq!(magnitola_line("90.9 MHz@R-ZURNAL", "90.9 MHz@R-ZURNAL", "Radio 1   ").as_deref(), Some("90.9 MHz@Radio 1   "));
+        // its welcome and the volume are the display's own
+        assert_eq!(magnitola_line("90.9 MHz@R-ZURNAL", " WELCOME  ", "Radio 1"), None);
+        assert_eq!(magnitola_line("90.9 MHz@R-ZURNAL", "VOLUME@ 15", "Radio 1"), None);
+        // stopped, and a radio that plays nothing
+        assert_eq!(magnitola_line("STOPPED@", "STOPPED@", "Radio 1"), None);
+        assert_eq!(magnitola_line("90.9 MHz@R-ZURNAL", "90.9 MHz@R-ZURNAL", ""), None);
     }
 }
 

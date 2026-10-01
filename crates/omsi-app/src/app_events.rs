@@ -1140,12 +1140,14 @@ impl ApplicationHandler for App {
                     }
                 }
                 if let Some(a) = self.audio.as_ref() {
-                    match self.player.as_ref() {
+                    match self.player.as_mut() {
                         Some(p) => {
                             let inside = self.in_cab;
                             if let Some(m) = self.radio.update(a, &p.vehicle, inside) {
                                 self.service_msg = Some((m, 6.0));
                             }
+                            // (a radio whose display is a text of its script shows the station)
+                            p.vehicle.radio_text = self.radio.display_text();
                         }
                         None => self.radio.stop(a),
                     }
