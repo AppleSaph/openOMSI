@@ -4,6 +4,22 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/turbo-devv/openOMSI/releases) page.
 
+## 0.1.782 - 2026-10-01
+
+### People
+- Passengers are rewritten after Omsi.exe: the same tasks (waiting, the bus coming,
+  walking to the bus, to a place, to the exit, sitting), waiting places along the stop's
+  platform by its length and side, a bus taken from 60 m out and only when its terminus
+  is one of theirs, the nearest open door (or one with a button), the cabin's path network
+  walked by its own routing tables, a free place reserved at random (none free: they stay
+  behind), the ticket stamped or bought at the desk with the game's dialogue, and everybody
+  out at the terminus. The made-up queues, door waits and aisle shuffling are gone: people
+  no longer stand at a door for long or crowd into the bus.
+- Passengers and people on foot are posed and animated as in OMSI (its joint angles, gait
+  curves, stride and stoop) instead of with leg IK. Pedestrians on the pavements stay as
+  they were.
+- Timetable buses no longer set off with a made-up number of riders by the hour.
+
 ## 0.1.780 - 2026-10-01
 
 ### Controls

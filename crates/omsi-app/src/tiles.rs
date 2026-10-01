@@ -65,6 +65,9 @@ pub struct MapIndex {
     /// the way the map lays the road (the side a bus stopping in its own lane keeps its
     /// doors on), 1 = the other. Only objects that carry strings.
     pub stop_side: HashMap<i64, f32>,
+    /// Object id → the stop's length (string 4, 30 m when not given; Omsi.exe's +0x7c,
+    /// sub_620058): how far along it the waiting places and a standing bus may be.
+    pub stop_length: HashMap<i64, f32>,
 }
 
 /// How many passengers get off at a bus stop, as Omsi.exe reads the stop object's strings
@@ -101,6 +104,10 @@ pub fn stop_enter(strings: &[String]) -> (f32, f32) {
 /// `bss1\*.jpg` entry-point signs carry flag 7 too) land on the same default. A value past
 /// 1 (OMSI's door scripts test `= 1`, so their other branch covers everything else) is kept
 /// as it stands, up to the two a script that knows the sides can tell apart.
+pub fn stop_length(strings: &[String]) -> f32 {
+    strings.get(4).map(|s| s.trim()).filter(|s| !s.is_empty()).and_then(|s| s.replace(',', ".").parse::<f64>().ok()).filter(|v| v.is_finite()).map(|v| v as f32).unwrap_or(30.0)
+}
+
 pub fn stop_side(strings: &[String]) -> f32 {
     strings.get(5).map(|s| s.trim()).and_then(|s| s.parse::<f64>().ok()).filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 2.0) as f32).unwrap_or(0.0)
 }
@@ -189,12 +196,14 @@ impl MapIndex {
                         part.stop_weights.insert(o.id, stop_exit_weight(&o.extra));
                         part.stop_enter.insert(o.id, stop_enter(&o.extra));
                         part.stop_side.insert(o.id, stop_side(&o.extra));
+                        part.stop_length.insert(o.id, stop_length(&o.extra));
                     }
                 }
                 for a in tile.spline_attachments.iter().filter(|a| a.repeater.is_none() && a.strings.len() >= 2) {
                     part.stop_weights.insert(a.id, stop_exit_weight(&a.strings));
                     part.stop_enter.insert(a.id, stop_enter(&a.strings));
                     part.stop_side.insert(a.id, stop_side(&a.strings));
+                    part.stop_length.insert(a.id, stop_length(&a.strings));
                 }
                 // an object put on a spline (`[splineAttachement]`: an entry point or a stop
                 // on the road): where the row's first object stands on its own spline - enough
@@ -226,6 +235,7 @@ impl MapIndex {
                     index.stop_weights.extend(p.stop_weights);
                     index.stop_enter.extend(p.stop_enter);
                     index.stop_side.extend(p.stop_side);
+                    index.stop_length.extend(p.stop_length);
                     index.traffic_light_parents.extend(p.traffic_light_parents);
                     for (f, (n, t)) in p.files {
                         index.files.entry(f).or_insert((0, t)).0 += n;

@@ -86,17 +86,49 @@ impl Money {
         out
     }
 
-    /// What a passenger hands over for `value`: a plausible combination that covers it.
-    pub fn coins_for(&mut self, value: f32) -> Vec<usize> {
-        let all = self.denominations();
-        // often one coin or note that covers the fare (change due): the smallest such, as
-        // people do
-        if self.rand_f() < 0.5 {
-            if let Some((i, _)) = all.iter().rev().find(|(_, v)| *v >= value) {
-                return vec![*i];
+
+    /// What a passenger puts on the desk for `price`, as Omsi.exe does it (sub_7e8254):
+    /// coins drawn at random until they cover the price, then every coin that is not needed
+    /// (the rest still covers the price less half the smallest coin) taken back again.
+    pub fn omsi_coins_for(&mut self, price: f32) -> Vec<usize> {
+        let values: Vec<f32> = match &self.currency {
+            Some(c) => c.coins.iter().map(|(_, v)| *v).collect(),
+            None => return Vec::new(),
+        };
+        if values.is_empty() || values.iter().all(|v| *v <= 0.0) {
+            return self.exact_coins_for(price);
+        }
+        let half_smallest = self.smallest_value() / 2.0;
+        let mut out: Vec<usize> = Vec::new();
+        let mut sum = 0.0f32;
+        while sum < price && out.len() < 200 {
+            let k = ((self.rand_f() * values.len() as f32) as usize).min(values.len() - 1);
+            sum += values[k];
+            out.push(k);
+        }
+        let mut again = true;
+        while again {
+            again = false;
+            for j in 0..out.len() {
+                if price - half_smallest <= sum - values[out[j]] {
+                    sum -= values[out[j]];
+                    out.remove(j);
+                    again = true;
+                    break;
+                }
             }
         }
-        self.exact_coins_for(value)
+        out
+    }
+
+    /// The value of the smallest coin (the tolerance of the change is half of it).
+    pub fn smallest_value(&self) -> f32 {
+        self.currency.as_ref().and_then(|c| c.coins.iter().map(|(_, v)| *v).filter(|v| *v > 0.0).reduce(f32::min)).unwrap_or(0.01)
+    }
+
+    /// How many coins lie on the change tray.
+    pub fn change_count(&self) -> usize {
+        self.placed.iter().filter(|p| p.3).count()
     }
 
     pub fn value_of(&self, coins: &[usize]) -> f32 {

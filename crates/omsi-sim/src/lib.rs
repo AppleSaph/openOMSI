@@ -11,6 +11,7 @@ pub mod htmlengine;
 pub mod htmltex;
 pub mod ibis;
 pub mod human;
+pub mod human_omsi;
 pub mod input;
 pub mod particles;
 pub mod physics;

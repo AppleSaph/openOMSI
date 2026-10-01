@@ -6,19 +6,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/turbo-devv/openOMSI/releases/latest"><img alt="Version" src="https://img.shields.io/github/v/release/turbo-devv/openOMSI?label=version&color=f47f30&style=for-the-badge"></a>
-  <a href="https://github.com/turbo-devv/openOMSI/actions/workflows/release.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/turbo-devv/openOMSI/release.yml?branch=main&style=for-the-badge&label=build"></a>
-  <a href="https://turbo-devv.github.io/openOMSI/"><img alt="Docs" src="https://img.shields.io/badge/docs-website-2d3138?style=for-the-badge"></a>
+  <a href="https://github.com/openOMSI-Project/openOMSI/releases/latest"><img alt="Version" src="https://img.shields.io/github/v/release/openOMSI-Project/openOMSI?label=version&color=f47f30&style=for-the-badge"></a>
+  <a href="https://github.com/openOMSI-Project/openOMSI/actions/workflows/release.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/openOMSI-Project/openOMSI/release.yml?branch=main&style=for-the-badge&label=build"></a>
+  <a href="https://openomsi-project.github.io/openOMSI/"><img alt="Docs" src="https://img.shields.io/badge/docs-website-2d3138?style=for-the-badge"></a>
   <a href="https://discord.gg/VG2EKVafYG"><img alt="Discord" src="https://img.shields.io/badge/discord-join%20us-5865F2?style=for-the-badge&logo=discord&logoColor=white"></a>
   <a href="https://buymeacoffee.com/usonskyyy"><img alt="Buy me a coffee" src="https://img.shields.io/badge/buy%20me%20a%20coffee-support-ffdd00?style=for-the-badge&logo=buymeacoffee&logoColor=black"></a>
   <a href="https://ko-fi.com/usonance"><img alt="Ko-fi" src="https://img.shields.io/badge/ko--fi-support-29abe0?style=for-the-badge&logo=kofi&logoColor=white"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/turbo-devv/openOMSI?style=for-the-badge"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/openOMSI-Project/openOMSI?style=for-the-badge"></a>
 </p>
 
 > [!WARNING]
 > **Early release. Expect bugs.** openOMSI is in an early stage of development: things may be
 > missing, broken or change between versions. Please report problems in
-> [Issues](https://github.com/turbo-devv/openOMSI/issues) or on our
+> [Issues](https://github.com/openOMSI-Project/openOMSI/issues) or on our
 > [Discord server](https://discord.gg/VG2EKVafYG).
 
 **openOMSI** is a from-scratch recreation of the bus simulator **OMSI 2**, written in Rust:
@@ -33,7 +33,7 @@ and fully compatible with the existing maps, buses, scenery and mods.
 ## Download
 
 Every commit to `main` is built by GitHub Actions and published on the
-[**Releases**](https://github.com/turbo-devv/openOMSI/releases) page:
+[**Releases**](https://github.com/openOMSI-Project/openOMSI/releases) page:
 
 | Platform | File |
 | --- | --- |
@@ -59,7 +59,7 @@ the maps Grundorf and Berlin-Spandau and the stock buses (MAN SD200/SD202, NL). 
 brings no game content of its own; it plays the original's maps, buses and mods.
 
 1. **Download** the file for your system from
-   [Releases](https://github.com/turbo-devv/openOMSI/releases) (table above) and unpack it
+   [Releases](https://github.com/openOMSI-Project/openOMSI/releases) (table above) and unpack it
    into a folder of its own that you can write to - your Documents, a games folder, or the
    OMSI 2 folder itself. Not `Program Files`: the launcher could not update itself there.
 2. **Start it.**
@@ -116,7 +116,7 @@ to.
 
 ## Documentation
 
-The full documentation is on the website: **https://turbo-devv.github.io/openOMSI/**. The same
+The full documentation is on the website: **https://openomsi-project.github.io/openOMSI/**. The same
 pages live in [`docs/`](docs):
 
 | Document | What is in it |
@@ -138,7 +138,7 @@ pages live in [`docs/`](docs):
 ## Building from source
 
 ```sh
-git clone https://github.com/turbo-devv/openOMSI.git && cd openOMSI
+git clone https://github.com/openOMSI-Project/openOMSI.git && cd openOMSI
 scripts/build-macos.sh        # macOS   → dist/macos/openOMSI.app
 scripts\build-windows.cmd     # Windows → dist\windows\openomsi.exe
 scripts/build-linux.sh        # Linux   → dist/linux/openomsi
