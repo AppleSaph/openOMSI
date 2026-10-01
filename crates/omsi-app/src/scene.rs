@@ -2433,10 +2433,17 @@ impl World {
     /// their paths and waiting places; the highest face, a bus shelter's roof 2.5 m up, put
     /// the people waiting under it on top of it.
     pub fn walk_height_near(&self, x: f64, y: f64, near: f64) -> Option<f64> {
-        let probe = drive_probe(&self.terrains, &self.surfaces, x, y, near + 0.5);
+        self.walk_height_reach(x, y, near, 0.5)
+    }
+
+    /// [`World::walk_height_near`] that also sees faces up to `reach` over `near`: the walker
+    /// on foot looks a metre up to stop at a face too high to step onto (a platform's edge)
+    /// instead of walking under it.
+    pub fn walk_height_reach(&self, x: f64, y: f64, near: f64, reach: f64) -> Option<f64> {
+        let probe = drive_probe(&self.terrains, &self.surfaces, x, y, near + reach);
         match probe.below {
             Some(b) if near - b < 3.0 => Some(b),
-            _ => self.walk_height(x, y).filter(|z| *z < near + 0.5),
+            _ => self.walk_height(x, y).filter(|z| *z < near + reach.max(0.5)),
         }
     }
 
