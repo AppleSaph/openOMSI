@@ -269,15 +269,7 @@ impl App {
                         self.take_screenshot();
                         return;
                     }
-                    // OMSI's `toggel_ctrler` (K): the game controller on and off
-                    KeyCode::KeyK if !ctrl && !alt && !shift_now => {
-                        if let Some(c) = self.controllers.as_mut() {
-                            c.enabled = !c.enabled;
-                            let msg = if !c.any() { "No game controller found" } else if c.enabled { "Game controller on" } else { "Game controller off" };
-                            self.service_msg = Some((msg.into(), 3.0));
-                        }
-                        return;
-                    }
+
                     // the object editor (`crate::editor`)
                     KeyCode::KeyE if ctrl && shift_now => {
                         self.toggle_editor();
