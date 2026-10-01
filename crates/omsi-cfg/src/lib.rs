@@ -244,6 +244,18 @@ impl<'a> CfgReader<'a> {
         self.pos >= self.file.lines.len()
     }
 
+    /// The next line as a parameter, or an empty string where a keyword line starts: a fixed
+    /// list of parameters ends at the next block. An `.ovh` that leaves the registration
+    /// affixes out (`[registration_automatic]` straight before `[model]`, the Urumqi AI cars)
+    /// must not have the `[model]` read as one of them.
+    pub fn param_line(&mut self) -> &'a str {
+        if self.file.lines.get(self.pos).is_some_and(|l| keyword_with(l, self.rule).is_some()) {
+            ""
+        } else {
+            self.line()
+        }
+    }
+
     /// Advance to the next keyword line and return the keyword in lower case.
     pub fn next_keyword(&mut self) -> Option<String> {
         match self.next_entry(&[]) {

@@ -596,7 +596,11 @@ impl Host for VehicleHost {
             } else {
                 self.tt_busstop_index as f32
             }),
-            "gettterminusindex" | "getttterminusindex" => stacks.push(self.tt_terminus_index as f32),
+            "gettterminusindex" | "getttterminusindex" => stacks.push(if self.tt_stops.is_empty() {
+                -1.0
+            } else {
+                self.tt_terminus_index as f32
+            }),
             // how high a point of the vehicle stands over the ground (the NL/NG ramp
             // measures the kerb this way before extending)
             "getheightabovepoint" => {

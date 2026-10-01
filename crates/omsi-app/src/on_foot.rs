@@ -919,7 +919,7 @@ impl App {
                         next = push_out(next, o, RADIUS);
                     }
                 }
-                match w.walk_height_near(next.x, next.y, z + f.lift) {
+                match w.walk_height_reach(next.x, next.y, z + f.lift, 1.0) {
                     Some(g) if g - (z + f.lift) > 0.45 => {
                         // too high a step: stay (and lose the speed into it)
                         next = f.pos.truncate();

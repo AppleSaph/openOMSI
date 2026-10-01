@@ -38,6 +38,7 @@ impl Default for RawState {
 }
 
 const RANGE: i32 = 10_000;
+const VJOY_HARDWARE_ID: (u16, u16) = (0x1234, 0xBEAD);
 
 /// One device opened.
 pub(crate) struct Device {
@@ -464,7 +465,7 @@ impl DirectInput {
                     }
                     Err(err) => log::warn!("{name}: says it has force feedback, but its constant force could not be made ({err}): no forces"),
                 }
-                if ff.is_some() {
+                if ff.is_some() && hardware_id != Some(VJOY_HARDWARE_ID) {
                     let mut pf = DIPERIODIC { dwMagnitude: 0, lOffset: 0, dwPhase: 0, dwPeriod: 100_000 };
                     eff.cbTypeSpecificParams = std::mem::size_of::<DIPERIODIC>() as u32;
                     eff.lpvTypeSpecificParams = &mut pf as *mut _ as *mut core::ffi::c_void;

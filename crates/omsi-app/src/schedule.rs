@@ -4078,6 +4078,12 @@ struct OnRoad {
     late: f64,
 }
 
+/// GetTTTerminusIndex as Omsi.exe answers it: the first depot terminus whose name is the
+/// trip's terminus (the second [trip] line), else -1.
+fn tt_terminus_index(hof: Option<&omsi_vehicle::hof::Hof>, terminus: &str) -> i32 {
+    hof.and_then(|h| h.termini.iter().position(|t| t.texture_id == terminus)).map_or(-1, |i| i as i32)
+}
+
 impl PlayerDuty {
     pub fn trip(&self) -> &PlannedTrip {
         &self.trips[self.trip_index]
@@ -4358,7 +4364,7 @@ impl PlayerDuty {
             .collect();
         host.tt_stop_ids = trip.stops.iter().map(|s| s.object_id).collect();
         host.tt_busstop_index = self.next_stop as i32;
-        host.tt_terminus_index = trip.stops.len() as i32 - 1;
+        host.tt_terminus_index = tt_terminus_index(host.hof.as_deref(), &trip.terminus);
         host.tt_delay = delay as f32;
         served
     }
@@ -4763,6 +4769,17 @@ mod tests {
             end: stops.last().unwrap().arr,
             stops,
         }
+    }
+
+    #[test]
+    fn terminus_index_is_the_depot_terminus_of_that_name() {
+        let mut hof = omsi_vehicle::hof::Hof::default();
+        for name in ["A", "B", "C"] {
+            hof.termini.push(omsi_vehicle::hof::Terminus { texture_id: name.into(), ..Default::default() });
+        }
+        assert_eq!(tt_terminus_index(Some(&hof), "B"), 1);
+        assert_eq!(tt_terminus_index(Some(&hof), "b"), -1);
+        assert_eq!(tt_terminus_index(None, "B"), -1);
     }
 
     #[test]

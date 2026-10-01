@@ -627,8 +627,10 @@ impl Controllers {
                             Func::Brake => set(&mut out.brake, crate::settings::pedal_curve(pedal, self.pedal_brake)),
                             Func::Clutch => set(&mut out.clutch, pedal),
                             Func::ThrottleBrake => {
-                                set(&mut out.throttle, crate::settings::pedal_curve((-v).max(0.0), self.pedal_throttle));
-                                set(&mut out.brake, crate::settings::pedal_curve(v.max(0.0), self.pedal_brake));
+                                // Omsi.exe: throttle = 2v-1 and brake = 1-2v (v = 0..1), so the
+                                // raw-maximum half is the throttle
+                                set(&mut out.throttle, crate::settings::pedal_curve(v.max(0.0), self.pedal_throttle));
+                                set(&mut out.brake, crate::settings::pedal_curve((-v).max(0.0), self.pedal_brake));
                             }
                         }
                     }

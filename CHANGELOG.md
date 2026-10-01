@@ -4,6 +4,30 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/turbo-devv/openOMSI/releases) page.
 
+## 0.1.774 - 2026-10-01
+
+### Vehicles
+- `GetTTTerminusIndex` answers the depot terminus named like the trip's terminus (or -1),
+  as OMSI does: the IBIS's automatic destination showed a wrong or random terminus (#623,
+  #545). Switching to free drive clears the bus's timetable values (#623).
+- The cab's paper timetable is OMSI's: one Courier New text, the stop names cut or dotted to
+  25 characters, 24 rows a column, one time a stop and the arrival/departure words of the
+  game's language instead of German everywhere (#629).
+
+### Controls
+- Keyboard steering works as in OMSI by default: the keys turn the wheel at a steady pace
+  and it stays where they leave it (the self-centring mode is still in the options) (#488).
+- The combined throttle/brake axis puts the throttle on the right half, as OMSI does (#577).
+- A vJoy device no longer crashes the game when vibration starts (#655).
+
+### People
+- People on foot step only onto surfaces up to 0.5 m higher, as in OMSI, and no longer onto
+  low roofs or benches (#600).
+- Busy stops no longer drop the frame rate (#656).
+
+### Traffic
+- A map's own AI cars load when their `.ovh` leaves the registration affixes out (#644).
+
 ## 0.1.759 - 2026-10-01
 
 ### Traffic
