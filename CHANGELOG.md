@@ -4,6 +4,13 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/turbo-devv/openOMSI/releases) page.
 
+## 0.1.780 - 2026-10-01
+
+### Controls
+- The left and right turn signals can be toggled by keys or wheel buttons (automatic
+  cancelling still applies), and the driver's view can follow the steering with an
+  adjustable angle and response (#657, #646).
+
 ## 0.1.774 - 2026-10-01
 
 ### Vehicles
