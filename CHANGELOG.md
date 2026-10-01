@@ -2,7 +2,7 @@
 
 Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
-[Releases](https://github.com/turbo-devv/openOMSI/releases) page.
+[Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
 ## 0.1.782 - 2026-10-01
 
