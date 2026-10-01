@@ -1479,6 +1479,8 @@ pub struct Humans {
     /// each was last asked for.
     claims_out: Vec<u32>,
     claimed: HashMap<u32, f64>,
+    /// The host's people waiting at a stop (client): (stop, waiting place).
+    mirror_wait: HashMap<u32, (i64, usize)>,
 }
 
 /// Resolve each map entry directly, including human packs with nested folders.
@@ -1666,6 +1668,7 @@ impl Humans {
             placed_now: Vec::new(),
             claims_out: Vec::new(),
             claimed: HashMap::new(),
+            mirror_wait: HashMap::new(),
         }
     }
 
@@ -3477,6 +3480,7 @@ impl Humans {
         let bus_ix: HashMap<BusId, usize> = buses.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
         // the stops: which buses stand at them (sub_61f93c), who waits there (sub_61bf94)
         let at_stops = self.register_buses(&buses, dt);
+        self.claim_waiting();
         if !self.avatar_only {
             self.stops_tick(dt, world, renderer, scene);
         }
@@ -4767,6 +4771,8 @@ pub struct MirrorPose {
     /// Aboard a timetable bus: (its id, the point of its frame, heading in its frame, the
     /// seat or standing place, if known).
     pub aboard: Option<(u64, Vec3, f64, Option<usize>)>,
+    /// Waiting at a stop: (the stop object, the waiting place).
+    pub waiting: Option<(i64, usize)>,
 }
 
 /// The bus id (`BusId::Ai`) another LAN player's bus has among the buses here: far above
@@ -4921,6 +4927,7 @@ impl Humans {
         }
         self.claims_out.clear();
         self.claimed.clear();
+        self.mirror_wait.clear();
     }
 
     /// The human type of a file relative to a content root (`Humans/…/x.hum`).
@@ -4982,6 +4989,14 @@ impl Humans {
         p.heading = pose.heading;
         p.vel = pose.vel;
         p.activity = pose.activity;
+        match pose.waiting {
+            Some(w) => {
+                self.mirror_wait.insert(id, w);
+            }
+            None => {
+                self.mirror_wait.remove(&id);
+            }
+        }
         match pose.aboard {
             Some((bus, local, lheading, _)) => {
                 p.place = Place::Bus(BusId::Ai(bus), local);
@@ -4999,6 +5014,7 @@ impl Humans {
             self.retire(&p);
         }
         self.claimed.remove(&id);
+        self.mirror_wait.remove(&id);
     }
 
     /// A remote person this frame: they stand where the host put them.
@@ -5032,7 +5048,61 @@ impl Humans {
     /// game stay the host's: nothing is taken over.)
     pub fn grant(&mut self, id: u32) -> bool {
         self.claimed.remove(&id);
-        false
+        let Some((stop, spot)) = self.mirror_wait.remove(&id) else { return false };
+        let Some(i) = self.people.iter().position(|p| p.id == id && p.remote) else { return false };
+        if !self.stops.contains_key(&stop) {
+            return false;
+        }
+        // ours from now on: waiting at that place, for the bus that stands there (the first
+        // listed, as Omsi.exe takes it without a line record)
+        let sp = self.stops[&stop].spots.get(spot).cloned();
+        let seatheight = self.people[i].ty.def.seat_height;
+        let walk = 1.1 + (self.rand_f() as f32 * 2.0 - 1.0) * 0.2;
+        let mut pax = Pax::new(walk);
+        pax.task = Task::WaitingForBus;
+        pax.stop = Some(stop);
+        pax.pos = self.people[i].position;
+        pax.yaw = self.people[i].heading.to_radians();
+        if let Some(sp) = sp {
+            pax.spot = Some(spot);
+            if let Some(t) = self.stops.get_mut(&stop).unwrap().taken.get_mut(spot) {
+                *t = true;
+            }
+            if sp.height != 0.0 {
+                pax.seat_h = sp.height;
+                pax.pos = sp.pos - DVec3::Z * seatheight as f64;
+                pax.pax_state = 2.0;
+            }
+            pax.yaw = sp.face.to_radians();
+        }
+        let p = &mut self.people[i];
+        p.remote = false;
+        p.state = State::Pax(Box::new(pax));
+        true
+    }
+
+    /// The host's people waiting at the stop our bus is listed at (client): ask for them.
+    fn claim_waiting(&mut self) {
+        if !self.mirror {
+            return;
+        }
+        let now = self.time;
+        self.claimed.retain(|_, t| now - *t < 10.0);
+        let at: Vec<i64> = self
+            .stops
+            .iter()
+            .filter(|(_, s)| s.buses.iter().any(|b| b.0 == BusId::Player))
+            .map(|(id, _)| *id)
+            .collect();
+        if at.is_empty() {
+            return;
+        }
+        for (id, (stop, _)) in &self.mirror_wait {
+            if at.contains(stop) && !self.claimed.contains_key(id) {
+                self.claimed.insert(*id, now);
+                self.claims_out.push(*id);
+            }
+        }
     }
 }
 
