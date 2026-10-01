@@ -2308,11 +2308,11 @@ impl App {
     }
 
     pub(crate) fn next_weather(&mut self) {
-        self.step_weather(1);
+        self.step_weather();
     }
 
     /// The next (`dir` 1) or previous (-1) weather of the Weather folder, round the ends.
-    pub(crate) fn step_weather(&mut self, dir: i32) {
+    pub(crate) fn step_weather(&mut self) {
         if self.lan.as_ref().map(|l| l.role == omsi_net::Role::Client).unwrap_or(false) {
             self.service_msg = Some(("In a LAN session the host sets the weather".into(), 3.0));
             return;
@@ -2327,7 +2327,6 @@ impl App {
         if files.is_empty() {
             return;
         }
-        let n = files.len() as i64;
         let cur = self.args.weather.clone().unwrap_or_default().replace('\\', "/").to_ascii_lowercase();
         let i = files.iter().position(|f| f.to_ascii_lowercase() == cur).map(|i| (i + 1) % files.len()).unwrap_or(0);
         self.change_weather(Some(files[i].clone()), true, 1.0);
