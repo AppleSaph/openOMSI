@@ -365,6 +365,8 @@ impl Rig {
 
 pub struct HumanType {
     pub def: Human,
+    /// The skeleton as Omsi.exe animates it (see [`crate::human_omsi`]).
+    pub omsi: crate::human_omsi::OmsiRig,
     pub model: Model,
     pub model_dir: PathBuf,
     pub meshes: Vec<HumanMesh>,
@@ -475,6 +477,7 @@ impl HumanType {
             }
         }
         Ok(HumanType {
+            omsi: crate::human_omsi::OmsiRig::new(&def),
             joints,
             rig,
             def,
@@ -652,20 +655,6 @@ fn split_feet(m: &mut HumanMesh, rig: &Rig) {
     let bottom = rig.sole + rig.ankle_h - 0.03;
     for (i, inf) in m.skin.iter_mut().enumerate() {
         let v = m.data.positions[i];
-        for side in 0..2 {
-            if !(0..inf.n as usize).any(|k| inf.slot[k] as usize == THIGH[side]) {
-                continue;
-            }
-            let (a, b) = (rig.hip[side], rig.knee[side]);
-            let t = ((v - a).dot(b - a) / (b - a).length_squared().max(1e-4)).clamp(0.0, 1.0);
-            // the leg is about 13 cm thick at the top of the thigh and 6 cm at the knee
-            let radius = (0.13 + (0.06 - 0.13) * t) * rig.scale;
-            let beyond = (a + (b - a) * t - v).length() - radius;
-            let cloth = smoothstep(0.06, 0.12, beyond) * smoothstep(0.35, 0.55, t) * 0.7;
-            if cloth > 0.0 {
-                move_weight(inf, THIGH[side], HIP, cloth);
-            }
-        }
         if v.z >= top {
             continue;
         }
@@ -2184,6 +2173,19 @@ fn limit_quat(q: Quat, max: f32) -> Quat {
     } else {
         q
     }
+}
+
+/// The bone transforms of [`skin`] from Omsi.exe's thirteen bones
+/// ([`crate::human_omsi::OmsiAnim::bones`]): the feet and toes, which the original does not
+/// have, go with the shins they were split off.
+pub fn slots_from_omsi(b: &[Affine3A; crate::human_omsi::BONES]) -> [Affine3A; SLOTS] {
+    let mut out = [Affine3A::IDENTITY; SLOTS];
+    out[..crate::human_omsi::BONES].copy_from_slice(b);
+    for side in 0..2 {
+        out[FOOT[side]] = b[SHIN[side]];
+        out[TOE[side]] = b[SHIN[side]];
+    }
+    out
 }
 
 /// Deform `mesh` with the bone transforms (linear blend skinning).

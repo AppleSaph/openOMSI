@@ -3198,6 +3198,11 @@ impl World {
         self.index().stop_side.get(&id).copied().unwrap_or(0.0)
     }
 
+    /// Stop object `id`'s length (see `tiles::stop_length`; 30 m when the map says nothing).
+    pub fn stop_length(&self, id: i64) -> f32 {
+        self.index().stop_length.get(&id).copied().unwrap_or(30.0)
+    }
+
     pub fn index(&self) -> Arc<MapIndex> {
         let mut g = self.index.lock();
         if let Some(ix) = g.as_ref() {

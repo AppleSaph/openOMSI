@@ -1384,7 +1384,7 @@ fn person_pose(a: &PersonState, b: &PersonState, k: f64) -> MirrorPose {
                 z,
                 heading,
                 speed,
-                waiting,
+                waiting: _,
             },
         ) => {
             let jump = DVec2::new(x - ax, y - ay).length() > 8.0;
@@ -1403,7 +1403,6 @@ fn person_pose(a: &PersonState, b: &PersonState, k: f64) -> MirrorPose {
                 vel,
                 activity: sim_activity(b.activity),
                 aboard: None,
-                waiting: waiting.map(|(s, k)| (s, k as usize)),
             }
         }
         (
@@ -1431,7 +1430,6 @@ fn person_pose(a: &PersonState, b: &PersonState, k: f64) -> MirrorPose {
                 heading as f64,
                 seat.map(|s| s as usize),
             )),
-            waiting: None,
         },
         (_, PersonPlace::Foot { .. }) => person_pose(b, b, 1.0),
     }

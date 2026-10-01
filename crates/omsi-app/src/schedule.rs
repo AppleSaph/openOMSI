@@ -1647,7 +1647,7 @@ impl Schedule {
     /// go on to from there, each with the termini of the trips that do. A passenger waiting
     /// at the stop wants one of these targets and boards a bus whose terminus is among its
     /// termini (0x61c33c); the names compare exactly.
-    pub fn stop_targets(&self) -> HashMap<i64, Vec<HashSet<String>>> {
+    pub fn stop_targets(&self) -> HashMap<i64, Vec<(String, HashSet<String>)>> {
         let name_of = |id: i64| {
             self.data
                 .bus_stops
@@ -1674,9 +1674,6 @@ impl Schedule {
             }
         }
         named
-            .into_iter()
-            .map(|(id, t)| (id, t.into_iter().map(|t| t.1).collect()))
-            .collect()
     }
 
     pub fn pending(&self) -> usize {
@@ -2393,7 +2390,6 @@ impl Schedule {
             number.clone(),
             hof.clone(),
             Some(scheme),
-            day_time,
         ) else {
             return Placed::Drop;
         };

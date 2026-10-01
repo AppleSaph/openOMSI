@@ -129,8 +129,6 @@ pub struct BusSetup {
     /// Fleet number and registration (`number`, `ident` string variables).
     pub number: Option<(String, String)>,
     pub hof: Option<Arc<omsi_vehicle::Hof>>,
-    /// People aboard.
-    pub riders: u8,
 }
 
 pub struct AiCar {
@@ -2628,7 +2626,7 @@ impl Traffic {
             lead_car: None,
             ignore_lead: None,
             crawl: 0.0,
-            bus: bus.map(|b| Box::new(BusService::new(b.stops, b.riders))),
+            bus: bus.map(|b| Box::new(BusService::new(b.stops))),
             sounds: None,
             half_width,
             yielding: false,
@@ -2686,7 +2684,7 @@ impl Traffic {
     }
 
     /// Put a timetable bus on the road: an AI car like any other (`create_car`), on its
-    /// trip's route at `s` metres into the first lane, with its service (stops, riders).
+    /// trip's route at `s` metres into the first lane, with its service (stops).
     /// Returns the car index. `scheme`: the paint scheme to use (Some), or a random one.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_bus(
@@ -2701,7 +2699,6 @@ impl Traffic {
         number: Option<(String, String)>,
         hof: Option<Arc<omsi_vehicle::Hof>>,
         scheme: Option<Option<usize>>,
-        day_time: f64,
     ) -> Option<usize> {
         let &lane = route.first()?;
         let kind = self.net.lanes.get(lane)?.kind;
@@ -2710,17 +2707,11 @@ impl Traffic {
             return None;
         }
         let seed = self.rand();
-        let riders = if kind == LaneKind::Street {
-            crate::bus_service::riders_at(day_time, seed)
-        } else {
-            0
-        };
         let setup = BusSetup {
             route,
             stops: stops.into_iter().map(crate::bus_service::Stop::from_tuple).collect(),
             number,
             hof,
-            riders,
         };
         let center = self.viewer.map(|v| v.pos).unwrap_or_default();
         let id = self.create_car(world, renderer, scene, center, kind, lane, s, ty.clone(), seed, scheme, None, None, Some(setup));
@@ -6295,7 +6286,7 @@ impl Traffic {
         match car.bus.as_mut() {
             Some(b) => b.restart(stops, layover),
             None => {
-                let mut b = BusService::new(stops, 0);
+                let mut b = BusService::new(stops);
                 b.layover = layover;
                 car.bus = Some(Box::new(b));
             }
@@ -6991,7 +6982,7 @@ impl Traffic {
             lead_car: None,
             ignore_lead: None,
             crawl: 0.0,
-            bus: scheduled.then(|| Box::new(BusService::new(Vec::new(), 0))),
+            bus: scheduled.then(|| Box::new(BusService::new(Vec::new()))),
             sounds: None,
             half_width,
             yielding: false,
