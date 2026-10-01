@@ -7405,8 +7405,8 @@ impl World {
     /// Put scenery object `rel` (a `.sco`) at `pos` turned to `heading` (degrees), outside
     /// any tile, its `[texttexture]` strings taken from `strings` - the game's own helpers,
     /// as OMSI puts the dynamic route arrows. Taken away again with
-    /// `remove_helper_object`.
-    pub fn add_helper_object(&self, renderer: &Renderer, scene: &mut Scene, rel: &str, pos: DVec3, heading: f64, strings: &[String]) -> Option<TileGpu> {
+    /// `remove_helper_object`. `casts_shadow` is off for the route arrows, which OMSI leaves unshadowed.
+    pub fn add_helper_object(&self, renderer: &Renderer, scene: &mut Scene, rel: &str, pos: DVec3, heading: f64, strings: &[String], casts_shadow: bool) -> Option<TileGpu> {
         let ot = self.object_type(rel)?;
         let mut guard = self.gpu.lock();
         let gpu = &mut *guard;
@@ -7421,6 +7421,7 @@ impl World {
         for (mi, (mesh_id, mats)) in meshes.iter().enumerate() {
             let new = renderer.add_instance(scene, *mesh_id, pos, xf, mats.clone());
             let inst = gpu.instance(renderer, scene, new);
+            renderer.set_casts_shadow(scene, inst, casts_shadow);
             tg.instances.push(inst);
             let Some((_, o3d_mats, overrides)) = ot.meshes.get(mi) else { continue };
             for o in overrides.iter().filter(|o| o.use_text_texture.is_some()) {

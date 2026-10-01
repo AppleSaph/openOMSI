@@ -343,7 +343,7 @@ pub(crate) fn command(app: &mut App, from: u32, text: &str) {
                     }
                     if nums[5] < 0.5 {
                         let path = app.args.root.join(&rel);
-                        if let Some(g) = w.add_helper_object(r, scene, &path.to_string_lossy(), glam::DVec3::new(nums[1], nums[2], nums[3]), nums[4], &[]) {
+                        if let Some(g) = w.add_helper_object(r, scene, &path.to_string_lossy(), glam::DVec3::new(nums[1], nums[2], nums[3]), nums[4], &[], true) {
                             app.remote_added.insert(id, g);
                         }
                     }

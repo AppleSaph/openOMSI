@@ -53,7 +53,7 @@ impl RouteArrows {
             // (on the road surface there, not the lane's own height: a lane may lie a few
             // centimetres off it; a stop's helper stands where the stop object stands)
             let z = if *kind == "busstop" { pos.z } else { world.walk_height(pos.x, pos.y).filter(|z| (z - pos.z).abs() < 1.5).unwrap_or(pos.z) };
-            if let Some(tg) = world.add_helper_object(renderer, scene, sco(kind), DVec3::new(pos.x, pos.y, z), *heading, std::slice::from_ref(text)) {
+            if let Some(tg) = world.add_helper_object(renderer, scene, sco(kind), DVec3::new(pos.x, pos.y, z), *heading, std::slice::from_ref(text), false) {
                 if omsi_cfg::env::var_os("OMSI_DEBUG_NAV").is_some() {
                     log::info!("route arrow {kind} '{text}' at ({:.1}, {:.1}, {:.2}) heading {:.0}", pos.x, pos.y, z, heading);
                 }

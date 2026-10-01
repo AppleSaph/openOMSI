@@ -249,7 +249,7 @@ impl Editor {
             world.remove_helper_object(renderer, scene, g);
         }
         if !a.deleted {
-            a.gpu = world.add_helper_object(renderer, scene, &a.sco.to_string_lossy(), a.base + a.moved, a.base_heading + a.turned, &[]);
+            a.gpu = world.add_helper_object(renderer, scene, &a.sco.to_string_lossy(), a.base + a.moved, a.base_heading + a.turned, &[], true);
         }
     }
 
