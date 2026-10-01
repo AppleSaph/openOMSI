@@ -198,7 +198,9 @@ pub(crate) static SERVER_MODE: std::sync::atomic::AtomicBool = std::sync::atomic
 /// who is where (`GET /players`, when `share_positions` is on).
 pub(crate) fn tick_status(lan: &omsi_net::LanSession, time: f64, weather: &str) {
     let players = lan.peers().filter(|p| p.has_info).count();
-    crate::lan::update_server_info(players, &crate::schedule::hhmm(time), weather);
+    // (the admin's clock shift may take the time below 0 or past midnight: 23:08 had come
+    // out as "00:-52")
+    crate::lan::update_server_info(players, &crate::schedule::hhmm(time.rem_euclid(86400.0)), weather);
     let poses: Vec<&omsi_net::Pose> = lan.peers().filter(|p| p.has_info && p.has_pose).map(|p| &p.pose).collect();
     let list = poses.iter().filter_map(|q| player_info(q, |id| poses.iter().copied().find(|o| o.id == id))).collect();
     crate::lan::update_server_players(list);
