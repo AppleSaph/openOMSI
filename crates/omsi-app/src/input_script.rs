@@ -1682,8 +1682,12 @@ impl App {
                 let back = self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
                 self.settings_tab_step(!back);
             }
-            KeyCode::ArrowLeft | KeyCode::KeyA if self.tours_list() => self.tour_stop_step(false),
-            KeyCode::ArrowRight | KeyCode::KeyD if self.tours_list() => self.tour_stop_step(true),
+            // (the stop to start from: - and +)
+            KeyCode::Minus | KeyCode::Slash | KeyCode::NumpadSubtract if self.tours_list() => self.tour_stop_step(false),
+            KeyCode::Equal | KeyCode::BracketRight | KeyCode::NumpadAdd if self.tours_list() => self.tour_stop_step(true),
+            // (the trip of the tour: the arrows go to the one leaving before or after, as OMSI's)
+            KeyCode::ArrowLeft | KeyCode::KeyA if self.tours_list() => self.trip_step(false),
+            KeyCode::ArrowRight | KeyCode::KeyD if self.tours_list() => self.trip_step(true),
             KeyCode::ArrowLeft | KeyCode::KeyA => self.chooser_adjust(sel, "-"),
             KeyCode::ArrowRight | KeyCode::KeyD => self.chooser_adjust(sel, "+"),
             KeyCode::PageUp if self.settings_list() => self.settings_tab_step(false),
@@ -1700,24 +1704,40 @@ impl App {
         self.chooser.is_some() && matches!(self.list_kind, Some(crate::game_lists::ListKind::Tours(..)))
     }
 
+    /// The trip of the chosen tour leaving before (or after) the one chosen, as OMSI's
+    /// timetable steps through the times of a tour (the tour itself stays).
+    pub(crate) fn trip_step(&mut self, forward: bool) {
+        let k = self.chooser.unwrap_or(0);
+        let (Some((line, tour)), Some((_, _, trip, trips))) = (crate::game_lists::tour_at(self, k), crate::game_lists::tour_choice(self, k)) else { return };
+        let to = if forward { (trip + 1).min(trips.saturating_sub(1)) } else { trip.saturating_sub(1) };
+        if to != trip {
+            self.list_kind = Some(crate::game_lists::ListKind::Tours(line, Some((tour, 0, to))));
+        }
+    }
+
     /// The stop to start the chosen tour from, one on (or back).
     fn tour_stop_step(&mut self, forward: bool) {
         let k = self.chooser.unwrap_or(0);
-        let (Some((line, tour)), Some((n, at))) = (crate::game_lists::tour_at(self, k), crate::game_lists::tour_choice(self, k)) else { return };
+        let (Some((line, tour)), Some((n, at, trip, _))) = (crate::game_lists::tour_at(self, k), crate::game_lists::tour_choice(self, k)) else { return };
         let to = if forward { (at + 1).min(n - 1) } else { at.saturating_sub(1) };
-        self.list_kind = Some(crate::game_lists::ListKind::Tours(line, Some((tour, to))));
+        self.list_kind = Some(crate::game_lists::ListKind::Tours(line, Some((tour, to, trip))));
     }
 
     /// A click in the timetable beside the tours: stop `i` as the start, or (`usize::MAX`)
-    /// the button that starts the trip.
+    /// the button that starts the trip; `usize::MAX - 1` / `- 2` the trip before / after.
     pub(crate) fn tour_pane_click(&mut self, i: usize) {
         let k = self.chooser.unwrap_or(0);
-        let (Some((line, tour)), Some((n, at))) = (crate::game_lists::tour_at(self, k), crate::game_lists::tour_choice(self, k)) else { return };
-        if i < n {
-            self.list_kind = Some(crate::game_lists::ListKind::Tours(line, Some((tour, i))));
+        // (the arrows beside the time: `usize::MAX - 1` the trip before, `- 2` the next)
+        if i == usize::MAX - 1 || i == usize::MAX - 2 {
+            self.trip_step(i == usize::MAX - 2);
             return;
         }
-        crate::game_lists::start_duty_at(self, &line, &tour, at);
+        let (Some((line, tour)), Some((n, at, trip, _))) = (crate::game_lists::tour_at(self, k), crate::game_lists::tour_choice(self, k)) else { return };
+        if i < n {
+            self.list_kind = Some(crate::game_lists::ListKind::Tours(line, Some((tour, i, trip))));
+            return;
+        }
+        crate::game_lists::start_duty_at(self, &line, &tour, trip, at);
         self.chooser = None;
         self.admin_list = None;
         self.list_kind = None;
@@ -2993,6 +3013,7 @@ impl App {
             || u.menu_side.iter().any(|r| inside(r))
             || u.menu_pane.iter().any(|r| inside(r))
             || u.menu_pane_go.as_ref().is_some_and(|r| inside(r))
+            || u.menu_time.iter().any(|r| inside(r))
             || u.menu_ctl.iter().flatten().any(|r| inside(r))
             || u.menu_rects.iter().enumerate().any(|(i, r)| inside(r) && !self.menu_item_off(i + u.menu_start));
         if clickable {

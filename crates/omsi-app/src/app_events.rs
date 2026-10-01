@@ -2534,6 +2534,9 @@ impl App {
                         if u.menu_pane_go.as_ref().is_some_and(inside) {
                             return Some(usize::MAX);
                         }
+                        if let Some(j) = u.menu_time.iter().position(inside) {
+                            return Some(usize::MAX - 1 - j);
+                        }
                         u.menu_pane.iter().position(inside).map(|i| i + u.menu_pane_start)
                     });
                     if let Some(i) = pane {

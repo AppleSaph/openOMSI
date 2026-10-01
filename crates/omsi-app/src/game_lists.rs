@@ -19,7 +19,7 @@ pub(crate) enum ListKind {
     Lines,
     /// A line's tours; the stop chosen in the timetable beside them to start from: (the
     /// tour's number, the stop as `Schedule::tour_stops` lists them), none: the default.
-    Tours(String, Option<(String, usize)>),
+    Tours(String, Option<(String, usize, usize)>),
     Drivers,
     Numbers,
     /// The termini of the bus's depot file, for its destination display.
@@ -131,20 +131,9 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
         }
         ListKind::Tours(line, _) => {
             if let Some(l) = app.schedule.as_ref().and_then(|s| s.data.lines.iter().find(|l| l.name == *line)) {
-                let now = menu_now(app.clock.time);
                 for t in sorted_tours(l) {
-                    // (the next stop of the tour from the game's time, not the tour's first departure)
-                    let first = app
-                        .schedule
-                        .as_ref()
-                        .and_then(|s| s.tour_stops_from(line, &t.number, now).first().map(|x| x.3))
-                        .or_else(|| t.trips.first().map(|x| x.departure as f64 * 60.0))
-                        .map(|sec| {
-                            let m = (sec / 60.0).floor() as i64;
-                            format!("  {:02}:{:02}", (m / 60) % 24, m % 60)
-                        })
-                        .unwrap_or_default();
-                    out.push((format!("{} {}{first}", tr("Tour"), t.number.trim()), format!("tour {}\u{1}{}", line, t.number)));
+                    // (the tours in order of the time they start)
+                    out.push((format!("{} {}", tr("Tour"), t.number.trim()), format!("tour {}\u{1}{}", line, t.number)));
                 }
             }
         }
@@ -256,7 +245,6 @@ pub(crate) fn menu_extras(
     let title = |t: &str| tr(t).trim_end_matches("...").trim_end_matches('…').trim_end().to_string();
     let head = |t: &str| Some((title(t), String::new()));
     let hm = |m: f32| format!("{:02}:{:02}", (m / 60.0) as i32 % 24, (m % 60.0) as i32);
-    let now = menu_now(now);
     // a trip's line and terminus
     let trip_of = |name: &str| -> (String, String) {
         schedule
@@ -278,7 +266,7 @@ pub(crate) fn menu_extras(
                     .into_iter()
                     .map(|t| {
                         // (the trip and the time the tour has from the game's time on)
-                        let next = schedule.and_then(|s| s.tour_stops_from(&line.name, &t.number, now).first().cloned());
+                        let next = schedule.and_then(|s| s.tour_stops_from(&line.name, &t.number, tour_start(t).unwrap_or(0.0)).first().cloned());
                         let end = match (schedule, next.as_ref()) {
                             (Some(s), Some(n)) => tour_trip_name(s, t, n.0).map(|name| trip_of(&name).1).unwrap_or_default(),
                             _ => t.trips.first().map(|tt| trip_of(&tt.trip).1).unwrap_or_default(),
@@ -291,7 +279,7 @@ pub(crate) fn menu_extras(
                         (what, when)
                     })
                     .collect();
-                Some(Preview { title: format!("{} {}", tr("Line"), line.name), meta: format!("{} {}", line.tours.len(), tr("tours")), rows, chosen: None, button: None })
+                Some(Preview { title: format!("{} {}", tr("Line"), line.name), meta: format!("{} {}", line.tours.len(), tr("tours")), rows, chosen: None, button: None, time: None })
             });
             (MenuKind::Lines, head("Line and tour..."), preview)
         }
@@ -300,15 +288,20 @@ pub(crate) fn menu_extras(
                 let sch = schedule?;
                 let line = sch.data.lines.iter().find(|l| l.name == ln)?;
                 let tour = line.tours.iter().find(|t| t.number == num)?;
-                let stops = sch.tour_stops_from(ln, num, now);
+                let n_trips = sch.tour_trip_count(ln, num);
+                let trip = pick.as_ref().filter(|p| p.0 == num).map(|p| p.2).unwrap_or_else(|| sch.tour_trip_now(ln, num, now)).min(n_trips.saturating_sub(1));
+                let stops = sch.tour_trip_stops(ln, num, trip);
+                let at = stops.first().map(|s| s.3).unwrap_or_else(|| tour_start(tour).unwrap_or(0.0));
                 let chosen = pick.as_ref().filter(|p| p.0 == num).map(|p| p.1).unwrap_or(0).min(stops.len().saturating_sub(1));
                 let rows = stops.iter().map(|s| (s.2.trim().to_string(), hm((s.3 / 60.0) as f32))).collect();
                 Some(Preview {
                     title: format!("{} {}", tr("Tour"), num.trim()),
-                    meta: format!("{} {}  ·  {} {}  ·  {}", tr("Line"), ln, tour.trips.len(), tr("trips"), tr("Choose the stop to start from")),
+                    meta: format!("{} {}  ·  {} {}/{}  ·  {}", tr("Line"), ln, tr("Trip"), trip + 1, n_trips.max(1), tr("Choose the stop to start from")),
                     rows,
                     chosen: Some(chosen),
                     button: Some(tr("Start trip")),
+                    // (the time of the trip: between the arrows that step through the tour's trips)
+                    time: Some(hm((at / 60.0) as f32)),
                 })
             });
             (MenuKind::Tours, Some((title("Line and tour..."), format!("{} {}", tr("Line"), line_name))), preview)
@@ -402,7 +395,9 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
             Some(kind.clone())
         }
         ListKind::Lines => match verb {
-            "line" => Some(ListKind::Tours(arg.to_string(), None)),
+            "line" => {
+                Some(ListKind::Tours(arg.to_string(), None))
+            }
             "free" => {
                 app.duty = None;
                 app.service_msg = Some(("Free drive: no duty".into(), 4.0));
@@ -413,7 +408,8 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
         ListKind::Tours(_, pick) => {
             if let Some((line, tour)) = arg.split_once('\u{1}') {
                 let chosen = pick.as_ref().filter(|p| p.0 == tour).map(|p| p.1).unwrap_or(0);
-                start_duty_at(app, line, tour, chosen);
+                let trip = pick.as_ref().filter(|p| p.0 == tour).map(|p| p.2).unwrap_or_else(|| app.schedule.as_ref().map(|s| s.tour_trip_now(line, tour, app.clock.time)).unwrap_or(0));
+                start_duty_at(app, line, tour, trip, chosen);
             }
             None
         }
@@ -1109,16 +1105,19 @@ pub(crate) fn page_titles(app: &App, kind: &ListKind) -> Option<(Vec<String>, us
     Some((pages.iter().map(|p| p.0.to_string()).collect(), tab))
 }
 
-/// A line's tours in order of their numbers (as numbers where they are).
-fn sorted_tours(line: &omsi_timetable::Line) -> Vec<&omsi_timetable::Tour> {
-    let mut tours: Vec<&omsi_timetable::Tour> = line.tours.iter().collect();
-    tours.sort_by(|a, b| natural(a.number.trim(), b.number.trim()));
-    tours
+/// The time (seconds of the day) a tour starts: its earliest trip's departure.
+pub(crate) fn tour_start(tour: &omsi_timetable::Tour) -> Option<f64> {
+    tour.trips.iter().map(|t| t.departure as f64 * 60.0).fold(None, |a: Option<f64>, d| Some(a.map_or(d, |x| x.min(d))))
 }
 
-/// The time of day (seconds) the menu's timetables go by: the game's clock, to the minute.
-fn menu_now(now: f64) -> f64 {
-    (now / 60.0).floor() * 60.0
+/// A line's tours in order of the time they start (equal times by their numbers).
+fn sorted_tours(line: &omsi_timetable::Line) -> Vec<&omsi_timetable::Tour> {
+    let mut tours: Vec<&omsi_timetable::Tour> = line.tours.iter().collect();
+    tours.sort_by(|a, b| {
+        let (ta, tb) = (tour_start(a).unwrap_or(f64::MAX), tour_start(b).unwrap_or(f64::MAX));
+        ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal).then_with(|| natural(a.number.trim(), b.number.trim()))
+    });
+    tours
 }
 
 /// The name of trip number `k` of a tour, counted as `Schedule::tour_stops` does (trips the
@@ -1209,27 +1208,41 @@ pub(crate) fn tour_at(app: &App, k: usize) -> Option<(String, String)> {
     Some((line.to_string(), tour.to_string()))
 }
 
-/// How many stops the tour on row `k` has, and the one chosen to start from.
-pub(crate) fn tour_choice(app: &App, k: usize) -> Option<(usize, usize)> {
-    let (line, tour) = tour_at(app, k)?;
-    let stops = app.schedule.as_ref()?.tour_stops_from(&line, &tour, menu_now(app.clock.time));
-    let pick = match app.list_kind.as_ref() {
-        Some(ListKind::Tours(_, Some(p))) if p.0 == tour => Some(p.1),
-        _ => None,
-    };
-    let n = stops.len();
-    (n > 0).then(|| (n, pick.unwrap_or(0).min(n - 1)))
+/// The time (seconds of the day) tour `tour` of line `line` starts.
+pub(crate) fn tour_start_of(app: &App, line: &str, tour: &str) -> f64 {
+    app.schedule
+        .as_ref()
+        .and_then(|s| s.data.lines.iter().find(|l| l.name == line))
+        .and_then(|l| l.tours.iter().find(|t| t.number == tour))
+        .and_then(tour_start)
+        .unwrap_or(0.0)
 }
 
-/// Start the tour at stop number `chosen` of `Schedule::tour_stops_from` (the stops still to
-/// come at the game's time): the duty goes on from that stop, the bus stays where it is.
-pub(crate) fn start_duty_at(app: &mut App, line: &str, tour: &str, chosen: usize) {
+/// For the tour on row `k`: how many stops its chosen trip has, the stop chosen to start
+/// from, the trip chosen and how many trips the tour has.
+pub(crate) fn tour_choice(app: &App, k: usize) -> Option<(usize, usize, usize, usize)> {
+    let (line, tour) = tour_at(app, k)?;
+    let sch = app.schedule.as_ref()?;
+    let trips = sch.tour_trip_count(&line, &tour);
+    let (stop, trip) = match app.list_kind.as_ref() {
+        Some(ListKind::Tours(_, Some(p))) if p.0 == tour => (p.1, p.2),
+        _ => (0, sch.tour_trip_now(&line, &tour, app.clock.time)),
+    };
+    let trip = trip.min(trips.saturating_sub(1));
+    let n = sch.tour_trip_stops(&line, &tour, trip).len();
+    (n > 0).then(|| (n, stop.min(n - 1), trip, trips))
+}
+
+/// Start the tour at stop number `chosen` of trip number `trip` of the tour (the trip chosen
+/// by its time): the duty goes on from that stop, the bus stays where it is.
+pub(crate) fn start_duty_at(app: &mut App, line: &str, tour: &str, trip: usize, chosen: usize) {
     let now = app.clock.time;
-    let Some((k, j)) = app.schedule.as_ref().and_then(|s| s.tour_stops_from(line, tour, menu_now(now)).get(chosen).map(|x| (x.0, x.1))) else {
+    let at = tour_start_of(app, line, tour);
+    let Some((k, j)) = app.schedule.as_ref().and_then(|s| s.tour_trip_stops(line, tour, trip).get(chosen).map(|x| (x.0, x.1))) else {
         return start_duty(app, line, tour);
     };
     let (Some(w), Some(sch)) = (app.world.clone(), app.schedule.as_mut()) else { return };
-    let mut d = match sch.player_duty(&w, line, tour, now, None, false) {
+    let mut d = match sch.player_duty(&w, line, tour, at, None, false) {
         Ok(d) => d,
         Err(e) => {
             app.service_msg = Some((format!("No duty: {e}"), 8.0));
@@ -1242,6 +1255,12 @@ pub(crate) fn start_duty_at(app: &mut App, line: &str, tour: &str, chosen: usize
         d.update(&mut p.vehicle, now);
         let (trip, stop) = d.trip_for_ibis();
         p.set_duty_destination(trip, stop);
+        if let Some(w) = app.world.as_ref() {
+            let mut fonts = w.fonts.lock();
+            if let Err(e) = crate::schedule_paper::update_vehicle(&mut p.vehicle, &d, &mut fonts) {
+                log::warn!("driver timetable paper: {e:#}");
+            }
+        }
     }
     app.args.line = Some(line.to_string());
     app.args.tour = Some(tour.to_string());

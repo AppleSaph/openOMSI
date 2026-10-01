@@ -307,7 +307,11 @@ pub struct Preview {
     pub chosen: Option<usize>,
     /// The button under the rows, when there is one.
     pub button: Option<String>,
+    /// The time of the timetable the rows are of, with buttons to put it ahead (the trip of
+    /// a tour to take on later), when it can be set.
+    pub time: Option<String>,
 }
+
 
 /// Everything the interface draws in a frame.
 pub struct Frame<'a> {
@@ -384,6 +388,8 @@ pub struct Ui {
     pub menu_pane: Vec<[f32; 4]>,
     pub menu_pane_start: usize,
     pub menu_pane_go: Option<[f32; 4]>,
+    /// The two arrows beside the time of a tour: the trip before, the next one.
+    pub menu_time: Vec<[f32; 4]>,
     /// The colours and positions of the menu's parts that ease to their new state (a line's
     /// light, a switch's knob ...), by what they belong to.
     anim: std::collections::HashMap<u64, f32>,
@@ -407,7 +413,7 @@ pub struct Ui {
 
 impl Ui {
     pub fn new() -> Option<Ui> {
-        Some(Ui { text: TextCache::new()?, chat: ChatWidget::default(), menu_rects: Vec::new(), menu_arrows: Vec::new(), menu_scroll_thumb: None, menu_scroll_track: None, menu_ctl: Vec::new(), menu_side: Vec::new(), menu_pane: Vec::new(), menu_pane_start: 0, menu_pane_go: None, anim: Default::default(), anim_dt: 0.0, menu_overlay_range: 0..0, vr_cursor_overlay: None, vr_tooltip_overlay: None, menu_start: 0, menu_rows: 0, menu_row_h: 1.0, images: Default::default() })
+        Some(Ui { text: TextCache::new()?, chat: ChatWidget::default(), menu_rects: Vec::new(), menu_arrows: Vec::new(), menu_scroll_thumb: None, menu_scroll_track: None, menu_ctl: Vec::new(), menu_side: Vec::new(), menu_pane: Vec::new(), menu_pane_start: 0, menu_pane_go: None, menu_time: Vec::new(), anim: Default::default(), anim_dt: 0.0, menu_overlay_range: 0..0, vr_cursor_overlay: None, vr_tooltip_overlay: None, menu_start: 0, menu_rows: 0, menu_row_h: 1.0, images: Default::default() })
     }
 
     /// Draw the frame's interface: its overlays go after the HUD's in `scene.overlays`.
@@ -1078,6 +1084,7 @@ impl Ui {
         self.menu_pane.clear();
         self.menu_pane_start = 0;
         self.menu_pane_go = None;
+        self.menu_time.clear();
         self.menu_scroll_thumb = None;
         self.menu_scroll_track = None;
         let overlay_start = scene.overlays.len();
@@ -1274,12 +1281,11 @@ impl Ui {
                         done = true;
                     }
                 }
-                // a tour: its name, the first departure as a clock chip
+                // a tour: its name (the time is chosen beside the list)
                 MenuKind::Tours => {
-                    if let Some((num, time)) = label.strip_prefix(tour_pre.as_str()).and_then(|rest| rest.split_once("  ")) {
-                        let num = num.trim();
-                        let left = self.chip(r, scene, time.trim(), (12.0 * s) as u32, AMBER, fade(ACCENT, 0.16 + 0.12 * glow.max(a_act)), false, rx, cy, s);
-                        let name = clip_to(&self.text, &format!("{tour_pre}{num}"), px as f32, left - 14.0 * s - lx);
+                    if let Some(rest) = label.strip_prefix(tour_pre.as_str()) {
+                        let num = rest.split_once("  ").map(|(n, _)| n).unwrap_or(rest).trim();
+                        let name = clip_to(&self.text, &format!("{tour_pre}{num}"), px as f32, rx - lx);
                         self.put(r, scene, &name, px, ink, lx, cy);
                         done = true;
                     }
@@ -1353,7 +1359,44 @@ impl Ui {
             scene.overlays.push((sep, [px0 + pad, cy.round(), px1 - pad, cy.round() + 1.0]));
             let rpx = (13.0 * s) as u32;
             let lh = 24.0 * s;
-            let top = cy + 10.0 * s;
+            let mut top = cy + 10.0 * s;
+            // the tour, and the time of the trip, each between arrows that step through them
+            let nav_rows: Vec<(&String, f32, usize)> = p.time.iter().map(|t| (t, 20.0f32, 0usize)).collect();
+            for (time, fs, base) in nav_rows {
+                let bh = 30.0 * s;
+                let bw = 46.0 * s;
+                let by = top;
+                let right = px1 - pad;
+                let left = px0 + pad;
+                for j in 0..2usize {
+                    let rect = if j == 0 { [left, by, left + bw, by + bh] } else { [right - bw, by, right, by + bh] };
+                    let a = self.easeq((14, "time", j + base), if over(rect) { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
+                    self.text.rounded(r, scene, rect, ROW_R * s, mix([232, 160, 48, 60], ACCENT, a * 0.7));
+                    let col = mix(ACCENT_HOT, [18, 14, 8, 255], a);
+                    let (cx, cy) = ((rect[0] + rect[2]) * 0.5, (rect[1] + rect[3]) * 0.5);
+                    // (a real arrow: a shaft and a head of stacked strips)
+                    let dir = if j == 0 { -1.0 } else { 1.0 };
+                    let (half, head_w, head_h) = (9.0 * s, 7.0 * s, 7.0 * s);
+                    let t = (2.0 * s).max(2.0);
+                    self.text.rounded(r, scene, [cx - half, cy - t * 0.5, cx + half, cy + t * 0.5], 0.0, col);
+                    let tip = cx + dir * half;
+                    let strips = 7;
+                    for k in 0..strips {
+                        // (strip k, from the head's base towards the tip, narrowing)
+                        let bx = tip - dir * head_w * (1.0 - k as f32 / strips as f32);
+                        let ex = tip - dir * head_w * (1.0 - (k as f32 + 1.0) / strips as f32);
+                        let h = head_h * (1.0 - (k as f32 + 0.5) / strips as f32);
+                        self.text.rounded(r, scene, [bx.min(ex), cy - h, bx.max(ex), cy + h], 0.0, col);
+                    }
+                    self.menu_time.push(rect);
+                }
+                let mid_l = left + bw + 10.0 * s;
+                let mid_r = right - bw - 10.0 * s;
+                let time = clip_to(&self.text, time, fs * s, mid_r - mid_l);
+                let tw = self.text.width(&time, fs * s);
+                self.put(r, scene, &time, (fs * s) as u32, if base == 0 { AMBER } else { WHITE }, mid_l + (mid_r - mid_l - tw) * 0.5, by + bh * 0.5);
+                top = by + bh + 8.0 * s;
+            }
             let n = p.rows.len();
             if let (Some(chosen), Some(button)) = (p.chosen, p.button.as_ref()) {
                 // the stops to start from: the one chosen marked, a click chooses another
