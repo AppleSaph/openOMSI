@@ -29,6 +29,7 @@ use std::sync::Arc;
 /// bus's textures the first time it appears, which used to cost a frame of 100-200 ms
 /// each and a minute of stutter after loading Spandau.
 pub const AI_SCHEMES: usize = 4;
+const SCRIPT_UPLOAD_BUDGET: usize = 4 << 20;
 
 /// Start a vehicle of type `ty` once and throw it away: its `{init}` and its displays read
 /// the files they need (depot data, fonts) into the caches before the first real one of the
@@ -1425,6 +1426,11 @@ impl Traffic {
         renders
     }
 
+    pub fn prime_pull_out_room(&mut self, ty: &VehicleType, bus: bool) {
+        let (front, rear, half_width) = extents(ty, if bus { 12.0 } else { 4.5 });
+        self.pull_out_room(ty, front, rear, half_width);
+    }
+
     /// How far behind something standing a vehicle of `ty` stops so that it can pull out
     /// round it later (`omsi_sim::ai_motion::pull_out_room` against a standing bus with the
     /// oncoming lane 3.3 m over; by vehicle file).
@@ -1892,20 +1898,22 @@ impl Traffic {
         let density = self.street_density();
         // ... and so does how much road there is around: the same number of cars looks
         // empty on a six-lane Berlin junction and crowded on a village lane, so the count
-        // asked for is per a neighbourhood of about 250 lanes
-        let near = self.net.lanes_starting_near(center, self.spawn_radius)
+        // asked for is per a neighbourhood of about 250 lanes; and as Omsi spawns on each
+        // path at a rate of its [rule] trafficdensity, paths of low density bring fewer cars
+        // and those of density 0 (or kept clear of cars) none
+        let near_density: Vec<f32> = self.net.lanes_starting_near(center, self.spawn_radius)
             .into_iter()
-            .filter(|&i| {
-                let l = &self.net.lanes[i];
+            .map(|i| &self.net.lanes[i])
+            .filter(|l| {
                 l.kind == LaneKind::Street
                     && l.points
                         .first()
                         .map(|p| (*p - center).length() < self.spawn_radius)
                         .unwrap_or(false)
             })
-            .count();
-        let road = (near as f32 / 250.0).clamp(1.0, 4.0);
-        let street_target = (self.target as f32 * density * road).round() as usize;
+            .map(|l| if l.no_cars { 0.0 } else { l.density.clamp(0.0, 4.0) })
+            .collect();
+        let street_target = (self.target as f32 * density * road_scale(&near_density)).round() as usize;
         // the cars that come into range again, where they have got to
         self.wake_dormant(world, renderer, scene, center, street_target);
         // the whole map's population: as dense as around the player, on every street the
@@ -2650,6 +2658,31 @@ impl Traffic {
             scheme,
         });
         id
+    }
+
+    pub fn precache_random(&mut self, world: &World, renderer: &Renderer, scene: &mut Scene) {
+        let t0 = std::time::Instant::now();
+        let mut sets: Vec<(Arc<VehicleType>, Option<usize>)> = Vec::new();
+        for (ty, ..) in &self.types {
+            let n = ty.paint_schemes.len().min(AI_SCHEMES);
+            let schemes: Vec<Option<usize>> = if n == 0 { vec![None] } else { (0..n).map(Some).collect() };
+            for scheme in schemes {
+                if !sets.iter().any(|(t, s)| t.def.path == ty.def.path && *s == scheme) {
+                    sets.push((ty.clone(), scheme));
+                }
+            }
+        }
+        for chunk in sets.chunks(3) {
+            world.prefetch_vehicle_sets(renderer, chunk);
+            for (ty, scheme) in chunk {
+                world.precache_vehicle(renderer, scene, ty, *scheme);
+            }
+        }
+        world.forget_prefetched();
+        for (ty, _) in &sets {
+            self.prime_pull_out_room(ty, false);
+        }
+        log::info!("traffic: {} vehicle/paint sets of the random traffic read and uploaded in {:.1} s", sets.len(), t0.elapsed().as_secs_f32());
     }
 
     /// Put a timetable bus on the road: an AI car like any other (`create_car`), on its
@@ -6635,6 +6668,7 @@ impl Traffic {
         // a blank sign until it was almost there.) What a far car's scripts redraw goes to
         // the GPU at most every half second, a slice of the cars per frame.
         let tick = (self.time as f64 * 2.0) as u64;
+        let mut budget = SCRIPT_UPLOAD_BUDGET;
         for c in &mut self.cars {
             // out of sight (`tick` decided): hidden once, then left alone until it comes
             // into view again - its many per-mesh updates were a third of this stage
@@ -6661,7 +6695,7 @@ impl Traffic {
                     c.render.display_tick = tick;
                 }
             }
-            crate::scene::sync_vehicle_textures(renderer, scene, &mut c.vehicle, &c.render);
+            crate::scene::sync_vehicle_textures(renderer, scene, &mut c.vehicle, &c.render, &mut budget);
             crate::scene::sync_vehicle_materials(renderer, scene, &c.vehicle, &mut c.render);
             // a coupled part runs no scripts of its own: its plates, its displays and its
             // switched materials follow the leading vehicle's, as the player's own rear
@@ -7038,6 +7072,31 @@ impl Traffic {
             ctl.time = time;
             ctl.held = held;
         }
+    }
+}
+
+/// How many times the base street target the neighbourhood asks for, from the trafficdensity
+/// of each street lane starting near the player (0 for a no_cars lane): the count of lanes
+/// per about 250 (1 to 4) times their mean density (0 to 2).
+fn road_scale(near_density: &[f32]) -> f32 {
+    let road = (near_density.len() as f32 / 250.0).clamp(1.0, 4.0);
+    if near_density.is_empty() {
+        return road;
+    }
+    let mean = near_density.iter().sum::<f32>() / near_density.len() as f32;
+    road * mean.clamp(0.0, 2.0)
+}
+
+#[cfg(test)]
+mod road_scale_tests {
+    use super::road_scale;
+
+    #[test]
+    fn path_density_scales_the_street_target() {
+        assert!((road_scale(&[1.0; 100]) - 1.0).abs() < 1e-6);
+        assert!((road_scale(&[0.2; 100]) - 0.2).abs() < 1e-6);
+        assert_eq!(road_scale(&[0.0; 100]), 0.0);
+        assert!((road_scale(&[1.0; 500]) - 2.0).abs() < 1e-6);
     }
 }
 

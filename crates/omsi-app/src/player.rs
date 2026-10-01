@@ -86,10 +86,10 @@ pub(crate) struct Player {
     /// The driver figure at the wheel (see `driver.rs`).
     pub(crate) driver: Option<crate::driver::DriverFigure>,
     /// The duty's trip to type into the IBIS once the auto-start has the electrics on:
-    /// (line, terminus, first stop, the stop the bus is at: its index and name).
-    pub(crate) ibis_duty: Option<(String, String, Option<String>, (usize, String))>,
+    /// (line, terminus, the trip's stops, the stop the bus is at: its index and name).
+    pub(crate) ibis_duty: Option<(String, String, Vec<String>, (usize, String))>,
     /// The IBIS being typed, with the line and terminus it is typed for.
-    pub(crate) ibis_typist: Option<(omsi_sim::ibis::Typist, String, String)>,
+    pub(crate) ibis_typist: Option<(omsi_sim::ibis::Typist, String, String, Vec<String>)>,
     /// The duty is typed into the IBIS by itself (after Shift+U or `--autostart`): a new
     /// trip of the duty is typed too.
     pub(crate) duty_typed: bool,
@@ -838,8 +838,8 @@ impl Player {
         if omsi_sim::startup::power_on(&self.vehicle) {
             self.saloon_lights_after_dark();
         }
-        if let Some((line, terminus, first, stop)) = self.ibis_duty.take() {
-            self.type_destination(&line, &terminus, first.as_deref(), (stop.0, &stop.1));
+        if let Some((line, terminus, stops, stop)) = self.ibis_duty.take() {
+            self.type_destination(&line, &terminus, &stops, (stop.0, &stop.1));
         }
         false
     }
@@ -875,11 +875,11 @@ impl Player {
     /// Type on into the IBIS; when the typing could not be done, the IBIS variables are
     /// written directly.
     pub(crate) fn tick_ibis(&mut self, dt: f32) {
-        let Some((mut typist, line, terminus)) = self.ibis_typist.take() else {
+        let Some((mut typist, line, terminus, stops)) = self.ibis_typist.take() else {
             return;
         };
         if typist.tick(&mut self.vehicle, dt) {
-            self.ibis_typist = Some((typist, line, terminus));
+            self.ibis_typist = Some((typist, line, terminus, stops));
             return;
         }
         match typist.outcome() {
@@ -893,11 +893,13 @@ impl Player {
                         .unwrap_or_default()
                 );
                 let hof = self.vehicle.host.hof.clone();
+                let stops: Vec<&str> = stops.iter().map(String::as_str).collect();
                 schedule::set_player_destination_directly(
                     &mut self.vehicle,
                     hof.as_deref(),
                     &line,
                     &terminus,
+                    &stops,
                 );
             }
         }
@@ -922,7 +924,7 @@ impl Player {
     /// auto-start is done.
     pub(crate) fn set_duty_destination(&mut self, trip: &schedule::PlannedTrip, stop: usize) {
         self.duty_typed = true;
-        let first = trip.stops.first().map(|s| s.name.clone());
+        let stops: Vec<String> = trip.stops.iter().map(|s| s.name.clone()).collect();
         let name = trip
             .stops
             .get(stop)
@@ -932,11 +934,11 @@ impl Player {
             self.ibis_duty = Some((
                 trip.line.clone(),
                 trip.terminus.clone(),
-                first,
+                stops,
                 (stop, name),
             ));
         } else {
-            self.type_destination(&trip.line, &trip.terminus, first.as_deref(), (stop, &name));
+            self.type_destination(&trip.line, &trip.terminus, &stops, (stop, &name));
         }
     }
 
@@ -944,7 +946,7 @@ impl Player {
         &mut self,
         line: &str,
         terminus: &str,
-        first_stop: Option<&str>,
+        stops: &[String],
         stop: (usize, &str),
     ) {
         if let Some((mut old, ..)) = self.ibis_typist.take() {
@@ -967,18 +969,24 @@ impl Player {
                 .map(|a| a.trim().to_ascii_lowercase()),
         );
         let operable = |name: &str| keys.contains(&name.trim().to_ascii_lowercase());
+        let names: Vec<&str> = stops.iter().map(String::as_str).collect();
         match schedule::player_ibis(
             &mut self.vehicle,
             hof.as_deref(),
             line,
             terminus,
-            first_stop,
+            &names,
             Some(stop),
             &operable,
             self.ibis_background,
         ) {
             Some(typist) => {
-                self.ibis_typist = Some((typist, line.to_string(), terminus.to_string()))
+                self.ibis_typist = Some((
+                    typist,
+                    line.to_string(),
+                    terminus.to_string(),
+                    stops.to_vec(),
+                ))
             }
             None => log::info!("IBIS: nothing to type for line {line} terminus {terminus}"),
         }
@@ -1060,7 +1068,7 @@ impl Player {
                     if let Some((mut old, ..)) = self.ibis_typist.take() {
                         old.abandon(&mut self.vehicle);
                     }
-                    schedule::set_player_destination_directly(&mut self.vehicle, Some(&hof), &line, &wanted);
+                    schedule::set_player_destination_directly(&mut self.vehicle, Some(&hof), &line, &wanted, &[]);
                 }
             }
         }
@@ -1077,12 +1085,14 @@ impl Player {
             log::info!("HTML page: route {i} ({}) leads to destination code {code}, which the depot file lacks", t.name.trim());
             return;
         };
-        let first = hof.info_busstop_lists.get(i).and_then(|l| l.first()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        let name = first.clone().unwrap_or_default();
+        // (the route's own stops, so that this route is typed and not another of the line to
+        // the same terminus)
+        let stops: Vec<String> = hof.info_busstop_lists.get(i).map(|l| l.iter().map(|s| s.trim().to_string()).collect()).unwrap_or_default();
+        let name = stops.first().cloned().unwrap_or_default();
         let wanted = if term.texture_id.trim().is_empty() { term.strings.first().cloned().unwrap_or_default() } else { term.texture_id.clone() };
         let line = route_line(t);
         log::info!("HTML page: route {i} '{}' (line '{line}' (file: '{}') to '{wanted}')", t.name.trim(), t.line.trim());
-        self.type_destination(&line, &wanted, first.as_deref(), (0, &name));
+        self.type_destination(&line, &wanted, &stops, (0, &name));
     }
 
     /// The driver's head follows the bus's accelerations a little late, as a body does:
@@ -1938,7 +1948,7 @@ pub(crate) fn sync_vehicle_transforms(
             renderer.set_interior(scene, *inst, p.interior);
         }
     }
-    scene::sync_vehicle_textures(renderer, scene, vehicle, render);
+    scene::sync_vehicle_textures(renderer, scene, vehicle, render, &mut { usize::MAX });
     let mut trailers = std::mem::take(&mut vehicle.trailers);
     for (t, r) in trailers.iter_mut().zip(trailer_renders.iter_mut()) {
         scene::sync_vehicle_part(renderer, scene, &vehicle, t, r);

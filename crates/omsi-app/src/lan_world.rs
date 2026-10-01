@@ -1231,7 +1231,7 @@ impl LanWorld {
                 if let Some(k) = car.vehicle.ty.program.str_var("Linie") {
                     car.vehicle.state.str_vars[k as usize] = line.clone();
                 }
-                crate::schedule::set_ai_destination(&mut car.vehicle, hof.as_deref(), line, &terminus);
+                crate::schedule::set_ai_destination(&mut car.vehicle, hof.as_deref(), line, &terminus, &[]);
                 m.shown.insert(id, want);
             }
         }

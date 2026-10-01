@@ -375,6 +375,8 @@ struct MaterialUniform {
     /// x: a screen (`MaterialExtra::screen`); y: 1 `[matl_texadress_border]`, 2
     /// `[matl_texadress_mirroronce]`; z the border colour's rgb packed as r * 65536 + g * 256 + b (bytes), w its alpha.
     flags: [f32; 4],
+    /// rgb: the D3D material's ambient colour, which takes the ambient light (C)
+    ambient: [f32; 4],
 }
 
 /// The maps of a PBR set found beside a diffuse texture (`foo_n.png` and the rest, see
@@ -671,7 +673,7 @@ impl GpuTexture {
 struct BindKey {
     textures: [(usize, u64); 7],
     address: TexAddressing,
-    uniform: [u32; 36],
+    uniform: [u32; 40],
 }
 
 /// Bytes of a texture of `format` with `levels` mip levels.
@@ -743,6 +745,9 @@ pub struct MaterialExtra {
     pub no_z_check: bool,
     /// `[matl_Zbias]`
     pub z_bias: i32,
+    /// The D3D material's ambient colour, its share of the ambient light (C); None: the
+    /// diffuse colour's.
+    pub ambient: Option<[f32; 3]>,
     /// Specular colour (rgb) and power (w) of the D3D material; black = no highlight.
     pub specular: [f32; 4],
     /// `[matl_bumpmap]`: a height map (in its alpha, `Image::bump_height_map`) whose slope
@@ -1325,6 +1330,7 @@ pub struct Renderer {
     /// Reuse a small set of encoding workers instead of creating OS threads for each
     /// main/mirror picture. Keep these separate from simulation's worker queue.
     encoding_pool: Option<rayon::ThreadPool>,
+    _device_poller: Option<DevicePoller>,
     /// Vertex data of changed meshes (skinned people, the driver) waiting for the next
     /// picture: (mesh, bytes). Written with one staging buffer and a copy each at the start
     /// of the frame - a `write_buffer` per mesh made wgpu create a staging buffer for every
@@ -1832,7 +1838,9 @@ impl Renderer {
         log::info!("renderer: compiling the scene shaders");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("omsi"),
-            source: wgpu::ShaderSource::Wgsl(scene_shader_source().into()),
+            source: wgpu::ShaderSource::Wgsl(
+                scene_shader_source(GL_BACKEND.load(std::sync::atomic::Ordering::Relaxed)).into(),
+            ),
         });
         let shadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow camera"),
@@ -2584,6 +2592,16 @@ impl Renderer {
             },
             alpha: wgpu::BlendComponent::REPLACE,
         };
+        // Omsi's lamp sprites: SRCBLEND ONE, DESTBLEND INVSRCCOLOR (src + dst * (1 - src)),
+        // which keeps a coloured sprite's hue over a lit background instead of washing it to white
+        let screen = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::REPLACE,
+        };
         let alpha_blend = wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -2771,7 +2789,7 @@ impl Renderer {
         };
         let pass = PassPipelines {
             pipelines: scene_pipelines(format, "fs_main"),
-            corona_pipeline: corona_pipeline_for(format, "fs_main", additive),
+            corona_pipeline: corona_pipeline_for(format, "fs_main", screen),
             smoke_pipeline: corona_pipeline_for(format, "fs_smoke", alpha_blend),
             sky_pipeline: sky_pipeline_for(format, "fs_main"),
         };
@@ -3743,6 +3761,7 @@ impl Renderer {
         });
         let gpu_timers = [GpuTimers::new(&device), GpuTimers::new(&device)];
         Renderer {
+            _device_poller: DevicePoller::start(&device),
             upscale_pipeline,
             upscale_layout,
             upscale_buf,
@@ -4092,6 +4111,29 @@ impl Renderer {
             upload_texture(&self.device, &self.queue, img, false)
         };
         scene.textures.push(t);
+        scene.textures.len() - 1
+    }
+
+    pub fn add_blank_texture(&self, scene: &mut Scene, width: u32, height: u32) -> TextureId {
+        let (width, height) = (width.max(1), height.max(1));
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        scene.textures.push(GpuTexture {
+            texture,
+            view,
+            size: (width, height),
+            bytes: texture_bytes(wgpu::TextureFormat::Rgba8UnormSrgb, width, height, 1),
+            gen: next_gen(),
+        });
         scene.textures.len() - 1
     }
 
@@ -4937,6 +4979,10 @@ impl Renderer {
                     b[0] * 65536.0 + b[1] * 256.0 + b[2],
                     b[3] / 255.0,
                 ]
+            },
+            ambient: {
+                let a = extra.ambient.unwrap_or([color[0], color[1], color[2]]);
+                [a[0], a[1], a[2], 0.0]
             },
         };
         let slot = |t: Option<TextureId>| {
@@ -9562,13 +9608,32 @@ fn sky_input_differs(a: &atmosphere::SkyInput, b: &atmosphere::SkyInput) -> bool
 }
 
 /// The scene shader: the vanilla path and the enhanced fragment shader in one module.
-fn scene_shader_source() -> String {
-    [
+///
+/// On OpenGL a texture has one sampler (GLSL's combined sampler2D), so there the tile
+/// masks are read through `s_diffuse` at a UV clamped half a texel inside the tile, which
+/// is what `s_tile`'s clamp to edge gives; reading `t_trans`/`t_night` through both
+/// samplers fails the whole module ("Conflicting samplers").
+fn scene_shader_source(gl: bool) -> String {
+    let src = [
         include_str!("shader.wgsl"),
         include_str!("enhanced_common.wgsl"),
         include_str!("enhanced.wgsl"),
     ]
-    .join("\n")
+    .join("\n");
+    if !gl {
+        return src;
+    }
+    let clamped = |t: &str| {
+        format!(
+            "textureSample({t}, s_diffuse, clamp(uv, 0.5 / vec2<f32>(textureDimensions({t})), \
+             vec2<f32>(1.0) - 0.5 / vec2<f32>(textureDimensions({t}))))"
+        )
+    };
+    let out = src
+        .replace("textureSample(t_trans, s_tile, uv)", &clamped("t_trans"))
+        .replace("textureSample(t_night, s_tile, uv)", &clamped("t_night"));
+    debug_assert!(!out.contains("s_tile, uv)"));
+    out
 }
 
 /// The enhanced clouds' noise textures (clouds.rs), made once: the shape map (2-D RGBA8)
@@ -10116,6 +10181,40 @@ fn culls_back_faces(scene: &Scene, inst: &Instance) -> bool {
     scene.meshes[inst.mesh].one_sided
         && !*NO_CULL.get_or_init(|| omsi_cfg::env::var_os("OMSI_NO_CULL").is_some())
         && glam::Mat3::from_mat4(inst.transform).determinant() > 0.0
+}
+
+struct DevicePoller {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DevicePoller {
+    fn start(device: &wgpu::Device) -> Option<Self> {
+        if cfg!(target_arch = "wasm32") || omsi_cfg::env::var_os("OMSI_NO_POLL_THREAD").is_some() {
+            return None;
+        }
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (device, flag) = (device.clone(), stop.clone());
+        let thread = std::thread::Builder::new()
+            .name("omsi-gpu-poll".into())
+            .spawn(move || {
+                while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = device.poll(wgpu::PollType::Poll);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            })
+            .ok()?;
+        Some(Self { stop, thread: Some(thread) })
+    }
+}
+
+impl Drop for DevicePoller {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }
 
 fn in_scope<'s, R>(pool: Option<&rayon::ThreadPool>, op: impl FnOnce(&rayon::Scope<'s>) -> R) -> R {
@@ -11226,7 +11325,7 @@ mod tests {
     fn shaders_validate_and_match_the_uniforms() {
         use wgpu::naga;
         let modules = [
-            ("scene", scene_shader_source()),
+            ("scene", scene_shader_source(false)),
             ("sky", sky_shader_source()),
             ("corona", corona_shader_source()),
             ("post", include_str!("post.wgsl").to_string()),
@@ -11313,6 +11412,37 @@ mod tests {
             }
         }
         assert_eq!(checked.len(), sizes.len(), "structs checked: {checked:?}");
+    }
+
+    /// The scene module as the OpenGL backend gets it translates to GLSL ES 3.10 and desktop
+    /// GLSL 4.30 for every entry point, with no `invariant gl_FragCoord` (rejected by AMD's
+    /// desktop GL and by GLES) and no texture read through two samplers (#617, #610).
+    #[test]
+    fn the_scene_shader_translates_to_glsl() {
+        use wgpu::naga;
+        use wgpu::naga::back::glsl;
+        let src = scene_shader_source(true);
+        let module = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module)
+            .expect("validate");
+        let (module, info) =
+            naga::back::pipeline_constants::process_overrides(&module, &info, None, &Default::default()).expect("overrides");
+        for version in [glsl::Version::Embedded { version: 310, is_webgl: false }, glsl::Version::Desktop(430)] {
+            let options = glsl::Options { version, ..Default::default() };
+            for entry in &module.entry_points {
+                let pipeline = glsl::PipelineOptions {
+                    shader_stage: entry.stage,
+                    entry_point: entry.name.clone(),
+                    multiview: None,
+                };
+                let mut out = String::new();
+                glsl::Writer::new(&mut out, &module, &info, &options, &pipeline, Default::default())
+                    .and_then(|mut w| w.write())
+                    .unwrap_or_else(|e| panic!("{version:?} {}: {e:?}", entry.name));
+                assert!(!out.contains("invariant gl_FragCoord"), "{version:?} {}", entry.name);
+            }
+        }
     }
 
     #[test]

@@ -63,6 +63,7 @@ mod app_events;
 mod bus_service;
 mod camera_util;
 mod controllers;
+mod ffb_calibration;
 #[cfg(windows)]
 mod dinput;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]

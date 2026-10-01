@@ -4,6 +4,38 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/turbo-devv/openOMSI/releases) page.
 
+## 0.1.759 - 2026-10-01
+
+### Traffic
+- AI vehicles switch their lights on below OMSI's light value of 0.75, before the street
+  lamps, and keep them on after the lamps go out (#620).
+- The street lamps come on below a light value of 0.6 as in OMSI, and each scenery object's
+  `NightlightA` at its own threshold (a random 0.3-0.75 with `[NightMapMode]`) (#620).
+- A timetable bus at the end of its tour's last trip leaves the road at once instead of
+  driving on and queueing at the map's end (#598, #536).
+- The amount of street traffic follows the paths' `trafficdensity`; density-0 and no-car
+  paths stay empty (#625, #161).
+- Fewer stutters when AI vehicles appear (#641).
+
+### Controls
+- Looking round in a view of the bus follows the cursor and scales with the field of view, as
+  in OMSI (#622, #398); the cursor shows up-down arrows while zooming (#621).
+- Force feedback direction is detected and saved per wheel (#637).
+
+### Graphics
+- The scene shader compiles on OpenGL and GLES again (black screen and crashes on some
+  Android and Linux machines, #617, #610, #556, #456).
+- A model takes the ambient light with OMSI's white material ambient (or its
+  `[matl_allcolor]`), not its diffuse colour (#530).
+- Coloured lamp sprites are blended as OMSI blends them and keep their colour (#601).
+
+### Interface
+- IBIS picks the route by the trip's stops (#631); the information bar (Ctrl+Y) shows the
+  passengers aboard (#628).
+
+### Multiplayer
+- A server seeds bus-stop passengers near every player (#626).
+
 ## 0.1.737 - 2026-10-01
 
 ### Sound

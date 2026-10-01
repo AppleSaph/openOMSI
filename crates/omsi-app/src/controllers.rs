@@ -63,6 +63,8 @@ pub(crate) struct DeviceCfg {
     pub(crate) buttons: Vec<(String, String)>,
     /// `[FFScale]`: steering forces (centering and drag), then vibration strength.
     pub(crate) ff_scale: Option<(f32, f32)>,
+    /// Motor polarity for this device; None uses the existing global setting.
+    pub(crate) ff_invert: Option<bool>,
 }
 
 /// The `gamectrler.cfg` in use: the content folder's (written by the launcher) before
@@ -128,6 +130,12 @@ pub(crate) fn parse_cfg(text: &str) -> Vec<DeviceCfg> {
                 }
                 i += 3;
             }
+            "[openOMSI.FFInvert]" => {
+                if let Some(d) = out.last_mut() {
+                    d.ff_invert = lines.get(i + 1).and_then(|v| match *v { "0" => Some(false), "1" => Some(true), _ => None });
+                }
+                i += 2;
+            }
             _ => i += 1,
         }
     }
@@ -152,6 +160,9 @@ pub(crate) fn cfg_text(devices: &[DeviceCfg]) -> String {
         }
         let (a, b) = d.ff_scale.unwrap_or((1.0, 1.0));
         t.push_str(&format!("\r\n[FFScale]\r\n{a:.3}\r\n{b:.3}\r\n\r\n"));
+        if let Some(invert) = d.ff_invert {
+            t.push_str(&format!("[openOMSI.FFInvert]\r\n{}\r\n\r\n", invert as u8));
+        }
     }
     t
 }
@@ -214,6 +225,8 @@ pub(crate) const HAT_BUTTONS: usize = 128;
 /// never show up in the system's newer interface that gilrs uses there.
 pub(crate) struct Devices {
     gilrs: Option<Gilrs>,
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    calibration_wheel: Option<crate::evdev_ff::Wheel>,
     #[cfg(windows)]
     di: Option<crate::dinput::DirectInput>,
     /// macOS: every axis element of every wheel and joystick, as last read (see `mac_hid`)
@@ -237,6 +250,8 @@ impl Devices {
         let _ = (hwnd, ff);
         Devices {
             gilrs,
+            #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+            calibration_wheel: None,
             #[cfg(windows)]
             di,
             #[cfg(target_os = "macos")]
@@ -270,12 +285,31 @@ impl Devices {
 
     /// Release foreground wheel effects when the game loses focus.
     pub(crate) fn set_focus(&mut self, focused: bool) {
+        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        if !focused {
+            self.calibration_wheel = None;
+        }
         #[cfg(windows)]
         if let Some(d) = self.di.as_mut() {
             d.set_focus(focused);
         }
         #[cfg(not(windows))]
         let _ = focused;
+    }
+
+    pub(crate) fn calibration_pulse(&mut self, name: &str, axis: usize, force: f32) -> bool {
+        #[cfg(windows)]
+        return self.di.as_mut().is_some_and(|di| di.force_axis(name) == Some(axis) && di.pulse_force(name, force));
+        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        {
+            let _ = axis;
+            if self.calibration_wheel.is_none() {
+                self.calibration_wheel = crate::evdev_ff::Wheel::open(name);
+            }
+            return self.calibration_wheel.as_mut().is_some_and(|wheel| wheel.pulse_force(force));
+        }
+        #[cfg(not(any(windows, all(target_os = "linux", target_pointer_width = "64"))))]
+        { let _ = (name, axis, force); false }
     }
 
     /// Read the devices; the buttons pressed (true) and let go since the last call:
@@ -694,8 +728,8 @@ impl Controllers {
                 #[cfg(windows)]
                 let axis_reversed = self.devices.di.as_ref().is_some_and(|di| force_axis_reversed(cfg, di.force_axis(name)));
                 #[cfg(not(windows))]
-                let axis_reversed = false;
-                log::info!("force feedback: steering source {name}, effect available: {effect}, config: {}, steering force: {steering:.2}, vibration: {vibration:.2}, invert: {}", cfg.map(|d| d.name.as_str()).unwrap_or("none"), self.ff_invert ^ axis_reversed);
+                let axis_reversed = calibrated_steering_reversed(cfg);
+                log::info!("force feedback: steering source {name}, effect available: {effect}, config: {}, steering force: {steering:.2}, vibration: {vibration:.2}, invert: {}", cfg.map(|d| d.name.as_str()).unwrap_or("none"), feedback_inverted(cfg, self.ff_invert, axis_reversed));
             }
         }
         #[cfg(windows)]
@@ -711,7 +745,7 @@ impl Controllers {
             // The wheel force is calculated from the steering axis after its configured
             // reversal, while DirectInput sends forces in the physical axis direction.
             let axis_reversed = force_axis_reversed(cfg, di.force_axis(&name));
-            let force = if self.ff_invert ^ axis_reversed { -force } else { force };
+            let force = if feedback_inverted(cfg, self.ff_invert, axis_reversed) { -force } else { force };
             if di.set_force(&name, force) {
                 return;
             }
@@ -725,9 +759,12 @@ impl Controllers {
                 self.wheel = crate::evdev_ff::Wheel::open(&name);
             }
             if let Some(w) = self.wheel.as_mut() {
-                let (k_s, k_e) = find_device_cfg(&self.cfg, &name).and_then(|d| d.ff_scale).unwrap_or((1.0, 1.0));
+                let cfg = find_device_cfg(&self.cfg, &name);
+                let (k_s, k_e) = cfg.and_then(|d| d.ff_scale).unwrap_or((1.0, 1.0));
                 let force = if on { wheel_force(&f, x, x0, &mut self.ff_t, k_s, k_e) } else { 0.0 };
-                if !w.set_force(if self.ff_invert { -force } else { force }) {
+                let axis_reversed = calibrated_steering_reversed(cfg);
+                let inverted = feedback_inverted(cfg, self.ff_invert, axis_reversed);
+                if !w.set_force(if inverted { -force } else { force }) {
                     log::warn!("force feedback: {name} went away; looking for it again");
                     self.wheel = None;
                 }
@@ -950,6 +987,18 @@ fn find_device_cfg<'a>(cfg: &'a [DeviceCfg], name: &str) -> Option<&'a DeviceCfg
 fn force_axis_reversed(cfg: Option<&DeviceCfg>, axis: Option<usize>) -> bool {
     axis.and_then(|axis| cfg.and_then(|d| d.axes.get(axis).copied().flatten()))
         .is_some_and(|(function, reversed)| function == Func::Steering && reversed)
+}
+
+fn feedback_inverted(cfg: Option<&DeviceCfg>, global: bool, axis_reversed: bool) -> bool {
+    cfg.and_then(|d| d.ff_invert).unwrap_or(global) ^ axis_reversed
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn calibrated_steering_reversed(cfg: Option<&DeviceCfg>) -> bool {
+    // Linux previously applied the global sign directly; preserve it for uncalibrated wheels.
+    cfg.filter(|d| d.ff_invert.is_some())
+        .and_then(|d| d.axes.iter().flatten().find(|(function, _)| *function == Func::Steering))
+        .is_some_and(|(_, reversed)| *reversed)
 }
 
 /// The button's number on its device as DirectInput counts them (and `gamectrler.cfg` with
@@ -1223,6 +1272,29 @@ mod cfg_tests {
         let saved = super::parse_cfg(&super::cfg_text(&devices));
         assert_eq!(saved[0].ff_scale, Some((2.0, 0.5)));
         assert_eq!(saved[1].ff_scale, Some((0.75, 1.25)));
+    }
+
+    #[test]
+    fn force_feedback_direction_is_saved_and_applied_per_wheel() {
+        let devices = vec![
+            super::DeviceCfg { name: "Wheel A".into(), ff_invert: Some(true), ..Default::default() },
+            super::DeviceCfg { name: "Wheel B".into(), ff_invert: Some(false), ..Default::default() },
+            super::DeviceCfg { name: "Uncalibrated".into(), ..Default::default() },
+        ];
+        let saved = super::parse_cfg(&super::cfg_text(&devices));
+        assert_eq!(saved[0].ff_invert, Some(true));
+        assert_eq!(saved[1].ff_invert, Some(false));
+        assert_eq!(saved[2].ff_invert, None);
+        assert!(super::feedback_inverted(Some(&saved[0]), false, false));
+        assert!(!super::feedback_inverted(Some(&saved[1]), true, false));
+        assert!(super::feedback_inverted(Some(&saved[2]), true, false));
+        assert!(!super::feedback_inverted(Some(&saved[0]), false, true));
+        assert!(super::feedback_inverted(Some(&saved[1]), true, true));
+        let mut reversed = super::DeviceCfg::default();
+        reversed.axes[0] = Some((super::Func::Steering, true));
+        assert!(!super::calibrated_steering_reversed(Some(&reversed)));
+        reversed.ff_invert = Some(false);
+        assert!(super::calibrated_steering_reversed(Some(&reversed)));
     }
 
     #[test]

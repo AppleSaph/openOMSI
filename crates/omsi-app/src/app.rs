@@ -203,7 +203,8 @@ pub(crate) struct App {
     /// Whether the game stood paused before the menu opened (closing it goes back to that).
     pub(crate) menu_prev_pause: bool,
     /// OMSI's information bar (`view_toggle_informationdisplay`, Ctrl+Y): time, speed, the
-    /// trip and its next stop along the top of the picture.
+    /// air and cabin temperatures, the passengers aboard, the trip and its next stop along
+    /// the top of the picture.
     pub(crate) info_bar: bool,
     /// A time of day the bus's script wrote (`(S.S.Time)`), for the clock at the next frame.
     pub(crate) pending_time: Option<f64>,
@@ -610,6 +611,9 @@ impl App {
                         Ok(mut t) => {
                             if let Some(lan) = self.lan.as_ref() {
                                 t.set_lan_seed(lan::population_seed(lan));
+                            }
+                            if self.args.traffic > 0 {
+                                t.precache_random(&w, &renderer, &mut scene);
                             }
                             t.day_time = parse_time(&self.args.time);
                             self.traffic = Some(t);

@@ -229,6 +229,7 @@ impl ApplicationHandler for App {
                     if !pressed && self.both_drag.is_some() && !(self.buttons_held.1 && self.right_zooms()) {
                         self.both_drag = None;
                         self.mouse_look = self.buttons_held.1;
+                        self.update_hover();
                     }
                     self.left_button(event_loop, pressed);
                 }
@@ -533,8 +534,11 @@ impl ApplicationHandler for App {
                         let (kind, rate) = precip_of(w);
                         w.fog.0 < 600.0 || (kind != 0 && rate > 0.05) || w.clouds.0.trim().to_ascii_lowercase().starts_with("overcast")
                     }).unwrap_or(false);
+                    // Omsi switches the AI's lights on below a light value of 0.75, before
+                    // the street lamps (0.6), and off after them in the morning
                     t.night = omsi_sim::Daylight::compute(&self.clock, self.envir.as_ref())
-                        .lamps_on
+                        .brightness
+                        < 0.75
                         || gloomy;
                     let __t2 = Instant::now();
                     t.others = lan_outlines(&self.remotes);
@@ -1702,7 +1706,7 @@ impl ApplicationHandler for App {
                         scene,
                         dt,
                         cam.position,
-                        daylight.lamps_on,
+                        daylight.brightness,
                         &phase,
                         self.audio.as_ref(),
                         self.in_cab,
@@ -1913,7 +1917,7 @@ impl ApplicationHandler for App {
                             // (not over the city map, which has the stops and their times: it
                             // covered the map's zoom and close buttons)
                             timetable: (self.timetable && !map_open).then(|| timetable_rows(self.duty.as_ref(), self.player.as_ref().map(|p| p.vehicle.host.tt_delay as f64))).flatten(),
-                            info: self.info_bar.then(|| info_line(&self.clock, self.player.as_ref(), self.duty.as_ref())),
+                            info: self.info_bar.then(|| info_line(&self.clock, self.player.as_ref(), self.duty.as_ref(), self.humans.as_ref().map(|h| h.riding()))),
                             tutorial: self.tutorial.as_ref().filter(|t| !t.hidden && self.game_menu.is_none()).and_then(|t| t.page().map(|p| (p.title.as_str(), p.text.as_str(), p.image.as_deref(), t.at, t.pages.len()))),
                             chat,
                             tags,
@@ -2406,8 +2410,11 @@ impl ApplicationHandler for App {
             }
         }
         if let DeviceEvent::MouseMotion { delta } = event {
+            // (in a view of the bus the cursor's own way turns it: move_cursor)
             if self.mouse_look {
-                self.look_by(delta.0 as f32 * 0.15, delta.1 as f32 * 0.15);
+                if !self.cursor_looks() {
+                    self.look_by(delta.0 as f32 * 0.15, delta.1 as f32 * 0.15);
+                }
             } else if self.mouse_drive && self.game_menu.is_none() {
                 self.mouse_past_edge(delta.0 as f32);
             }
@@ -2726,8 +2733,9 @@ pub(crate) fn vehicle_temperatures(p: &Player) -> (f32, f32) {
     (outside, inside)
 }
 
-/// OMSI's information bar: the time, the speed, and the trip with its next stop and delay.
-fn info_line(clock: &omsi_sim::SimClock, player: Option<&Player>, duty: Option<&crate::schedule::PlayerDuty>) -> String {
+/// OMSI's information bar: the time, the speed, temperatures, the passengers aboard, and the
+/// trip with its next stop and delay.
+fn info_line(clock: &omsi_sim::SimClock, player: Option<&Player>, duty: Option<&crate::schedule::PlayerDuty>, passengers: Option<usize>) -> String {
     let t = clock.time;
     let mut parts = vec![format!("{:02}:{:02}:{:02}", ((t / 3600.0) as i64).rem_euclid(24), ((t % 3600.0) / 60.0) as i64, (t % 60.0) as i64)];
     if let Some(p) = player {
@@ -2737,6 +2745,11 @@ fn info_line(clock: &omsi_sim::SimClock, player: Option<&Player>, duty: Option<&
         // the tank as the bus's script says it (OMSI's RL_TankContent: tank_percent)
         if let Some(tank) = p.vehicle.var("tank_percent").filter(|v| v.is_finite()) {
             parts.push(format!("tank {:.0} %", (tank * 100.0).round()));
+        }
+        // how many are aboard right now (None: the passengers are switched off for this
+        // drive, so there is nothing to count)
+        if let Some(n) = passengers {
+            parts.push(passengers_aboard(n));
         }
         if let Some(d) = duty {
             if let Some(trip) = d.trips.get(d.trip_index) {
@@ -2753,6 +2766,12 @@ fn info_line(clock: &omsi_sim::SimClock, player: Option<&Player>, duty: Option<&
     parts.join("   ·   ")
 }
 
+/// `n` with the word for a passenger in the interface's language (singular for one; both
+/// words are keys of the tables - the whole line is too much of a sentence to translate).
+fn passengers_aboard(n: usize) -> String {
+    format!("{n} {}", omsi_ui::tr(if n == 1 { "Passenger" } else { "Passengers" }))
+}
+
 #[cfg(test)]
 mod governor_tests {
     use super::render_scale_step;
@@ -2762,6 +2781,20 @@ mod governor_tests {
         assert!(render_scale_step(35.0, 0.1) > 0.0);
         assert!(render_scale_step(35.0, 0.6) < 0.0);
         assert!(render_scale_step(60.0, 0.6) > 0.0);
+    }
+}
+
+#[cfg(test)]
+mod info_tests {
+    use super::passengers_aboard;
+
+    /// The count stands before the word, which is singular for one passenger (in the
+    /// tables' language; without a lookup the English key is drawn as it is).
+    #[test]
+    fn one_passenger_is_written_in_the_singular() {
+        assert_eq!(passengers_aboard(0), "0 Passengers");
+        assert_eq!(passengers_aboard(1), "1 Passenger");
+        assert_eq!(passengers_aboard(23), "23 Passengers");
     }
 }
 

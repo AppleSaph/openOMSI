@@ -41,6 +41,9 @@ pub(crate) fn run_offscreen(
         if let Some(seed) = lan_seed {
             t.set_lan_seed(seed);
         }
+        if args.traffic > 0 {
+            t.precache_random(&world, &renderer, &mut scene);
+        }
         Some(t)
     } else {
         None
@@ -280,7 +283,8 @@ pub(crate) fn run_offscreen(
                 .ok()
                 .as_ref(),
         )
-        .lamps_on;
+        .brightness
+            < 0.75;
         t.populate(&world, &renderer, &mut scene, center);
     }
     // OMSI_GROUND_SAMPLE=<csv>: what the wheels stand on every metre along the street lanes
@@ -817,6 +821,24 @@ pub(crate) fn run_offscreen(
                 .passenger_density((run_clock.time / 3600.0) as f32)
                 * settings.pax_density;
             h.time_of_day = run_clock.time;
+            // populate stops near every LAN player every 2 seconds, as app_events.rs
+            // does every 2 s near the local player.  At startup `center` is ZERO (no
+            // player bus on a headless server), so stops on the actual map – which can
+            // be thousands of metres away – fall outside the 600 m filter in
+            // `populate_with` and are never seeded without this loop.
+            if i % 60 == 0 {
+                let player_centers: Vec<glam::DVec3> = remotes_off
+                    .remotes
+                    .values()
+                    .map(|r| r.vehicle().position)
+                    .chain(player.as_ref().map(|p| p.vehicle.position))
+                    .collect();
+                for c in &player_centers {
+                    h.populate(&world, &renderer, &mut scene, *c);
+                }
+                // also update which stops the LAN players are near
+                h.lan_centers = player_centers;
+            }
             // what the passengers must not be seen appearing in front of
             let followed = traffic
                 .as_ref()
@@ -2288,7 +2310,7 @@ pub(crate) fn run_offscreen(
                 &mut scene,
                 dt,
                 camera.position,
-                daylight.lamps_on,
+                daylight.brightness,
                 &phase,
                 None,
                 false,

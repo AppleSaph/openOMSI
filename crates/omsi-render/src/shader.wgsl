@@ -305,6 +305,8 @@ struct MaterialParams {
     pbr: vec4<f32>,
     // x: one of the bus's own screens (the enhanced glow and FXAA leave it alone)
     flags: vec4<f32>,
+    // rgb: the D3D material's ambient colour, which takes the ambient light (C)
+    ambient: vec4<f32>,
 };
 @group(1) @binding(2) var<uniform> material: MaterialParams;
 @group(1) @binding(3) var t_trans: texture_2d<f32>;
@@ -417,6 +419,19 @@ struct VsOut {
     @location(4) params2: vec4<f32>,
     // the D3D material's highlight, lit at the vertex as Omsi.exe's fixed function lights
     // it: from the sun (light A) and from the light above (light B)
+    @location(5) spec_sun: vec3<f32>,
+    @location(6) spec_sky: vec3<f32>,
+};
+// What the fragment shaders take: VsOut without the invariant on the position. The
+// invariant belongs to the vertex output; on a fragment input naga's GLSL writer turns it
+// into `invariant gl_FragCoord`, which desktop GL drivers and GLES reject.
+struct FsIn {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) world: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) params: vec4<f32>,
+    @location(4) params2: vec4<f32>,
     @location(5) spec_sun: vec3<f32>,
     @location(6) spec_sky: vec3<f32>,
 };
@@ -563,11 +578,11 @@ fn vs_shadow_far(in: VsIn) -> VsOut {
 }
 
 @fragment
-fn fs_shadow(in: VsOut) {
+fn fs_shadow(in: FsIn) {
 }
 
 @fragment
-fn fs_shadow_test(in: VsOut) {
+fn fs_shadow_test(in: FsIn) {
     var duv = tex_address(in.uv);
     if (material.extra.x > 0.5) {
         duv = in.uv * material.extra.z;
@@ -594,7 +609,7 @@ fn fs_shadow_test(in: VsOut) {
 // Once the surface phases are complete, only fully covered diffuse pixels occlude
 // later scenery. The transparent borders must not become invisible depth walls.
 @fragment
-fn fs_surface_depth(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_surface_depth(in: FsIn) -> @location(0) vec4<f32> {
     let a = diffuse_border(textureSample(t_diffuse, s_diffuse, tex_address(in.uv)), in.uv).a
         * material.color.a * in.params.x;
     if (a < 0.999) {
@@ -611,7 +626,7 @@ fn fs_surface_depth(in: VsOut) -> @location(0) vec4<f32> {
 // the effectively opaque part of a transmap in a separate depth-only pass; window pixels
 // remain out of the prepass and are composited normally.
 @fragment
-fn fs_transmap_depth(in: VsOut) {
+fn fs_transmap_depth(in: FsIn) {
     if (material.params.z < 0.5) {
         discard;
     }
@@ -1338,7 +1353,7 @@ fn rain_env_vanilla(d: vec3<f32>) -> vec3<f32> {
 }
 
 @fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     if (material.emissive.w > 1.5) {
         // a pane's film of water: drops, not the sliding texture
         let v = normalize(camera.cam_pos.xyz - in.world);
@@ -1433,8 +1448,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let map_lamps = select(1.0, 0.0, (material.params.y > 0.2 && material.params.y < 0.3) || lm_only || tree_unlamped);
     let lamp_light = point_lights(in.world, n, map_lamps);
     var light = diffuse + lamp_light;
+    // D3D lights the material's diffuse colour with the sun, the light from above and the
+    // lamps, and its ambient colour with the ambient light (C). Omsi.exe makes every o3d
+    // slot's ambient white (0x7c62f8), so a white sign texture on a green material shows
+    // white in the shade, not green.
+    let ambient_light = camera.ambient.xyz * ao;
+    let mat_light = material.color.rgb * (light - ambient_light) + material.ambient.rgb * ambient_light;
     let light_mapped = material.params2.x > 0.5 && material.extra.x < 0.5;
-    var lit = albedo * material.color.rgb * light;
+    var lit = albedo * mat_light;
     // The vanilla picture: Omsi.exe's texture stages multiply the gamma-encoded texture by
     // the vertex light (clamped at 1); here the texture is sampled linear and the target
     // encodes again, so multiplied here a light L showed as L^(1/2.2) - a night at 0.06
@@ -1451,7 +1472,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         && material.extra.w > 0.5
         && material.extra.w < 1.5;
     if (classic && material.params.y < 0.5) {
-        var v = clamp(material.emissive.rgb + material.color.rgb * (light + interior_lamps(in.world, n, in.params2.z)), vec3<f32>(0.0), vec3<f32>(1.0));
+        var v = clamp(material.emissive.rgb + mat_light + material.color.rgb * interior_lamps(in.world, n, in.params2.z), vec3<f32>(0.0), vec3<f32>(1.0));
         if (light_mapped) {
             let lm = srgb_encode(textureSample(t_light, s_diffuse, buv).rgb) * clamp(in.params2.x, 0.0, 1.0);
             v = v + lm * (vec3<f32>(1.0) - v);
@@ -1476,7 +1497,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // saloon lamps lit a cabin twice over, flat white where the map was full; and the
         // material's colour took the map down with it.)
         let lm = textureSample(t_light, s_diffuse, buv).rgb * clamp(in.params2.x, 0.0, 1.0);
-        let v = clamp(material.emissive.rgb + material.color.rgb * (light + interior_lamps(in.world, n, in.params2.z)), vec3<f32>(0.0), vec3<f32>(1.0));
+        let v = clamp(material.emissive.rgb + mat_light + material.color.rgb * interior_lamps(in.world, n, in.params2.z), vec3<f32>(0.0), vec3<f32>(1.0));
         lit = albedo * (v + lm * (vec3<f32>(1.0) - v));
     }
     // the D3D material's own highlight (specular colour and power of the o3d file or a

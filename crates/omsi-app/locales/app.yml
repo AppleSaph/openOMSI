@@ -2,6 +2,47 @@
 # language of a text under it. `pt` is Brazilian Portuguese; `pt-pt` is European Portuguese.
 _version: 2
 
+"Force feedback direction":
+  de: "Force-Feedback-Richtung"
+"Invert force feedback by default":
+  de: "Force Feedback standardmäßig invertieren"
+"Wheels with a saved direction use their own setting under Controls → Game controllers.":
+  de: "Lenkräder mit gespeicherter Richtung verwenden ihre eigene Einstellung unter Steuerung → Gamecontroller."
+"INJURY RISK: TAKE YOUR HANDS OFF THE WHEEL. Keep hands and fingers clear before starting and throughout the test.":
+  de: "VERLETZUNGSGEFAHR: HÄNDE WEG VOM LENKRAD. Halte Hände und Finger vor dem Start und während des gesamten Tests fern."
+"The test applies two short forces in opposite directions. Finish and press Save to keep the detected direction for this wheel.":
+  de: "Der Test gibt zwei kurze Kraftimpulse in entgegengesetzte Richtungen aus. Schließe den Assistenten ab und drücke Speichern, um die erkannte Richtung für dieses Lenkrad zu übernehmen."
+"Start test":
+  de: "Test starten"
+"Test strength":
+  de: "Teststärke"
+"If the wheel barely moves, increase Test strength and retry. Keep your hands clear.":
+  de: "Wenn sich das Lenkrad kaum bewegt, erhöhe die Teststärke und versuche es erneut. Halte deine Hände fern."
+"The wheel did not move enough. Retry or choose the direction manually.":
+  de: "Das Lenkrad hat sich nicht ausreichend bewegt. Wiederhole den Test oder wähle die Richtung manuell."
+"Direction detected: normal":
+  de: "Richtung erkannt: normal"
+"Direction detected: inverted":
+  de: "Richtung erkannt: invertiert"
+"Testing: keep your hands off the wheel…":
+  de: "Test läuft: Lenkrad nicht anfassen…"
+"If detection is inconclusive, retry or choose the direction manually. You can change it later on this device's page.":
+  de: "Wenn die Erkennung nicht eindeutig ist, wiederhole den Test oder wähle die Richtung manuell. Du kannst sie später auf der Seite dieses Geräts ändern."
+"The test was interrupted. Please try again.":
+  de: "Der Test wurde unterbrochen. Bitte versuche es erneut."
+"The wheel is unavailable. Reconnect it and try again.":
+  de: "Das Lenkrad ist nicht verfügbar. Verbinde es erneut und wiederhole den Test."
+"Move the wheel away from its end stops and try again.":
+  de: "Drehe das Lenkrad von den Endanschlägen weg und wiederhole den Test."
+"The wheel did not settle. Let go and try again.":
+  de: "Das Lenkrad kam nicht zur Ruhe. Lass es los und wiederhole den Test."
+"The wheel moved too far. Test stopped.":
+  de: "Das Lenkrad hat sich zu weit bewegt. Test gestoppt."
+"The result is inconclusive. Retry or choose the direction manually.":
+  de: "Das Ergebnis ist nicht eindeutig. Wiederhole den Test oder wähle die Richtung manuell."
+"Force feedback is unavailable. Choose the direction manually.":
+  de: "Force Feedback ist nicht verfügbar. Wähle die Richtung manuell."
+
 "Mo":
   ru: "Пн"
   de: "Mo"

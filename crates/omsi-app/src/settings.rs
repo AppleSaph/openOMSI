@@ -191,7 +191,7 @@ pub struct Settings {
     /// The graphics interface: `auto` (Vulkan, else DirectX 12, else OpenGL), `vulkan`,
     /// `dx12` or `gl` (see `startup::graphics_instance`).
     pub graphics_api: String,
-    /// Force feedback pushes the other way (a Logitech G29 on some drivers).
+    /// Default motor polarity for wheels without a saved per-device direction.
     pub ff_invert: bool,
     /// Force feedback and rumble at all (off: the controller neither pushes nor shakes).
     pub ff_enabled: bool,

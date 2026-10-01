@@ -2994,6 +2994,7 @@ pub fn tick(
                 rv.hof.as_deref(),
                 &want.0,
                 &want.1,
+                &[],
             );
             log::info!(
                 "LAN: player {} '{}' shows {}{}",

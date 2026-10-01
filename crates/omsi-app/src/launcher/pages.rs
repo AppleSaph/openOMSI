@@ -38,7 +38,7 @@ pub struct PadsView {
     pub io: Option<crate::controllers::Devices>,
     /// The set-up assistant, while it runs.
     pub wizard: Option<Wizard>,
-    pub tried: bool,
+    feedback_test: bool,
     pub devices: Option<Vec<crate::controllers::DeviceCfg>>,
     pub selected: usize,
     /// Waiting for a button of the shown device to be pressed (to add its binding).
@@ -61,6 +61,27 @@ pub struct Wizard {
     pub rest: [Option<f32>; 8],
     pub at: Vec<[Option<f32>; 8]>,
     pub error: Option<String>,
+    calibration: Option<(std::time::Instant, crate::ffb_calibration::Calibration)>,
+    ff_choice: Option<bool>,
+    test_strength: f32,
+}
+
+impl PadsView {
+    pub(super) fn cancel_feedback_test(&mut self) {
+        release_feedback(&mut self.io, &mut self.feedback_test);
+        if let Some((_, test)) = self.wizard.as_mut().and_then(|w| w.calibration.as_mut()) {
+            if test.result.is_none() {
+                test.fail("The test was interrupted. Please try again.");
+            }
+        }
+    }
+}
+
+fn release_feedback(io: &mut Option<crate::controllers::Devices>, active: &mut bool) {
+    if *active {
+        *io = None;
+        *active = false;
+    }
 }
 
 // --- profile --------------------------------------------------------------------------------
@@ -546,7 +567,8 @@ fn driving_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, c
         }
     }
     toggle_setting(ui, s, dirty, c.row(), "Force feedback and vibration", "ff_enabled");
-    toggle_setting(ui, s, dirty, c.row(), "Invert force feedback", "ff_invert");
+    toggle_setting(ui, s, dirty, c.row(), "Invert force feedback by default", "ff_invert");
+    c.y += ui.paragraph("Wheels with a saved direction use their own setting under Controls → Game controllers.", Vec2::new(c.inner.x, c.y), c.inner.w, 12.5, Weight::Regular, TEXT_DIM) + 8.0;
     if ui.button("s-wreset", c.row(), "Reset wheel settings", Some("restart_alt"), ButtonKind::Normal) {
         s["wheel_range"] = json!(900.0);
         s["wheel_lock"] = json!(0.0);
@@ -823,6 +845,7 @@ pub fn controls(l: &mut Launcher, area: Rect) {
         game_controllers(l, body);
         return;
     }
+    l.pages.pads.cancel_feedback_test();
     // a key pressed while one binding waits for it
     if let (Some((sec, idx)), Some(code)) = (l.pages.capturing, l.ui.input.raw_key) {
         use winit::keyboard::KeyCode as K;
@@ -964,8 +987,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
     use crate::controllers::{DeviceCfg, Func};
     let hwnd = l.window.as_deref().and_then(crate::controllers::window_handle);
     let pv = &mut l.pages.pads;
-    if !pv.tried {
-        pv.tried = true;
+    if pv.io.is_none() {
         pv.io = Some(crate::controllers::Devices::new(hwnd, false));
     }
     if pv.devices.is_none() {
@@ -1029,6 +1051,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
         });
     }
     if sel != pv.selected {
+        release_feedback(&mut pv.io, &mut pv.feedback_test);
         pv.selected = sel;
         pv.capturing = false;
         pv.revealed_button = None;
@@ -1040,7 +1063,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
         pv.revealed_button = None;
         pv.dirty = true;
         // a new device starts with the assistant
-        pv.wizard = Some(Wizard { step: 0, rest: [None; 8], at: Vec::new(), error: None });
+        pv.wizard = Some(Wizard { step: 0, rest: [None; 8], at: Vec::new(), error: None, calibration: None, ff_choice: None, test_strength: crate::ffb_calibration::PULSE_FORCE });
     }
     // the dead zone (a setting of the game's)
     let dz_r = Rect::new(inner.x, inner.bottom() - 98.0, inner.w, 34.0);
@@ -1071,14 +1094,23 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
     }
     // the assistant, over the device's page
     if let Some(w) = pv.wizard.as_mut() {
-        let done = wizard(&mut l.ui, inner, w, d, &live, live_dev.is_some());
+        let done = if w.step == WIZARD_STEPS.len() {
+            feedback_setup(&mut l.ui, inner, w, d, &live, live_dev, &mut pv.io, &mut pv.feedback_test, hwnd,
+                l.state.settings.get("ff_invert").and_then(|v| v.as_bool()).unwrap_or(false))
+        } else {
+            wizard(&mut l.ui, inner, w, d, &live, live_dev.is_some(), live_dev.is_some_and(|c| c.ff_capable && !c.gamepad))
+        };
         match done {
             Some(true) => {
+                release_feedback(&mut pv.io, &mut pv.feedback_test);
                 pv.wizard = None;
                 pv.dirty = true;
                 l.state.set_status("Set up: press Save to keep it (the buttons can be given their keys below).", false);
             }
-            Some(false) => pv.wizard = None,
+            Some(false) => {
+                release_feedback(&mut pv.io, &mut pv.feedback_test);
+                pv.wizard = None;
+            }
             None => {}
         }
         return;
@@ -1097,7 +1129,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
         }
     }
     if l.ui.button("pad-wizard", Rect::new(inner.right() - 220.0, inner.y - 36.0, 220.0, 30.0), "Set up step by step", Some("touch_app"), ButtonKind::Normal) {
-        pv.wizard = Some(Wizard { step: 0, rest: [None; 8], at: Vec::new(), error: None });
+        pv.wizard = Some(Wizard { step: 0, rest: [None; 8], at: Vec::new(), error: None, calibration: None, ff_choice: None, test_strength: crate::ffb_calibration::PULSE_FORCE });
     }
     const AXES: [&str; 8] = ["X axis", "Y axis", "Z axis", "X rotation", "Y rotation", "Z rotation", "Slider 1", "Slider 2"];
     let funcs: Vec<String> = Func::LABELS.iter().map(|s| s.to_string()).collect();
@@ -1130,7 +1162,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
         let x0 = v.x + 6.0;
         let w = v.w - 16.0;
         let mut y = v.y;
-        if live_dev.is_some_and(|c| c.ff_capable) {
+        if live_dev.is_some_and(|c| c.ff_capable) || d.ff_invert.is_some() {
             let (mut steering_force, mut vibration) = d.ff_scale.unwrap_or((1.0, 1.0));
             if ui.slider("pad-ff-steering", Rect::new(x0, y, w, ROW), &mut steering_force, 0.0, 2.0, 0.05, "Steering force", &|v| format!("{:.0}%", v * 100.0)) {
                 d.ff_scale = Some((steering_force, vibration));
@@ -1142,6 +1174,14 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
                 dirty = true;
             }
             y += ROW + 20.0;
+            if !live_dev.is_some_and(|c| c.gamepad) {
+                let mut invert = d.ff_invert.unwrap_or_else(|| l.state.settings.get("ff_invert").and_then(|v| v.as_bool()).unwrap_or(false));
+                if ui.toggle("pad-ff-invert", Rect::new(x0, y, w, ROW), &mut invert, "Invert force feedback") {
+                    d.ff_invert = Some(invert);
+                    dirty = true;
+                }
+                y += ROW + 20.0;
+            }
         }
         let lab_w = if w < 520.0 { 84.0 } else { 110.0 };
         let inv_w = 110.0;
@@ -1259,7 +1299,7 @@ const WIZARD_STEPS: [(&str, &str); 5] = [
 
 /// One frame of the assistant in `r`; Some(true) when it has set the device up, Some(false)
 /// when the player gave up.
-fn wizard(ui: &mut Ui, r: Rect, w: &mut Wizard, d: &mut crate::controllers::DeviceCfg, live: &[(usize, f32)], connected: bool) -> Option<bool> {
+fn wizard(ui: &mut Ui, r: Rect, w: &mut Wizard, d: &mut crate::controllers::DeviceCfg, live: &[(usize, f32)], connected: bool, feedback: bool) -> Option<bool> {
     let (title, text) = WIZARD_STEPS[w.step];
     ui.text_in(&format!("Step {} of {}: {title}", w.step + 1, WIZARD_STEPS.len()), Rect::new(r.x, r.y, r.w, 26.0), 17.0, Weight::Bold, TEXT, Align::Left);
     let mut y = r.y + 34.0;
@@ -1291,7 +1331,7 @@ fn wizard(ui: &mut Ui, r: Rect, w: &mut Wizard, d: &mut crate::controllers::Devi
         return Some(false);
     }
     let skip = w.step >= 2 && ui.button("wiz-skip", Rect::new(r.right() - 260.0, by, 110.0, 36.0), "Skip", None, ButtonKind::Normal);
-    let next = ui.button("wiz-next", Rect::new(r.right() - 140.0, by, 140.0, 36.0), if w.step + 1 == WIZARD_STEPS.len() { "Finish" } else { "Next" }, Some("chevron_right"), ButtonKind::Primary);
+    let next = ui.button("wiz-next", Rect::new(r.right() - 140.0, by, 140.0, 36.0), if w.step + 1 == WIZARD_STEPS.len() && !feedback { "Finish" } else { "Next" }, Some("chevron_right"), ButtonKind::Primary);
     if !(next || skip) {
         return None;
     }
@@ -1322,8 +1362,97 @@ fn wizard(ui: &mut Ui, r: Rect, w: &mut Wizard, d: &mut crate::controllers::Devi
     if w.step < WIZARD_STEPS.len() {
         return None;
     }
-    d.axes = wizard_result(&w.rest, &w.at);
+    let axes = wizard_result(&w.rest, &w.at);
+    if feedback && axes.iter().any(|a| matches!(a, Some((crate::controllers::Func::Steering, _)))) {
+        return None;
+    }
+    d.axes = axes;
     Some(true)
+}
+
+fn feedback_setup(
+    ui: &mut Ui, r: Rect, w: &mut Wizard, d: &mut crate::controllers::DeviceCfg,
+    live: &[(usize, f32)], device: Option<&crate::controllers::Connected>,
+    io: &mut Option<crate::controllers::Devices>, active: &mut bool, hwnd: Option<isize>, global_invert: bool,
+) -> Option<bool> {
+    let axes = wizard_result(&w.rest, &w.at);
+    let axis = axes.iter().position(|a| matches!(a, Some((crate::controllers::Func::Steering, _))));
+    ui.text_in("Force feedback direction", Rect::new(r.x, r.y, r.w, 26.0), 17.0, Weight::Bold, TEXT, Align::Left);
+    let warning = "INJURY RISK: TAKE YOUR HANDS OFF THE WHEEL. Keep hands and fingers clear before starting and throughout the test.";
+    let warning_height = ui.paragraph_height(warning, r.w - 58.0, 14.5, Weight::Bold) + 20.0;
+    let warning_rect = Rect::new(r.x, r.y + 34.0, r.w, warning_height);
+    ui.p().rounded(warning_rect, 6.0, DANGER.alpha(0.15));
+    ui.p().rounded_border(warning_rect, 6.0, 1.5, DANGER);
+    ui.icon("warning", Vec2::new(warning_rect.x + 22.0, warning_rect.center().y), 26.0, DANGER);
+    ui.paragraph(warning, Vec2::new(warning_rect.x + 44.0, warning_rect.y + 10.0), warning_rect.w - 58.0, 14.5, Weight::Bold, DANGER);
+    let body_y = warning_rect.bottom() + 12.0;
+    ui.scroll_area("wiz-ff-body", Rect::new(r.x, body_y, r.w, r.bottom() - 56.0 - body_y), &mut |ui, r| {
+        let mut y = r.y;
+        y += ui.paragraph("The test applies two short forces in opposite directions. Finish and press Save to keep the detected direction for this wheel.", Vec2::new(r.x, y), r.w, 13.5, Weight::Regular, TEXT_SOFT) + 16.0;
+        if let Some((started, test)) = w.calibration.as_mut() {
+            if *active {
+                let position = axis.and_then(|a| live.iter().find(|(k, _)| *k == a).map(|(_, x)| *x));
+                if let Some(force) = test.update(started.elapsed().as_secs_f32(), position) {
+                    if !device.zip(axis).zip(io.as_mut()).is_some_and(|((device, axis), io)| io.calibration_pulse(&device.name, axis, force)) {
+                        test.fail("Force feedback is unavailable. Choose the direction manually.");
+                    }
+                }
+                if let Some(result) = test.result {
+                    release_feedback(io, active);
+                    if let Ok(invert) = result {
+                        w.ff_choice = Some(invert);
+                    }
+                }
+            }
+            let (message, color) = match test.result {
+                Some(Ok(false)) => ("Direction detected: normal", OK),
+                Some(Ok(true)) => ("Direction detected: inverted", OK),
+                Some(Err(message)) => (message, DANGER),
+                None => ("Testing: keep your hands off the wheel…", TEXT_SOFT),
+            };
+            y += ui.paragraph(message, Vec2::new(r.x, y), r.w, 13.0, Weight::Medium, color) + 12.0;
+        }
+        if !*active {
+            ui.slider("wiz-ff-strength", Rect::new(r.x, y, r.w, ROW), &mut w.test_strength,
+                crate::ffb_calibration::PULSE_FORCE, crate::ffb_calibration::MAX_PULSE_FORCE, 0.01,
+                "Test strength", &|v| format!("{:.0}%", v * 100.0));
+            y += ROW + 8.0;
+            y += ui.paragraph("If the wheel barely moves, increase Test strength and retry. Keep your hands clear.", Vec2::new(r.x, y), r.w, 13.0, Weight::Regular, TEXT_DIM) + 10.0;
+            if ui.button("wiz-ff-test", Rect::new(r.x, y, 180.0, 36.0), "Start test", Some("play_arrow"), ButtonKind::Primary) {
+                if device.is_none() || axis.is_none() {
+                    w.error = Some("The wheel is unavailable. Reconnect it and try again.".into());
+                } else {
+                    *io = None;
+                    *io = Some(crate::controllers::Devices::new(hwnd, true));
+                    *active = true;
+                    w.error = None;
+                    log::info!("FFB calibration: device {}, raw steering axis {:?}, test strength {:.0}%", device.unwrap().name, axis, w.test_strength * 100.0);
+                    w.calibration = Some((std::time::Instant::now(), crate::ffb_calibration::Calibration::new(w.test_strength)));
+                }
+            }
+            y += 48.0;
+            let mut invert = w.ff_choice.or(d.ff_invert).unwrap_or(global_invert);
+            if ui.toggle("wiz-ff-manual", Rect::new(r.x, y, r.w, ROW), &mut invert, "Invert force feedback") {
+                w.ff_choice = Some(invert);
+            }
+            y += ROW + 8.0;
+            y += ui.paragraph("If detection is inconclusive, retry or choose the direction manually. You can change it later on this device's page.", Vec2::new(r.x, y), r.w, 13.0, Weight::Regular, TEXT_DIM) + 8.0;
+        }
+        if let Some(error) = &w.error {
+            y += ui.paragraph(error, Vec2::new(r.x, y), r.w, 13.0, Weight::Medium, DANGER) + 8.0;
+        }
+        y - r.y
+    });
+    let by = r.bottom() - 40.0;
+    if ui.button("wiz-cancel", Rect::new(r.x, by, 120.0, 36.0), "Cancel", None, ButtonKind::Ghost) {
+        return Some(false);
+    }
+    if !*active && ui.button("wiz-ff-finish", Rect::new(r.right() - 140.0, by, 140.0, 36.0), "Finish", Some("check"), ButtonKind::Primary) {
+        d.axes = axes;
+        d.ff_invert = Some(w.ff_choice.or(d.ff_invert).unwrap_or(global_invert));
+        return Some(true);
+    }
+    None
 }
 
 /// The axes the assistant found: `rest` where everything rested, `at` where the axes stood
@@ -1859,6 +1988,79 @@ pub fn tutorials(l: &mut Launcher, area: Rect) {
 
 #[cfg(test)]
 mod wizard_tests {
+    fn feedback_wizard() -> super::Wizard {
+        super::Wizard {
+            step: super::WIZARD_STEPS.len(), rest: [Some(0.0); 8],
+            at: vec![[Some(-1.0), None, None, None, None, None, None, None], [None; 8], [None; 8], [None; 8]],
+            error: None, calibration: None, ff_choice: None, test_strength: crate::ffb_calibration::PULSE_FORCE,
+        }
+    }
+
+    fn click_feedback(name: &str, w: &mut super::Wizard, d: &mut crate::controllers::DeviceCfg) -> Option<bool> {
+        use super::*;
+        let mut ui = Ui::new();
+        let size = Vec2::new(900.0, 700.0);
+        let area = Rect::new(20.0, 20.0, 700.0, 600.0);
+        let mut io = None;
+        let mut active = false;
+        ui.begin(size, 1.0, 0.016);
+        feedback_setup(&mut ui, area, w, d, &[], None, &mut io, &mut active, None, false);
+        let rect = ui.drawn[&id_of(name)];
+        ui.input.mouse = rect.center();
+        ui.input.pressed = true;
+        ui.input.down = true;
+        ui.begin(size, 1.0, 0.016);
+        feedback_setup(&mut ui, area, w, d, &[], None, &mut io, &mut active, None, false);
+        ui.input.pressed = false;
+        ui.input.down = false;
+        ui.input.released = true;
+        ui.begin(size, 1.0, 0.016);
+        let done = feedback_setup(&mut ui, area, w, d, &[], None, &mut io, &mut active, None, false);
+        assert!(!active);
+        assert!(io.is_none());
+        done
+    }
+
+    #[test]
+    fn manual_direction_is_only_applied_on_finish_and_cancel_preserves_the_device() {
+        let original = crate::controllers::DeviceCfg { ff_invert: Some(true), ..Default::default() };
+        let mut device = original.clone();
+        let mut w = feedback_wizard();
+        assert_eq!(click_feedback("wiz-ff-manual", &mut w, &mut device), None);
+        assert_eq!(w.ff_choice, Some(false));
+        assert_eq!(device, original);
+        assert_eq!(click_feedback("wiz-cancel", &mut w, &mut device), Some(false));
+        assert_eq!(device, original);
+        assert_eq!(click_feedback("wiz-ff-finish", &mut w, &mut device), Some(true));
+        assert_eq!(device.ff_invert, Some(false));
+        assert_eq!(device.axes[0], Some((Func::Steering, false)));
+    }
+
+    #[test]
+    fn disconnected_wheel_cannot_start_a_hardware_test() {
+        let mut device = crate::controllers::DeviceCfg::default();
+        let mut w = feedback_wizard();
+        assert_eq!(click_feedback("wiz-ff-test", &mut w, &mut device), None);
+        assert!(w.error.is_some());
+        assert!(w.calibration.is_none());
+    }
+
+    #[test]
+    fn cancelling_feedback_releases_io_and_invalidates_the_test() {
+        let mut pads = super::PadsView::default();
+        pads.feedback_test = true;
+        pads.wizard = Some(super::Wizard {
+            step: super::WIZARD_STEPS.len(), rest: [None; 8], at: Vec::new(), error: None,
+            calibration: Some((std::time::Instant::now(), crate::ffb_calibration::Calibration::new(crate::ffb_calibration::PULSE_FORCE))), ff_choice: None, test_strength: crate::ffb_calibration::PULSE_FORCE,
+        });
+        pads.cancel_feedback_test();
+        assert!(!pads.feedback_test);
+        assert!(pads.io.is_none());
+        let test = &pads.wizard.as_ref().unwrap().calibration.as_ref().unwrap().1;
+        assert!(test.result.unwrap().is_err());
+        assert_eq!(pads.wizard.as_ref().unwrap().ff_choice, None);
+    }
+
     use crate::controllers::Func;
 
     #[test]

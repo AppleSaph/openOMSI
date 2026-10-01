@@ -958,6 +958,13 @@ position, message) is `PluginIo`'s new default methods. Tests: `crates/omsi-plug
   the second scales vibration for that device. The wheel's own autocentre is switched off
   (as OMSI does). The set-up assistant (`launcher/pages.rs`,
   `wizard_result`) records rest, left lock and each pedal and picks the axis that moved most.
+  Wheels then offer a direction test: two 250 ms pulses at 20% force by default (adjustable
+  up to 50% for wheels that barely move), started explicitly by
+  the player, are compared with the raw steering-axis motion (`ffb_calibration.rs`).
+  Ambiguous motion is rejected; losing focus, leaving the page or cancelling releases the
+  effects. The confirmed polarity is stored per device in `gamectrler.cfg` as
+  `[openOMSI.FFInvert]` (0 normal, 1 inverted), and can be changed on that device's page.
+  Devices without this setting still use the existing global `ff_invert` value.
 * **Multiplayer** (`omsi-net::bridge`, `lan.rs`): UPnP forwardings are asked for an hour and
   renewed every 20 minutes (they were asked once for 7200 s); the ntfy.sh rendezvous is polled
   every 6 s (host) / 2 s (joining), posts only on change or every 15 minutes, and backs off

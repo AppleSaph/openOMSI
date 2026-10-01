@@ -604,6 +604,7 @@ pub struct PlacedObject {
     parked: bool,
     /// A tile's own `[object]` record standing on the ground: the object editor may move it.
     editable: bool,
+    script: Option<omsi_sim::scenery::SceneryInstance>,
 }
 
 /// A scenery object the object editor can take hold of (see [`World::edit_objects`]).
@@ -1041,6 +1042,11 @@ impl GpuCache {
         mipmaps: bool,
     ) -> TextureId {
         let id = renderer.add_texture(scene, img, mipmaps);
+        self.take_texture_slot(renderer, scene, id)
+    }
+
+    fn add_blank(&mut self, renderer: &Renderer, scene: &mut Scene, width: u32, height: u32) -> TextureId {
+        let id = renderer.add_blank_texture(scene, width, height);
         self.take_texture_slot(renderer, scene, id)
     }
 
@@ -4722,6 +4728,7 @@ impl World {
                 var_parent: o.lamp_parent,
                 parked: o.parked,
                 editable: o.map_object && matches!(o.place, Placement::Ground { .. }),
+                script: None,
             });
         }
         if first_load {
@@ -5176,6 +5183,17 @@ impl World {
         // decoded here instead of on the thread that draws. A big batch (a whole map at
         // once) decodes them as it uploads instead: all at once they would not fit.
         if prepared.len() <= 16 {
+            for p in prepared.iter_mut() {
+                for o in p.objects.iter_mut() {
+                    let freetex = o.ot.meshes.iter().any(|(_, _, ov)| ov.iter().any(|m| !m.item && m.freetex.is_some()));
+                    if o.lamp.is_some() || (o.ot.dynamic_textures.is_empty() && !freetex) {
+                        continue;
+                    }
+                    if let Some(program) = o.ot.program.clone() {
+                        o.script = Some(omsi_sim::scenery::SceneryInstance::new(program, &o.ot.mesh_defs(), self.script_clock(), &o.strings));
+                    }
+                }
+            }
             let mut wanted: Vec<(String, Vec<PathBuf>)> = prepared
                 .iter()
                 .flat_map(|p| self.wanted_textures(p))
@@ -5240,6 +5258,26 @@ impl World {
         };
         let mut seen: hashbrown::HashSet<*const ObjectType> = hashbrown::HashSet::new();
         for o in &p.objects {
+            if let Some(inst) = &o.script {
+                let selection = scenery_texture_selection(&o.ot, inst);
+                for (group, &index) in o.ot.dynamic_textures.iter().zip(&selection) {
+                    for (_, file, dir) in group.choices.get(index).into_iter().flatten() {
+                        let mut dirs = texture_dirs(&self.root, &o.ot.model_dir);
+                        dirs.insert(0, dir.clone());
+                        push(file, &dirs, &mut names);
+                    }
+                }
+            }
+            if o.lamp.is_none() {
+                for (_, _, overrides) in &o.ot.meshes {
+                    for ov in overrides.iter().filter(|m| !m.item && m.freetex.is_some()) {
+                        let Some((_, var)) = &ov.freetex else { continue };
+                        if let Some(name) = resolve_scenery_freetex_name(var, ov, overrides, o.script.as_ref(), None, &o.strings) {
+                            push(name, &texture_dirs(&self.root, &o.ot.model_dir), &mut names);
+                        }
+                    }
+                }
+            }
             let key = Arc::as_ptr(&o.ot);
             if have_types.contains(&(key as usize)) || !seen.insert(key) {
                 continue;
@@ -5533,7 +5571,7 @@ impl World {
                     .filter(|o| !o.item)
                     .filter(for_slot)
                     .collect();
-                let (color, emissive, specular) =
+                let (color, emissive, specular, ambient) =
                     d3d_material(m, slot_ov.iter().find_map(|o| o.allcolor), tex.is_some());
                 // [matl_transmap]: transparency from a separate map (parked cars: body opaque, windows clear)
                 let transmap = match overrides
@@ -5590,6 +5628,7 @@ impl World {
                     None => None,
                 };
                 let mut extra = material_extra(&slot_ov, env_mask, bump, specular);
+                extra.ambient = Some(ambient);
                 extra.no_map_lights = ot.sco.no_map_lighting;
                 if tex.is_some() {
                     let dirs_ref: Vec<&Path> = dirs.iter().map(|p| p.as_path()).collect();
@@ -5631,7 +5670,7 @@ impl World {
                         Some(n) => tex_of(gpu, scene, &n, &mut t).or(night),
                         None => night,
                     };
-                    let (ic, ie, is) = d3d_material(
+                    let (ic, ie, is, ia) = d3d_material(
                         m,
                         items
                             .iter()
@@ -5641,6 +5680,7 @@ impl World {
                     );
                     let it_alpha = items.first().map(|o| alpha_mode(o.alpha)).unwrap_or(alpha);
                     let mut it_extra = material_extra(&items, env_mask, bump, is);
+                    it_extra.ambient = Some(ia);
                     it_extra.night_switched = items.iter().any(|o| o.nightmap.is_some());
                     it_extra.no_z_write |= extra.no_z_write;
                     it_extra.no_z_check |= extra.no_z_check;
@@ -6377,6 +6417,7 @@ impl World {
                         var_parent,
                         parked,
                         editable,
+                        script: mut early_script,
                     } = o;
                     let tkey = self.type_gpu(renderer, scene, gpu, &ot, images, ground_mat);
                     if !tg.types.contains(&tkey) {
@@ -6419,12 +6460,12 @@ impl World {
                             (has_pages || (has_freetex && !strings.is_empty())).then(|| Arc::new(omsi_script::Program::default()))
                         });
                         program.map(|program| {
-                            let mut inst = omsi_sim::scenery::SceneryInstance::new(
+                            let mut inst = early_script.take().unwrap_or_else(|| omsi_sim::scenery::SceneryInstance::new(
                                 program,
                                 &ot.mesh_defs(),
                                 self.script_clock(),
                                 &strings,
-                            );
+                            ));
                             if has_pages {
                                 let object_dir = ot.sco.path.parent().unwrap_or(std::path::Path::new(""));
                                 inst.init_html_textures(&ot.model.html_textures, &ot.model_dir, object_dir);
@@ -6570,7 +6611,8 @@ impl World {
                                 let (alpha, color, unlit, transmap, night, light, env, emissive) =
                                     (base.alpha, base.color, base.unlit, base.transmap, base.nightmap, base.lightmap, base.envmap, base.emissive);
                                 let slot_ov: Vec<&MaterialDef> = overrides.iter().filter(|o| !o.item && omsi_sim::vehicle::override_slot(o3d_mats, o) == Some(slot)).collect();
-                                let extra = material_extra(&slot_ov, base.env_mask, base.bump, [0.0; 4]);
+                                let mut extra = material_extra(&slot_ov, base.env_mask, base.bump, [0.0; 4]);
+                                extra.ambient = o3d_mats.get(slot).map(|m| d3d_material(m, slot_ov.iter().find_map(|o| o.allcolor), true).3);
                                 renderer.address_next.set(tex_addressing(slot_ov.iter().copied()));
                                 let mat = renderer.add_material_extra(scene, Some(tex), alpha, color, unlit, transmap, night, light, env, emissive, extra);
                                 let mat = gpu.material(renderer, scene, mat);
@@ -6639,17 +6681,7 @@ impl World {
                                         );
                                         let (w, h) =
                                             (tt.width.max(1) as u32, tt.height.max(1) as u32);
-                                        let tex = gpu.add_image(
-                                            renderer,
-                                            scene,
-                                            &Image {
-                                                width: w,
-                                                height: h,
-                                                rgba: vec![0u8; (w * h * 4) as usize],
-                                                has_alpha: true,
-                                            },
-                                            false,
-                                        );
+                                        let tex = gpu.add_blank(renderer, scene, w, h);
                                         let mat = renderer.add_material(
                                             scene,
                                             Some(tex),
@@ -8570,7 +8602,7 @@ impl World {
         scene: &mut Scene,
         dt: f32,
         center: DVec3,
-        nightlight: bool,
+        brightness: f32,
         phase_of: &dyn Fn(usize, usize) -> (f32, f32),
         audio: Option<&omsi_audio::AudioEngine>,
         muffled: bool,
@@ -8603,11 +8635,12 @@ impl World {
                 }
                 continue;
             }
-            // the object's own hours ([NightMapMode]): in use, and lit only while in use
+            // the object's own hours ([NightMapMode]): in use, and lit while in use and the
+            // daylight under its own threshold (0.6, or 0.3-0.75 with a [NightMapMode])
             let use_ = InUse::new(o.ty.sco.night_map_mode, o.map_id as u64);
             let in_use = use_.in_use(now.time, day);
             let vars = omsi_sim::scenery::SceneryVars {
-                nightlight: (nightlight && (!(2..=4).contains(&use_.mode) || in_use)) as i32 as f32,
+                nightlight: use_.lit(now.time, day, brightness) as i32 as f32,
                 in_use: in_use as i32 as f32,
                 traffic_light_phase: o
                     .controller
@@ -8676,9 +8709,9 @@ impl World {
             });
         }
         for (o, vars) in scripted.iter_mut().zip(inputs.iter()) {
-            if vars.is_none() {
+            let Some(nightlight) = vars.as_ref().map(|v| v.nightlight) else {
                 continue;
-            }
+            };
             let dist = (o.pos - center).length();
             // text textures from the script's strings whenever they change (`update` leaves
             // an unchanged one alone): read only on `Refresh_Strings`, a board whose string
@@ -8744,7 +8777,7 @@ impl World {
             }
             for (inst, slot, base, item, var) in &o.variants {
                 let x = if var.trim().eq_ignore_ascii_case("NightlightA") {
-                    nightlight as i32 as f32
+                    nightlight
                 } else {
                     var.trim()
                         .parse()
@@ -8761,7 +8794,7 @@ impl World {
                     .iter()
                     .map(|(inst, slot, _, _, var)| {
                         let value = if var.trim().eq_ignore_ascii_case("NightlightA") {
-                            nightlight as i32 as f32
+                            nightlight
                         } else {
                             var.trim()
                                 .parse::<f32>()
@@ -9298,6 +9331,7 @@ pub fn sync_vehicle_textures(
     scene: &mut Scene,
     vehicle: &mut omsi_sim::VehicleInstance,
     render: &VehicleRender,
+    budget: &mut usize,
 ) {
     vehicle.update_html_textures();
     sync_interior_lamps(
@@ -9332,7 +9366,11 @@ pub fn sync_vehicle_textures(
         // (far away what the scripts redraw goes up every half second: `displays_far`)
         if !render.displays_far {
             if let Some(Some(tex)) = render.script_textures.get(i) {
+                if *budget == 0 {
+                    continue;
+                }
                 let Some(rgba) = st.take_upload() else { continue };
+                *budget = budget.saturating_sub(rgba.len());
                 let img = Image {
                     width: st.width,
                     height: st.height,
@@ -9407,15 +9445,18 @@ fn d3d_material(
     m: &omsi_o3d::Material,
     allcolor: Option<[f32; 14]>,
     textured: bool,
-) -> ([f32; 4], [f32; 3], [f32; 4]) {
-    let (diffuse, emissive, specular, power) = match allcolor {
+) -> ([f32; 4], [f32; 3], [f32; 4], [f32; 3]) {
+    // (the ambient colour: Omsi.exe gives every o3d slot a white one, 0x7c62f8, and a
+    // textured .x slot too, 0x7c6d2d; a [matl_allcolor] sets its own)
+    let (diffuse, emissive, specular, power, ambient) = match allcolor {
         Some(v) => (
             [v[0], v[1], v[2], v[3]],
             [v[10], v[11], v[12]],
             [v[7], v[8], v[9]],
             v[13],
+            [v[4], v[5], v[6]],
         ),
-        None => (m.diffuse, m.emissive, m.specular, m.specular_power),
+        None => (m.diffuse, m.emissive, m.specular, m.specular_power, [1.0; 3]),
     };
     let clamp01 = |x: f32| {
         if x.is_finite() {
@@ -9442,6 +9483,7 @@ fn d3d_material(
         color,
         emissive,
         [specular[0], specular[1], specular[2], power],
+        ambient.map(clamp01),
     )
 }
 
@@ -9463,6 +9505,7 @@ fn material_extra(
         // body skin round every opening. OMSI_NOZCHECK_BIAS=1: the old reading.
         no_z_check: ov.iter().any(|o| o.no_z_check) && omsi_cfg::env::var_os("OMSI_NOZCHECK_BIAS").is_some(),
         z_bias: ov.iter().map(|o| o.z_bias).find(|b| *b != 0).unwrap_or(0),
+        ambient: None,
         specular,
         bump: bump.filter(|b| b.1.is_finite() && b.1 != 0.0),
         glass: false,
@@ -10897,14 +10940,7 @@ impl World {
     ) -> VehicleRender {
         let mut gpu = self.gpu.lock();
         let blank = |gpu: &mut GpuCache, scene: &mut Scene, w: i32, h: i32| {
-            let (w, h) = (w.max(1) as u32, h.max(1) as u32);
-            let img = Image {
-                width: w,
-                height: h,
-                rgba: vec![0; (w * h * 4) as usize],
-                has_alpha: true,
-            };
-            Some(gpu.add_image(renderer, scene, &img, false))
+            Some(gpu.add_blank(renderer, scene, w.max(1) as u32, h.max(1) as u32))
         };
         let sizes: Vec<(i32, i32)> = vt
             .model
@@ -11386,8 +11422,9 @@ impl World {
                         log::info!("  {} slot {slot} '{}' diffuse={:?} emissive={:?} specular={:?}/{} tex={:?} alpha={:?} transmap={:?} night={:?} light={:?} env={:?} mask={:?} bump={:?} text={:?} script={:?} script_trans={:?} noZwrite={} noZcheck={} zbias={}", def.file, m.texture, m.diffuse, m.emissive, m.specular, m.specular_power, tex, alpha, transmap, night, lightmap, envmap, env_mask, bump, text_slot, script_slot, script_trans, ov.iter().any(|o| o.no_z_write), ov.iter().any(|o| o.no_z_check), ov.iter().map(|o| o.z_bias).find(|b| *b != 0).unwrap_or(0));
                     }
                     let textured = tex.is_some() || text_slot.is_some() || script_slot.is_some() || freetex || vt.texchange(&m.texture).is_some();
-                    let (color, emissive, specular) = d3d_material(m, ov.iter().find_map(|o| o.allcolor), textured);
+                    let (color, emissive, specular, ambient) = d3d_material(m, ov.iter().find_map(|o| o.allcolor), textured);
                     let mut extra = material_extra(&ov, env_mask, bump, specular);
+                    extra.ambient = Some(ambient);
                     // A vehicle's [matl_nightmap] is added whenever the mesh is drawn, by day
                     // as well, as OMSI 2 does - with or without a [matl_change] around it.
                     // Its lamps and displays are switched by the mesh's [visible] variable or
@@ -11486,8 +11523,9 @@ impl World {
                         // busbar switches to - was opaque, its `\S:n` mask cut nothing, and the
                         // whole matrix was lit.)
                         let it_alpha = if repair_body_depth { AlphaMode::Opaque } else { ov_item.iter().find(|o| o.alpha_set).map(|o| alpha_mode(o.alpha)).unwrap_or(alpha) };
-                        let (it_color, it_emissive, it_specular) = d3d_material(m, ov_item.iter().find_map(|o| o.allcolor).or(ov.iter().find_map(|o| o.allcolor)), textured);
+                        let (it_color, it_emissive, it_specular, it_ambient) = d3d_material(m, ov_item.iter().find_map(|o| o.allcolor).or(ov.iter().find_map(|o| o.allcolor)), textured);
                         let mut it_extra = material_extra(&ov_item, env_mask, bump, it_specular);
+                        it_extra.ambient = Some(it_ambient);
                         // (an item without a night map of its own keeps the plain one, lit
                         // the same way)
                         it_extra.night_switched = it_night.is_some();
@@ -11918,6 +11956,17 @@ pub(crate) fn resolve_scenery_freetex_name<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nightlight_follows_the_objects_darkness_threshold() {
+        let day = DayKind { workday: true, ..Default::default() };
+        let plain = InUse::new(0, 7);
+        assert!(plain.lit(12.0 * 3600.0, day, 0.5));
+        assert!(!plain.lit(12.0 * 3600.0, day, 0.65));
+        let home = InUse::new(2, 7);
+        assert!((0.3..=0.75).contains(&home.threshold));
+        assert!(!home.lit(3.0 * 3600.0, day, 0.0));
+    }
 
     #[test]
     fn vehicle_freetex_retries_paths_below_texture_component() {
@@ -12393,11 +12442,13 @@ mod material_tests {
             specular_power: 96.0,
             texture: "int_glass.tga".into(),
         };
-        let (color, emissive, specular) = d3d_material(&m, None, true);
+        let (color, emissive, specular, ambient) = d3d_material(&m, None, true);
         // textured: the texture's alpha alone counts
         assert_eq!(color, [0.64, 0.64, 0.64, 1.0]);
         assert_eq!(emissive, [0.0; 3]);
         assert_eq!(specular, [1.0, 1.0, 1.0, 96.0]);
+        // Omsi.exe's o3d slot: a white ambient, whatever the diffuse colour (0x7c62f8)
+        assert_eq!(ambient, [1.0; 3]);
         // untextured: the material's alpha
         assert_eq!(d3d_material(&m, None, false).0[3], 0.0);
         // no specular colour, no highlight whatever the power
@@ -12416,8 +12467,12 @@ mod material_tests {
         let all = [
             1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.24, 0.23, 0.2, 0.0,
         ];
-        let (c, e, s) = d3d_material(&m, Some(all), true);
+        let (c, e, s, _) = d3d_material(&m, Some(all), true);
         assert_eq!(c, [1.0; 4]);
+        // [matl_allcolor]'s own ambient
+        let mut dim = all;
+        dim[4..7].copy_from_slice(&[0.2, 0.3, 0.4]);
+        assert_eq!(d3d_material(&m, Some(dim), true).3, [0.2, 0.3, 0.4]);
         assert_eq!(e, [0.24, 0.23, 0.2]);
         assert_eq!(s[3], 0.0);
     }

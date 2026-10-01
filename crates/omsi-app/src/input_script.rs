@@ -753,6 +753,12 @@ impl App {
         true
     }
 
+    /// Looking round with the mouse goes by the cursor's way in the window (a view of the
+    /// bus); on foot and with the free camera it keeps the raw mouse movement.
+    pub(crate) fn cursor_looks(&self) -> bool {
+        self.mouse_look && self.player.is_some() && !matches!(self.view.as_str(), "foot" | "free")
+    }
+
     /// The right button alone zooms, as in Omsi.exe (TForm_main.Panel1MouseMove 0x82c5f8:
     /// ssRight without `[altView]`, or Shift+right with it); otherwise it turns the view.
     pub(crate) fn right_zooms(&self) -> bool {
@@ -971,6 +977,16 @@ impl App {
         if let Some(n) = self.navigator.as_mut().filter(|n| n.map_open()) {
             n.map_move(x, y);
             return false;
+        }
+        // looking round in a view of the bus follows the cursor, as Omsi.exe turns it
+        // (0x82c5f8: yaw and pitch at the press plus the cursor's way times fov / 78.75):
+        // raw device deltas are no window pixels (a tablet, a remote desktop or a VM
+        // reports positions there and spun the view) and did not follow the zoom
+        if self.cursor_looks() {
+            let scale = self.window.as_ref().map(|w| w.scale_factor() as f32).unwrap_or(1.0).max(0.1);
+            let fov = self.camera.as_ref().map(|c| c.fov_deg).unwrap_or(60.0);
+            let k = look_deg_per_px(fov);
+            self.look_by((x - last.0) / scale * k, (y - last.1) / scale * k);
         }
         // Dragging a switch reads the movement in screen pixels - take it from the
         // cursor itself rather than from the raw device delta, which is not in the
@@ -3053,8 +3069,9 @@ impl App {
         // the cursor itself says when it is over something that can be operated
         // (steering with the mouse: a cross, as OMSI shows it; turning the view with the
         // right button held: the four arrows OMSI shows then, #185)
-        let kind: u8 = if self.game_menu.is_some() {
-            self.menu_cursor_kind()
+        // (zooming with the mouse: the up-down arrows, Omsi's crSizeNS)
+        let kind: u8 = if self.both_drag.is_some() && self.game_menu.is_none() {
+            4
         } else if self.mouse_look && self.game_menu.is_none() {
             3
         } else if self.mouse_drive && matches!(self.view.as_str(), "driver" | "outside" | "pax") && self.game_menu.is_none() {
@@ -3073,7 +3090,7 @@ impl App {
             self.cursor_kind = kind;
             if let Some(w) = self.window.as_ref() {
                 w.set_cursor(match kind {
-                    4 => winit::window::CursorIcon::Grabbing,
+                    4 => winit::window::CursorIcon::NsResize,
                     3 => winit::window::CursorIcon::Move,
                     2 => winit::window::CursorIcon::Crosshair,
                     1 => winit::window::CursorIcon::Pointer,
@@ -3105,6 +3122,20 @@ impl App {
         } else {
             0
         }
+    }
+}
+
+/// Degrees the view turns per (logical) pixel of the cursor's way while looking round:
+/// Omsi.exe's fov / 78.75 (TForm_main.Panel1MouseMove 0x82c5f8).
+fn look_deg_per_px(fov_deg: f32) -> f32 {
+    fov_deg / 78.75
+}
+
+#[cfg(test)]
+mod look_tests {
+    #[test]
+    fn a_cursor_way_of_78_75_px_turns_by_the_field_of_view() {
+        assert!((78.75 * super::look_deg_per_px(60.0) - 60.0).abs() < 1e-4);
     }
 }
 

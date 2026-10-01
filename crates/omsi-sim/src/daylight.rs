@@ -160,7 +160,10 @@ impl Daylight {
             ratio(b, stops(&stock.light_color_b, stock.twilight_start_end, alt)),
             ratio(c, stops(&stock.light_color_c, stock.twilight_start_end, alt)),
         ];
-        Daylight { sun_dir, altitude_deg: alt, sun_color, secondary, ambient, sky, night, lamps_on: alt < -1.0, brightness: ((alt + 6.0) / 12.0).clamp(0.0, 1.0), azimuth_rad: az.to_radians() as f32, sky_weights, envir_tint }
+        // the street lamps come on below a light value of 0.6, as Omsi.exe switches them
+        // (FUN_006ff1bc), the same value at which a scenery object's NightlightA does
+        let brightness = ((alt + 6.0) / 12.0).clamp(0.0, 1.0);
+        Daylight { sun_dir, altitude_deg: alt, sun_color, secondary, ambient, sky, night, lamps_on: brightness < 0.6, brightness, azimuth_rad: az.to_radians() as f32, sky_weights, envir_tint }
     }
 }
 
