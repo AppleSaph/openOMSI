@@ -1314,12 +1314,10 @@ impl Ui {
             self.menu_rects.push(rect);
         }
         if back_footer {
-            // (a hairline, then "Back" pinned to the bottom of the list: the rects of the lines
+            // ("Back" pinned to the bottom of the list: the rects of the lines
             // out of view are empty ones, so that a rect stays at the index of its line)
             let bk = items.len() - 1;
             let fr = [x + pad, y + h - pad - 36.0 * s, right, y + h - pad];
-            let sy = (fr[1] - 6.0 * s).round();
-            scene.overlays.push((sep, [x + pad, sy, right, sy + 1.0]));
             let lit = over(fr) || (sel == bk && f.menu_kbd && !any_hovered);
             let glow = self.easeq((7, "back", bk), if lit { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
             self.text.rounded(r, scene, fr, ROW_R * s, fade(LIT, 0.55 + 0.45 * glow));
