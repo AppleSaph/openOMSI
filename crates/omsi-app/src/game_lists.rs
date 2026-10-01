@@ -495,6 +495,16 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
             "line" => Some(ListKind::Tours(arg.to_string())),
             "free" => {
                 app.duty = None;
+                // unscheduled: the GetTT* callbacks answer ""/0/-1 again, as in Omsi.exe
+                if let Some(p) = app.player.as_mut() {
+                    let h = &mut p.vehicle.host;
+                    h.tt_line.clear();
+                    h.tt_stops.clear();
+                    h.tt_stop_ids.clear();
+                    h.tt_busstop_index = -1;
+                    h.tt_terminus_index = -1;
+                    h.tt_delay = 0.0;
+                }
                 app.service_msg = Some(("Free drive: no duty".into(), 4.0));
                 None
             }
