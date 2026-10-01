@@ -276,7 +276,11 @@ the bus and the traffic; drag to move, the wheel zooms, the buttons centre on th
 zoom, Escape or a click outside closes it. **Shift+N** cycles
 map → map with the schedule of the next stops → off (N alone is the gearbox's neutral);
 `OMSI_DEBUG_NAV=1` logs it.
-**Z / X / C** are the indicators. **Shift + 1**, **Shift + 2**, … open or close a door, front
+**Z / X / C** are the indicators. Controls also offers **Indicator left (toggle)** and
+**Indicator right (toggle)** for keyboard keys or wheel buttons such as shift paddles.
+They start unbound: one press turns that side on, another turns it off, and pressing the
+other side switches direction. A script's automatic cancellation is respected.
+**Shift + 1**, **Shift + 2**, … open or close a door, front
 to back: a bus like the SD200/SD202/EN92 with one two-leaf front door and a combined
 aft/stop-brake-release door answers to Shift+1/2/3, a low-floor mod with three or four
 independent doors (the O530 Facelift) to Shift+1 through Shift+4/5 - whatever

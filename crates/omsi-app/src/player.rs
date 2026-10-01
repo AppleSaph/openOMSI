@@ -2,6 +2,21 @@
 
 use super::*;
 
+fn indicator_toggle_action(state: &mut u8, lever: Option<u8>, want: u8) -> &'static str {
+    // Scripts can cancel the lever themselves after a turn; prefer their current state.
+    if let Some(lever) = lever { *state = lever; }
+    if want == 3 {
+        *state = if *state == 3 { 0 } else { 3 };
+        "blinker_warn_toggle"
+    } else if *state == want {
+        *state = 0;
+        "blinker_off"
+    } else {
+        *state = want;
+        if want == 1 { "blinker_left_set" } else { "blinker_right_set" }
+    }
+}
+
 fn is_manual_gate_action(name: &str) -> bool {
     let Some(gate) = name.get(..5).filter(|p| p.eq_ignore_ascii_case("kw_s_")).and_then(|_| name.get(5..)) else {
         return false;
@@ -454,6 +469,17 @@ pub(crate) fn digit_of(code: KeyCode) -> Option<usize> {
 }
 
 impl Player {
+    pub(crate) fn toggle_indicator(&mut self, want: u8) {
+        let lever = if self.vehicle.var("lights_sw_warnblinker").is_some_and(|v| v > 0.5) {
+            Some(3)
+        } else {
+            self.vehicle.var("lights_sw_blinker").map(|v| match v.round() as i32 { 1 => 1, 2 => 2, _ => 0 })
+        };
+        let action = indicator_toggle_action(&mut self.blinker_key_state, lever, want);
+        self.action(action, true);
+        self.action(action, false);
+    }
+
     /// Some stock roller-blind scripts keep a ratchet position with `max`.  The original
     /// engine resets that ratchet while the hand is moving; without that small engine-side
     /// detail a blind lowered once is immediately snapped back down on every frame.
@@ -476,6 +502,12 @@ impl Player {
     pub(crate) fn action(&mut self, name: &str, pressed: bool) -> bool {
         if pressed {
             log::info!("action: {name}");
+        }
+        if name.eq_ignore_ascii_case("blinker_left_toggle") || name.eq_ignore_ascii_case("blinker_right_toggle") {
+            if pressed {
+                self.toggle_indicator(if name.eq_ignore_ascii_case("blinker_left_toggle") { 1 } else { 2 });
+            }
+            return true;
         }
         let suffix = if pressed { "" } else { "_off" };
         let release_gear = !pressed
@@ -2210,5 +2242,37 @@ mod preset_tests {
         assert_eq!(fallback_action(KeyCode::KeyA, "simple"), Some(A::SteeringLeft));
         assert_eq!(fallback_action(KeyCode::ArrowLeft, "arrows"), Some(A::SteeringLeft));
         assert_eq!(fallback_action(KeyCode::ArrowRight, "arrows"), Some(A::SteeringRight));
+    }
+}
+
+#[cfg(test)]
+mod indicator_tests {
+    use super::indicator_toggle_action;
+
+    #[test]
+    fn repeated_presses_switch_each_side_on_then_off() {
+        for (side, on) in [(1, "blinker_left_set"), (2, "blinker_right_set")] {
+            let mut state = 0;
+            assert_eq!(indicator_toggle_action(&mut state, None, side), on);
+            assert_eq!(indicator_toggle_action(&mut state, None, side), "blinker_off");
+            assert_eq!(state, 0);
+        }
+    }
+
+    #[test]
+    fn changing_side_and_automatic_cancellation_use_the_current_lever() {
+        let mut state = 1;
+        assert_eq!(indicator_toggle_action(&mut state, Some(1), 2), "blinker_right_set");
+        assert_eq!(indicator_toggle_action(&mut state, Some(0), 2), "blinker_right_set");
+        assert_eq!(indicator_toggle_action(&mut state, Some(2), 2), "blinker_off");
+    }
+
+    #[test]
+    fn hazards_keep_their_dedicated_toggle_trigger() {
+        let mut state = 0;
+        assert_eq!(indicator_toggle_action(&mut state, Some(0), 3), "blinker_warn_toggle");
+        assert_eq!(state, 3);
+        assert_eq!(indicator_toggle_action(&mut state, Some(3), 3), "blinker_warn_toggle");
+        assert_eq!(state, 0);
     }
 }

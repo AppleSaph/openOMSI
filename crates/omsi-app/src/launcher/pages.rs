@@ -802,6 +802,8 @@ fn action_label(a: &str) -> String {
         ("parking_brake_toggle", "Parking brake"),
         ("blinker_left_set", "Indicator left"),
         ("blinker_right_set", "Indicator right"),
+        ("blinker_left_toggle", "Indicator left (toggle)"),
+        ("blinker_right_toggle", "Indicator right (toggle)"),
         ("blinker_off", "Indicators off"),
         ("blinker_warn_toggle", "Hazard lights"),
         ("horn", "Horn"),
