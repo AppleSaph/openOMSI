@@ -1040,10 +1040,10 @@ impl Ui {
     fn menu_header(&mut self, r: &Renderer, scene: &mut Scene, x: f32, y: f32, w: f32, header_h: f32, title: &str, sub: &str, s: f32) -> f32 {
         let left = x + (PAD + TEXT_IN) * s;
         // (the game's name in the accent; the list names above are in capitals)
-        let (eyebrow, eyebrow_ink) = if sub.is_empty() { ("openOmsi".to_string(), txt(ACCENT)) } else { (sub.to_uppercase(), MUTED) };
-        let e = self.text.label(r, scene, &eyebrow, (11.0 * s) as u32, eyebrow_ink);
-        let title = clip_to(&self.text, title, 22.0 * s, w - (PAD + TEXT_IN) * 2.0 * s - 80.0 * s);
-        let t = self.text.label(r, scene, &title, (22.0 * s) as u32, WHITE);
+        let (eyebrow, eyebrow_ink) = if sub.is_empty() { ("OPENOMSI".to_string(), txt(ACCENT)) } else { (sub.to_uppercase(), MUTED) };
+        let e = self.text.label(r, scene, &eyebrow, (12.0 * s) as u32, eyebrow_ink);
+        let title = clip_to(&self.text, title, 24.0 * s, w - (PAD + TEXT_IN) * 2.0 * s - 80.0 * s);
+        let t = self.text.label(r, scene, &title, (24.0 * s) as u32, WHITE);
         let band = header_h - 6.0 * s;
         let top = y + (band - (e.h as f32 + t.h as f32 - 2.0 * s)) * 0.5;
         scene.overlays.push((e.tex, [left, top, left + e.w as f32, top + e.h as f32]));
@@ -1058,6 +1058,10 @@ impl Ui {
         let l = self.text.label(r, scene, text, px, color);
         let (cw, ch) = (l.w as f32 + 18.0 * s, l.h as f32 + 6.0 * s);
         let x0 = right - cw;
+        if cap {
+            // (a key cap: a fine light edge round it)
+            self.text.rounded(r, scene, [x0 - 1.0, cy - ch * 0.5 - 1.0, right + 1.0, cy + ch * 0.5 + 1.0], 5.0 * s, [96, 96, 96, 255]);
+        }
         self.text.rounded(r, scene, [x0, cy - ch * 0.5, right, cy + ch * 0.5], if cap { 4.0 * s } else { ROW_R * s }, fill);
         let (tx, ty) = (x0 + 9.0 * s, cy - l.h as f32 * 0.5);
         scene.overlays.push((l.tex, [tx, ty, tx + l.w as f32, ty + l.h as f32]));
@@ -1304,7 +1308,7 @@ impl Ui {
                         avail -= cw + 10.0 * s;
                     } else if id == "resume" && keys {
                         // ("Resume" shows the key that does the same)
-                        let left = self.chip(r, scene, "Esc", (11.0 * s) as u32, MUTED, CHIP, true, rx, cy, s);
+                        let left = self.chip(r, scene, "Esc", (12.0 * s) as u32, WHITE, [52, 52, 52, 255], true, rx, cy, s);
                         avail = left - 10.0 * s - lx;
                     }
                     let text = clip_to(&self.text, text, px as f32, avail);
