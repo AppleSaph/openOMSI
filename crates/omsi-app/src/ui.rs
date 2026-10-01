@@ -1221,7 +1221,7 @@ impl Ui {
             });
             if apart {
                 let sy = (ry - 2.0 * s).round();
-                scene.overlays.push((sep, [x + pad, sy, right, sy + 1.0]));
+                scene.overlays.push((sep, [x + pad + tin, sy, right - tin, sy + 1.0]));
             }
             // (the light of the line eases in and out)
             let glow = self.easeq((7, id, k), if lit { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
