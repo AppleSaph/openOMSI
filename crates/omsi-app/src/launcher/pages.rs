@@ -605,6 +605,16 @@ fn camera_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, co
         *dirty = 0.3;
     }
     toggle_setting(ui, s, dirty, c.row(), "Driver's view turns with the steering", "steer_look");
+    let mut angle = get(s, "steer_look_angle").as_f64().unwrap_or(30.0) as f32;
+    if ui.slider("s-steer-look-angle", c.row(), &mut angle, 0.0, 60.0, 1.0, "Steering view angle", &|v| format!("{v:.0}°")) {
+        s["steer_look_angle"] = json!(angle);
+        *dirty = 0.3;
+    }
+    let mut response = get(s, "steer_look_response").as_f64().unwrap_or(0.25) as f32;
+    if ui.slider("s-steer-look-response", c.row(), &mut response, 0.05, 1.0, 0.05, "Steering view response", &|v| format!("{:.0} ms", v * 1000.0)) {
+        s["steer_look_response"] = json!(response);
+        *dirty = 0.3;
+    }
     toggle_setting(ui, s, dirty, c.row(), "Head moves with the bus", "head_movement");
     toggle_setting(ui, s, dirty, c.row(), "Camera glides between viewpoints", "driverview_smooth");
     toggle_setting(ui, s, dirty, c.row(), "Driver's hands in the cab view", "hands_in_cab");
@@ -2128,7 +2138,7 @@ mod settings_tests {
             "s-wrange", "s-wlock", "s-pedt", "s-pedb", "set-ff_enabled", "set-ff_invert", "s-wreset", "s-go-pads",
         ];
         let mut camera = vec![
-            "s-seaty", "s-seatz", "s-seatx", "s-seatreset", "s-fov", "set-steer_look", "set-head_movement", "set-driverview_smooth", "set-hands_in_cab", "set-alt_view",
+            "s-seaty", "s-seatz", "s-seatx", "s-seatreset", "s-fov", "set-steer_look", "s-steer-look-angle", "s-steer-look-response", "set-head_movement", "set-driverview_smooth", "set-hands_in_cab", "set-alt_view",
             "set-camera_collision", "set-driver", "set-head_tracking",
         ];
         if cfg!(windows) {

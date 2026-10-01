@@ -212,6 +212,10 @@ pub struct Settings {
     /// The driver's view turns a little into the steering (off: it stays fixed to the bus,
     /// as in OMSI, which has no such thing).
     pub steer_look: bool,
+    /// Maximum automatic driver's-view yaw at full steering lock (degrees).
+    pub steer_look_angle: f32,
+    /// Steering-view smoothing time constant (seconds).
+    pub steer_look_response: f32,
     /// How strongly the analog throttle and brake pedals act: the response curve's
     /// strength (1 = linear, below 1 softer at the start, above 1 stronger).
     pub pedal_throttle: f32,
@@ -262,7 +266,7 @@ impl Default for Settings {
 impl Settings {
     /// The defaults of a computer.
     fn desktop() -> Self {
-        Self { msaa: 4, anisotropy: 8, ssao: true, shadows: true, shadow_size: 2048, navigator: true, ui_opacity: 0.85, notes: true, ui_scale: 1.0, ui_scale_window: true, navigator_corner: "bottom-left".into(), boarding: "auto".into(), detail_textures: true, exact_fare: true, enhanced: false, graphics: "vanilla_plus".into(), vr: false, vr_scale: 0.65, vr_head_smoothing_ms: 0.0, vr_mirror_rate: 16.0, vr_desktop_mirror: true, fullscreen: false, vsync: true, volume: 0.6, drive_keys: "simple".into(), post_aa: "fxaa".into(), render_scale: 0.0, language: "ENG".into(), pax_voices: "all".into(), nav_arrows: false, get_up: false, texture_compression: true, texture_memory: 0, auto_clutch: true, momentary_gears: false, min_obj_size: 0.013, max_obj_dist: -1.0, max_fps: 0, chat: true, tooltips: true, name_tags: true, show_fps: false, clouds: true, pax_density: 1.0, vol_ai: 1.0, vol_scenery: 1.0, mirror_size: 256, doppler: true, driver: true, maintenance: 0, ai_unsched_factor: 1.0, ai_max_scheduled: 0, ai_max_parked: 0, collision_vehicles: true, collision_objects: true, collision_pedestrians: true, head_movement: true, driverview_smooth: true, hands_in_cab: false, alt_view: true, time_speed: 1.0, machine_translation: false, shadow_casters: "all".into(), ctrl_deadzone: 0.0, ctrl_off: String::new(), steering_linear: false, old_steering: false, red_steer_spd: false, reflections: true, led_glow: 6, led_mips: 1.3, mouse_sens: 1.0, graphics_api: "auto".into(), ff_invert: false, ff_enabled: true, brake_hold: true, wheel_range: 900.0, wheel_lock: 0.0, fov: 0.0, camera_collision: true, steer_look: false, pedal_throttle: 1.0, pedal_brake: 1.0, seat: [0.0; 3], head_tracking: false, head_tracking_port: 4242, head_tracking_invert: String::new(), discord_status: true, discord_app_id: String::new() }
+        Self { msaa: 4, anisotropy: 8, ssao: true, shadows: true, shadow_size: 2048, navigator: true, ui_opacity: 0.85, notes: true, ui_scale: 1.0, ui_scale_window: true, navigator_corner: "bottom-left".into(), boarding: "auto".into(), detail_textures: true, exact_fare: true, enhanced: false, graphics: "vanilla_plus".into(), vr: false, vr_scale: 0.65, vr_head_smoothing_ms: 0.0, vr_mirror_rate: 16.0, vr_desktop_mirror: true, fullscreen: false, vsync: true, volume: 0.6, drive_keys: "simple".into(), post_aa: "fxaa".into(), render_scale: 0.0, language: "ENG".into(), pax_voices: "all".into(), nav_arrows: false, get_up: false, texture_compression: true, texture_memory: 0, auto_clutch: true, momentary_gears: false, min_obj_size: 0.013, max_obj_dist: -1.0, max_fps: 0, chat: true, tooltips: true, name_tags: true, show_fps: false, clouds: true, pax_density: 1.0, vol_ai: 1.0, vol_scenery: 1.0, mirror_size: 256, doppler: true, driver: true, maintenance: 0, ai_unsched_factor: 1.0, ai_max_scheduled: 0, ai_max_parked: 0, collision_vehicles: true, collision_objects: true, collision_pedestrians: true, head_movement: true, driverview_smooth: true, hands_in_cab: false, alt_view: true, time_speed: 1.0, machine_translation: false, shadow_casters: "all".into(), ctrl_deadzone: 0.0, ctrl_off: String::new(), steering_linear: false, old_steering: false, red_steer_spd: false, reflections: true, led_glow: 6, led_mips: 1.3, mouse_sens: 1.0, graphics_api: "auto".into(), ff_invert: false, ff_enabled: true, brake_hold: true, wheel_range: 900.0, wheel_lock: 0.0, fov: 0.0, camera_collision: true, steer_look: false, steer_look_angle: 30.0, steer_look_response: 0.25, pedal_throttle: 1.0, pedal_brake: 1.0, seat: [0.0; 3], head_tracking: false, head_tracking_port: 4242, head_tracking_invert: String::new(), discord_status: true, discord_app_id: String::new() }
     }
 }
 
@@ -401,6 +405,8 @@ impl Settings {
                 "wheel_lock" => s.wheel_lock = v.parse::<f32>().ok().filter(|x| x.is_finite()).map(|x| if x < 45.0 { 0.0 } else { x.min(2880.0) }).unwrap_or(s.wheel_lock),
                 "camera_collision" => s.camera_collision = b(v),
                 "steer_look" => s.steer_look = b(v),
+                "steer_look_angle" => s.steer_look_angle = v.parse::<f32>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 60.0)).unwrap_or(s.steer_look_angle),
+                "steer_look_response" => s.steer_look_response = v.parse::<f32>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.05, 1.0)).unwrap_or(s.steer_look_response),
                 "head_tracking" => s.head_tracking = b(v),
                 "head_tracking_invert" => s.head_tracking_invert = v.to_ascii_lowercase(),
                 "discord_status" => s.discord_status = b(v),
@@ -455,6 +461,7 @@ impl Settings {
             "vr_head_smoothing_ms={}\nvr_mirror_rate={}\nvr_desktop_mirror={}\nled_glow={}\nled_mips={}\nui_scale={}\nui_scale_window={}\nnotes={}\n",
             self.vr_head_smoothing_ms, self.vr_mirror_rate, self.vr_desktop_mirror as u8, self.led_glow, self.led_mips, self.ui_scale, self.ui_scale_window as u8, self.notes as u8,
         ));
+        text.push_str(&format!("steer_look={}\nsteer_look_angle={}\nsteer_look_response={}\n", self.steer_look as u8, self.steer_look_angle, self.steer_look_response));
         text
     }
 
@@ -558,6 +565,18 @@ mod tests {
         assert_eq!(Settings::from_text("mirror_size=32\n").mirror_size, 64);
         let off = Settings { mirror_size: 0, ..Default::default() };
         assert_eq!(Settings::from_text(&off.to_text()).mirror_size, 0);
+    }
+
+    #[test]
+    fn steering_view_settings_round_trip_and_reject_invalid_values() {
+        let settings = Settings { steer_look: true, steer_look_angle: 45.0, steer_look_response: 0.5, ..Default::default() };
+        assert_eq!(Settings::from_text(&settings.to_text()), settings);
+        let invalid = Settings::from_text("steer_look_angle=NaN\nsteer_look_response=NaN\n");
+        assert_eq!(invalid.steer_look_angle, 30.0);
+        assert_eq!(invalid.steer_look_response, 0.25);
+        let clamped = Settings::from_text("steer_look_angle=999\nsteer_look_response=-1\n");
+        assert_eq!(clamped.steer_look_angle, 60.0);
+        assert_eq!(clamped.steer_look_response, 0.05);
     }
 
     #[test]

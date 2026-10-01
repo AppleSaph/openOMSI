@@ -287,6 +287,13 @@ independent doors (the O530 Facelift) to Shift+1 through Shift+4/5 - whatever
 `bus_doorfront<n>` triggers the bus's own script defines, `bus_dooraft` last (the HUD's
 control reminder says how many).
 
+In Settings → Camera, **Driver's view turns with the steering** smoothly turns the driver's
+view into the steering direction, independently of the bus's head-motion simulation.
+**Steering view angle** sets the full-lock rotation (0–60°, default 30°), and **Steering
+view response** sets the smoothing time (50–1000 ms, default 250 ms; larger values follow
+more slowly). Manual looking remains available. The automatic turn is suppressed while
+VR or an active head tracker controls the view. It is off by default.
+
 ## Mods and the content folder
 
 The folder of the game binary (`dist/<platform>` in a build; beside `openOMSI.app` on macOS) is laid out like an OMSI 2
