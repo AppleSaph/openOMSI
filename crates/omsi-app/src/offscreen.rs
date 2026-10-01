@@ -389,7 +389,10 @@ pub(crate) fn run_offscreen(
             }
             if i % 30 == 0 {
                 if let Some(l) = lan_off.as_ref() {
-                    crate::server::tick_status(l, parse_time(&args.time) + srv_clock + srv_admin.shift, weather.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default().as_str());
+                    // the session's weather (an admin may have changed it), else the one it started with
+                    let now = l.weather();
+                    let shown = if now.is_empty() { weather.path.file_stem() } else { std::path::Path::new(now).file_stem() };
+                    crate::server::tick_status(l, parse_time(&args.time) + srv_clock + srv_admin.shift, shown.map(|s| s.to_string_lossy().to_string()).unwrap_or_default().as_str());
                 }
             }
             if lan_off.is_none() {
