@@ -713,6 +713,8 @@ impl TextCache {
             4 => vec![232, 160, 48, 255],
             // a line the mouse is over, the next stop
             5 => vec![255, 255, 255, 28],
+            // a hairline between groups (the card's border colour)
+            9 => vec![255, 255, 255, 15],
             // the picture dimmed behind the menu
             6 => vec![0, 0, 0, 120],
             // behind a note or the tooltip (the old HUD's 40 %)
@@ -1037,8 +1039,9 @@ impl Ui {
     /// text of the lines does. Returns the middle of the header.
     fn menu_header(&mut self, r: &Renderer, scene: &mut Scene, x: f32, y: f32, w: f32, header_h: f32, title: &str, sub: &str, s: f32) -> f32 {
         let left = x + (PAD + TEXT_IN) * s;
-        let eyebrow = if sub.is_empty() { "openOMSI".to_string() } else { sub.to_uppercase() };
-        let e = self.text.label(r, scene, &eyebrow, (11.0 * s) as u32, MUTED);
+        // (the game's name in the accent; the list names above are in capitals)
+        let (eyebrow, eyebrow_ink) = if sub.is_empty() { ("openOmsi".to_string(), txt(ACCENT)) } else { (sub.to_uppercase(), MUTED) };
+        let e = self.text.label(r, scene, &eyebrow, (11.0 * s) as u32, eyebrow_ink);
         let title = clip_to(&self.text, title, 22.0 * s, w - (PAD + TEXT_IN) * 2.0 * s - 80.0 * s);
         let t = self.text.label(r, scene, &title, (22.0 * s) as u32, WHITE);
         let band = header_h - 6.0 * s;
@@ -1090,13 +1093,15 @@ impl Ui {
         // the picture dimmed behind the menu (the first overlay: the headset's menu takes it
         // for the backdrop)
         let dim = self.text.plate(r, scene, 6);
+        let sep = self.text.plate(r, scene, 9);
         scene.overlays.push((dim, [0.0, 0.0, f.width, f.height]));
         // key hints only where there is a keyboard
         let keys = !f.vr && !crate::platform::touch_controls();
         // the timetable beside the list, where the window is wide enough
         let preview = f.menu_preview.as_ref().filter(|_| !f.vr && f.width >= 760.0 * s);
-        let pane_w = if preview.is_some() { 340.0 * s } else { 0.0 };
-        let want = 380.0 * s;
+        let timetable_kind = matches!(kind, MenuKind::Lines | MenuKind::Tours);
+        let pane_w = if preview.is_some() { (if timetable_kind { 320.0 } else { 340.0 }) * s } else { 0.0 };
+        let want = if timetable_kind { 360.0 * s } else { 380.0 * s };
         let w = (want + pane_w).min(f.width - 24.0 * s).max(200.0 * s);
         let list_w = w - pane_w;
         let header_h = 72.0 * s;
@@ -1105,30 +1110,38 @@ impl Ui {
         // as many lines as fit at a readable height; a longer menu scrolls (the wheel, the
         // arrow keys), the chosen line kept in view
         // (lines and tours: a card of one fixed height, a share of the screen's)
-        let fixed_h = matches!(kind, MenuKind::Lines | MenuKind::Tours).then(|| if f.vr { f.height * 0.60 } else { (f.height * 0.82).min(f.height - 24.0 * s) });
+        // "Back" of lines and tours stands alone under the list (not a line of it: no scrolling
+        // down to it)
+        let back_txt = omsi_ui::tr("Back").into_owned();
+        let back_footer = timetable_kind && items.last().is_some_and(|&(id, l)| id == "back" && l == back_txt.as_str());
+        let nl = items.len() - back_footer as usize;
+        let foot_h = if back_footer { 48.0 * s } else { 0.0 };
+        let fixed_h = matches!(kind, MenuKind::Lines | MenuKind::Tours).then(|| if f.vr { f.height * 0.60 } else { (520.0 * s).min(f.height * 0.94) });
         let room = match fixed_h {
-            Some(fh) => fh - header_h - pad,
+            Some(fh) => fh - header_h - pad - foot_h,
             None => f.height * (if f.vr { 0.60 } else { 0.92 }) - header_h - pad - 8.0 * s,
         };
         let base = match (f.vr, kind) {
             (true, _) => 40.0,
-            (_, MenuKind::Lines) => 58.0,
-            (_, MenuKind::Tours) => 46.0,
+            (_, MenuKind::Lines) => 44.0,
+            (_, MenuKind::Tours) => 40.0,
             _ => 42.0,
         } * s;
-        let row_h = base.min(room / items.len().max(1) as f32).max(34.0 * s);
-        let rows = ((room / row_h).floor() as usize).clamp(1, items.len().max(1));
-        let start = match (items.len() > rows, f.menu_top) {
+        let row_h = base.min(room / nl.max(1) as f32).max(34.0 * s);
+        let rows = ((room / row_h).floor() as usize).clamp(1, nl.max(1));
+        let sel_l = sel.min(nl.saturating_sub(1));
+        let start = match (nl > rows, f.menu_top) {
             (false, _) => 0,
-            (true, Some(top)) => (top.max(0.0).round() as usize).min(items.len() - rows),
-            (true, None) => sel.saturating_sub(rows / 2).min(items.len() - rows),
+            (true, Some(top)) => (top.max(0.0).round() as usize).min(nl - rows),
+            (true, None) => sel_l.saturating_sub(rows / 2).min(nl - rows),
         };
         self.menu_start = start;
         self.menu_rows = rows;
         self.menu_row_h = row_h;
-        let px = ((16.0 * s).min(row_h * 0.45)) as u32;
-        let mut h = header_h + row_h * rows as f32 + pad;
+        let px = (((if timetable_kind { 14.0 } else { 16.0 }) * s).min(row_h * 0.45)) as u32;
+        let mut h = header_h + row_h * rows as f32 + pad + foot_h;
         if let Some(fh) = fixed_h {
+            // (lines and tours: one size, whatever the list holds, like the settings window)
             h = fh;
         } else if preview.is_some() {
             h = h.max((420.0 * s).min(f.height * 0.92));
@@ -1151,20 +1164,20 @@ impl Ui {
         };
         let head_cy = self.menu_header(r, scene, x, y, list_w, header_h, &title, &sub, s);
         // the scroll bar: where the lines shown lie in the whole menu
-        let scrolls = items.len() > rows;
+        let scrolls = nl > rows;
         if scrolls {
             let top = y + header_h;
             let track = [list_r - 11.0 * s, top, list_r - 8.0 * s, top + row_h * rows as f32 - 4.0 * s];
             self.menu_scroll_track = Some(track);
             self.text.rounded(r, scene, track, 1.5 * s, [255, 255, 255, 22]);
             let th = track[3] - track[1];
-            let t0 = track[1] + th * start as f32 / items.len() as f32;
-            let t1 = track[1] + th * (start + rows) as f32 / items.len() as f32;
+            let t0 = track[1] + th * start as f32 / nl as f32;
+            let t1 = track[1] + th * (start + rows) as f32 / nl as f32;
             let thumb = [track[0], t0, track[2], t1];
             self.text.rounded(r, scene, thumb, 1.5 * s, ACCENT);
             // (a wider grip than the drawn thumb: three pixels are hard to hit)
             self.menu_scroll_thumb = Some([thumb[0] - 6.0 * s, thumb[1], thumb[2] + 6.0 * s, thumb[3]]);
-            let more = omsi_ui::tr("{} of {}").replacen("{}", &(sel + 1).to_string(), 1).replacen("{}", &items.len().to_string(), 1);
+            let more = omsi_ui::tr("{} of {}").replacen("{}", &(sel_l + 1).to_string(), 1).replacen("{}", &nl.to_string(), 1);
             self.put_right(r, scene, &more, (12.0 * s) as u32, MUTED, list_r - pad - tin, head_cy);
         }
         // (the line under the mouse is the one lit; the keyboard's choice only while the
@@ -1174,10 +1187,18 @@ impl Ui {
         // lit up for a moment as the mouse went down the list)
         let any_hovered = over([x, y, list_r, y + h]);
         let right = list_r - if scrolls { 20.0 * s } else { pad };
-        let back_txt = omsi_ui::tr("Back").into_owned();
         let line_pre = format!("{} ", omsi_ui::tr("Line"));
         let tour_pre = format!("{} ", omsi_ui::tr("Tour"));
-        for (k, &(id, label)) in items.iter().enumerate().skip(start).take(rows) {
+        // (all line signs as wide as the widest, so that the texts after them line up)
+        let mut sign_w = 48.0 * s;
+        if kind == MenuKind::Lines {
+            for &(_, label) in items.iter() {
+                if let Some(n) = label.strip_prefix(line_pre.as_str()).and_then(|rest| rest.rsplit_once("  (")).map(|(n, _)| n) {
+                    sign_w = sign_w.max(self.text.width(n, 15.0 * s) + 22.0 * s);
+                }
+            }
+        }
+        for (k, &(id, label)) in items[..nl].iter().enumerate().skip(start).take(rows) {
             let ry = y + header_h + row_h * (k - start) as f32;
             let gap = 4.0 * s;
             let rect = [x + pad, ry, right, ry + row_h - gap];
@@ -1191,6 +1212,7 @@ impl Ui {
                 && ((is_back && !matches!(kind, MenuKind::Lines | MenuKind::Tours))
                 || match kind {
                 MenuKind::Game => matches!(id, "save" | "admin" | "quit"),
+                MenuKind::Lines => id == "free",
                 _ => false,
             });
             if apart {
@@ -1227,27 +1249,32 @@ impl Ui {
             let rx = rect[2] - tin;
             let mut done = false;
             match kind {
-                // a line of the timetable: its number as a badge
+                // a line of the timetable: its number on a solid sign, like a line sign on a bus
                 MenuKind::Lines => {
                     let parsed = label.strip_prefix(line_pre.as_str()).and_then(|rest| rest.rsplit_once("  (")).map(|(n, t)| (n, t.trim_end_matches(')')));
                     if let Some((name, info)) = parsed {
-                        let bl = self.text.label(r, scene, name, (18.0 * s) as u32, txt(ACCENT));
-                        let (bw, bh) = ((bl.w as f32 + 22.0 * s).max(54.0 * s), 34.0 * s);
+                        let bl = self.text.label(r, scene, name, (15.0 * s) as u32, ON_ACCENT);
+                        let (bw, bh) = (sign_w, 28.0 * s);
                         let bx = lx;
-                        self.text.rounded(r, scene, [bx, cy - bh * 0.5, bx + bw, cy + bh * 0.5], ROW_R * s, ACCENT_SOFT);
+                        let sign = mix(mix(ACCENT, [150, 104, 30, 255], 0.30), ACCENT_HOT, glow);
+                        self.text.rounded(r, scene, [bx, cy - bh * 0.5, bx + bw, cy + bh * 0.5], 7.0 * s, sign);
                         let (lx0, ly0) = (bx + (bw - bl.w as f32) * 0.5, cy - bl.h as f32 * 0.5);
                         scene.overlays.push((bl.tex, [lx0, ly0, lx0 + bl.w as f32, ly0 + bl.h as f32]));
                         let tx = bx + bw + 14.0 * s;
-                        let cw = self.put_right(r, scene, "›", px + 6, if lit { WHITE } else { MUTED }, rx, cy);
-                        let info = clip_to(&self.text, info, px as f32, rx - cw - 12.0 * s - tx);
+                        let d = 22.0 * s;
+                        self.text.rounded(r, scene, [rx - d, cy - d * 0.5, rx, cy + d * 0.5], d * 0.5, fade(ACCENT, 0.10 + 0.30 * glow));
+                        let aw = self.text.width("›", (px + 2) as f32);
+                        self.put(r, scene, "›", px + 2, mix(MUTED, ACCENT_HOT, glow), rx - d * 0.5 - aw * 0.5, cy - 1.0 * s);
+                        let info = clip_to(&self.text, info, px as f32, rx - d - 12.0 * s - tx);
                         self.put(r, scene, &info, px, ink, tx, cy);
                         done = true;
                     }
                 }
-                // a tour: its name left, the first departure right
+                // a tour: its name, the first departure as a clock chip
                 MenuKind::Tours => {
                     if let Some((num, time)) = label.strip_prefix(tour_pre.as_str()).and_then(|rest| rest.split_once("  ")) {
-                        let left = self.chip(r, scene, time.trim(), (14.0 * s) as u32, AMBER, CHIP, false, rx, cy, s);
+                        let num = num.trim();
+                        let left = self.chip(r, scene, time.trim(), (12.0 * s) as u32, AMBER, fade(ACCENT, 0.16 + 0.12 * glow.max(a_act)), false, rx, cy, s);
                         let name = clip_to(&self.text, &format!("{tour_pre}{num}"), px as f32, left - 14.0 * s - lx);
                         self.put(r, scene, &name, px, ink, lx, cy);
                         done = true;
@@ -1286,6 +1313,26 @@ impl Ui {
             }
             self.menu_rects.push(rect);
         }
+        if back_footer {
+            // (a hairline, then "Back" pinned to the bottom of the list: the rects of the lines
+            // out of view are empty ones, so that a rect stays at the index of its line)
+            let bk = items.len() - 1;
+            let fr = [x + pad, y + h - pad - 36.0 * s, right, y + h - pad];
+            let sy = (fr[1] - 6.0 * s).round();
+            scene.overlays.push((sep, [x + pad, sy, right, sy + 1.0]));
+            let lit = over(fr) || (sel == bk && f.menu_kbd && !any_hovered);
+            let glow = self.easeq((7, "back", bk), if lit { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
+            self.text.rounded(r, scene, fr, ROW_R * s, fade(LIT, 0.55 + 0.45 * glow));
+            if glow > 0.0 {
+                self.accent_bar(r, scene, fr, glow, false, s);
+            }
+            let (text, _) = strip_more(back_txt.as_str());
+            self.put(r, scene, &format!("‹  {text}"), px, mix(SOFT, WHITE, glow), fr[0] + tin, (fr[1] + fr[3]) * 0.5);
+            while self.menu_rects.len() < bk - start {
+                self.menu_rects.push([-1.0e9; 4]);
+            }
+            self.menu_rects.push(fr);
+        }
         // the timetable of the chosen line or tour, beside the list
         if let Some(p) = preview {
             let (px0, py0) = (list_r + 4.0 * s, y + header_h);
@@ -1295,20 +1342,20 @@ impl Ui {
             let pad = tin;
             let inner = px1 - px0 - pad * 2.0;
             let mut cy = py0 + 28.0 * s;
-            let head = clip_to(&self.text, &p.title, 18.0 * s, inner);
-            self.put(r, scene, &head, (18.0 * s) as u32, WHITE, px0 + pad, cy);
-            cy += 24.0 * s;
-            let meta = clip_to(&self.text, &p.meta, 12.0 * s, inner);
-            self.put(r, scene, &meta, (12.0 * s) as u32, MUTED, px0 + pad, cy);
+            let head = clip_to(&self.text, &p.title, 16.0 * s, inner);
+            self.put(r, scene, &head, (16.0 * s) as u32, WHITE, px0 + pad, cy);
+            cy += 22.0 * s;
+            let meta = clip_to(&self.text, &p.meta, 11.0 * s, inner);
+            self.put(r, scene, &meta, (11.0 * s) as u32, MUTED, px0 + pad, cy);
             cy += 18.0 * s;
             scene.overlays.push((sep, [px0 + pad, cy.round(), px1 - pad, cy.round() + 1.0]));
-            let rpx = (14.0 * s) as u32;
-            let lh = 26.0 * s;
+            let rpx = (13.0 * s) as u32;
+            let lh = 24.0 * s;
             let top = cy + 10.0 * s;
             let n = p.rows.len();
             if let (Some(chosen), Some(button)) = (p.chosen, p.button.as_ref()) {
                 // the stops to start from: the one chosen marked, a click chooses another
-                let go_h = 38.0 * s;
+                let go_h = 34.0 * s;
                 let go = [px0 + pad, py1 - 12.0 * s - go_h, px1 - pad, py1 - 12.0 * s];
                 let fit = (((go[1] - 10.0 * s) - top) / lh).floor().max(1.0) as usize;
                 let first = if n > fit { chosen.saturating_sub(fit / 2).min(n - fit) } else { 0 };
@@ -1336,7 +1383,7 @@ impl Ui {
                 // the button that starts the trip
                 let a_go = self.easeq((13, "go", 0), if over(go) { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
                 self.text.rounded(r, scene, go, ROW_R * s, mix(ACCENT, ACCENT_HOT, a_go));
-                let l = self.text.label(r, scene, button, (15.0 * s) as u32, ON_ACCENT);
+                let l = self.text.label(r, scene, button, (14.0 * s) as u32, ON_ACCENT);
                 let (gx, gy) = (go[0] + (go[2] - go[0] - l.w as f32) * 0.5, (go[1] + go[3]) * 0.5 - l.h as f32 * 0.5);
                 scene.overlays.push((l.tex, [gx, gy, gx + l.w as f32, gy + l.h as f32]));
                 self.menu_pane_go = Some(go);
@@ -1345,11 +1392,25 @@ impl Ui {
                 // (a list too long for the pane ends in how many more there are)
                 let shown = if n > fit { fit.saturating_sub(1) } else { n };
                 let time_w = p.rows.iter().take(shown).map(|row| self.text.width(&row.1, rpx as f32)).fold(0.0f32, f32::max);
+                let tp = format!("{} ", omsi_ui::tr("Tour"));
+                // (the tour numbers in tiles of one width, the destination after them)
+                let tile_w = p.rows.iter().take(shown).filter_map(|row| row.0.strip_prefix(tp.as_str()).and_then(|x| x.split_once("  ›  ").map(|(n, _)| n).or(Some(x)))).map(|n| self.text.width(n.trim(), rpx as f32) + 16.0 * s).fold(30.0 * s, f32::max);
                 for (i, (what, when)) in p.rows.iter().take(shown).enumerate() {
                     let ry = top + lh * i as f32 + lh * 0.5;
                     self.put_right(r, scene, when, rpx, AMBER, px1 - pad, ry);
-                    let what = clip_to(&self.text, what, rpx as f32, inner - time_w - 14.0 * s);
-                    self.put(r, scene, &what, rpx, SOFT, px0 + pad, ry);
+                    if let Some(rest) = what.strip_prefix(tp.as_str()) {
+                        let (num, dest) = rest.split_once("  ›  ").unwrap_or((rest, ""));
+                        let th = lh - 6.0 * s;
+                        self.text.rounded(r, scene, [px0 + pad, ry - th * 0.5, px0 + pad + tile_w, ry + th * 0.5], 5.0 * s, ACCENT_SOFT);
+                        let nw = self.text.width(num.trim(), rpx as f32);
+                        self.put(r, scene, num.trim(), rpx, txt(ACCENT), px0 + pad + (tile_w - nw) * 0.5, ry);
+                        let dx = px0 + pad + tile_w + 10.0 * s;
+                        let dest = clip_to(&self.text, dest, rpx as f32, px1 - pad - time_w - 14.0 * s - dx);
+                        self.put(r, scene, &dest, rpx, SOFT, dx, ry);
+                    } else {
+                        let what = clip_to(&self.text, what, rpx as f32, inner - time_w - 14.0 * s);
+                        self.put(r, scene, &what, rpx, SOFT, px0 + pad, ry);
+                    }
                 }
                 if n > shown {
                     let ry = top + lh * shown as f32 + lh * 0.5;
@@ -1370,6 +1431,7 @@ impl Ui {
     fn draw_settings(&mut self, r: &Renderer, scene: &mut Scene, f: &Frame, sel: usize, items: &[(&str, &str)]) {
         let s = f.scale.max(0.5);
         let dim = self.text.plate(r, scene, 6);
+        let sep = self.text.plate(r, scene, 9);
         scene.overlays.push((dim, [0.0, 0.0, f.width, f.height]));
         let none: Vec<String> = Vec::new();
         let (titles, active) = match f.menu_tabs.as_ref() {

@@ -125,9 +125,6 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
                     out.push((format!("{} {}  ({} {})", tr("Line"), l.name, l.tours.len(), tr("tours")), format!("line {}", l.name)));
                 }
             }
-            if app.duty.is_some() {
-                out.push((tr("Free drive (no duty)"), "free".into()));
-            }
             if out.is_empty() {
                 out.push((tr("No timetable on this map"), "back".into()));
             }
@@ -367,6 +364,18 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
                     app.settings.seat = [0.0; 3];
                     for k in ["seat_x", "seat_y", "seat_z"] {
                         remember_setting(k, "0");
+                    }
+                }
+                "clock_ontime" if step => {
+                    if app.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
+                        app.service_msg = Some(("In a LAN session the host sets the clock".into(), 3.0));
+                    } else if let Some(d) = app.player.as_ref().map(|p| p.vehicle.host.tt_delay as f64).filter(|d| d.abs() >= 1.0) {
+                        // (the delay as it is now, not as the button was drawn: a second click
+                        // would otherwise move the clock by the old amount again)
+                        app.shift_clock(-d);
+                        if let Some(p) = app.player.as_mut() {
+                            p.vehicle.host.tt_delay = 0.0;
+                        }
                     }
                 }
                 "clock_set" | "clock_shift" if step => {
@@ -1056,7 +1065,7 @@ fn world_pages(app: &App) -> Vec<Page> {
             let d = p.vehicle.host.tt_delay as f64;
             if d.abs() >= 1.0 {
                 let text = format!("{}{}:{:02}", if d < 0.0 { "−" } else { "+" }, (d.abs() / 60.0) as i64, d.abs() as i64 % 60);
-                time.push(button("On time with the timetable", &text, "Move the clock so that the vehicle is on time.", &format!("clock_shift {}", -d)));
+                time.push(button("On time with the timetable", &text, "Move the clock so that the vehicle is on time.", "clock_ontime"));
             }
         }
         if app.lan.is_none() {
