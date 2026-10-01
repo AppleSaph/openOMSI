@@ -2424,19 +2424,19 @@ impl World {
     }
 
     /// The floor under somebody at height `near` at (x, y): the highest face no more than a
-    /// step (1 m) over them - a station's floor under its roof, a car park's level under the
+    /// step (0.5 m, Omsi.exe 0x630498) over them - a station's floor under its roof, a car park's level under the
     /// deck above - else [`World::walk_height`]'s highest one. (Asked for the highest, the
     /// people of an indoor station stood on its roof.)
     ///
-    /// Nothing under them within 3 m: the highest face, but only up to 1.5 m over them - a
+    /// Nothing under them within 3 m: the highest face, but only up to 0.5 m over them - a
     /// pavement whose tile came after them. Omsi.exe keeps its people at the heights of
     /// their paths and waiting places; the highest face, a bus shelter's roof 2.5 m up, put
     /// the people waiting under it on top of it.
     pub fn walk_height_near(&self, x: f64, y: f64, near: f64) -> Option<f64> {
-        let probe = drive_probe(&self.terrains, &self.surfaces, x, y, near + 1.0);
+        let probe = drive_probe(&self.terrains, &self.surfaces, x, y, near + 0.5);
         match probe.below {
             Some(b) if near - b < 3.0 => Some(b),
-            _ => self.walk_height(x, y).filter(|z| *z < near + 1.5),
+            _ => self.walk_height(x, y).filter(|z| *z < near + 0.5),
         }
     }
 
