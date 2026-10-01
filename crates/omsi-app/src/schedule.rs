@@ -245,7 +245,7 @@ struct Choice {
 /// Stops moved `shift` metres back along `route` (the lanes the stops' route indices less
 /// `base` count in): where the vehicle's origin comes to rest (`bus_service::stop_shift`).
 /// One that comes to lie before the route's first lane keeps a distance below zero on it.
-fn shift_stops(net: &Network, route: &[usize], base: usize, stops: &mut [(usize, f32, f32, f64, i64)], shift: f32) {
+fn shift_stops(net: &Network, route: &[usize], base: usize, stops: &mut [(usize, f32, f32, f64, i64, f32)], shift: f32) {
     if shift.abs() < 1e-3 {
         return;
     }
@@ -290,7 +290,7 @@ fn bay_for(lat: f32, ty: &omsi_sim::VehicleType, rail: bool, left_hand: bool) ->
 
 /// The stops' raw box offsets (see `bay_offset`) made the vehicle's bay offsets, and the
 /// stops moved to where its origin comes to rest (`shift_stops`).
-fn place_stops(net: &Network, route: &[usize], base: usize, stops: &mut [(usize, f32, f32, f64, i64)], ty: &omsi_sim::VehicleType, rail: bool) {
+fn place_stops(net: &Network, route: &[usize], base: usize, stops: &mut [(usize, f32, f32, f64, i64, f32)], ty: &omsi_sim::VehicleType, rail: bool) {
     for st in stops.iter_mut() {
         st.2 = bay_for(st.2, ty, rail, net.left_hand);
     }
@@ -1925,7 +1925,7 @@ impl Schedule {
                         project_stop(&traffic.net, &lanes, pos, Some(STOP_REACH), from)
                     {
                         from = ri;
-                        stops.push((base + ri, ss, bay_offset(lat), *t_dep, *sid));
+                        stops.push((base + ri, ss, bay_offset(lat), *t_dep, *sid, world.stop_side(*sid)));
                         run.served[si] = true;
                     }
                 }
@@ -2117,7 +2117,7 @@ impl Schedule {
                     Some((ri, ss, lat)) => {
                         from = ri;
                         served[si] = true;
-                        stops.push((ri, ss, bay_offset(lat), leave[si], *sid));
+                        stops.push((ri, ss, bay_offset(lat), leave[si], *sid, world.stop_side(*sid)));
                     }
                     None => log::debug!("station {sid}: not near the route"),
                 },
@@ -2193,15 +2193,15 @@ impl Schedule {
             let route: Vec<usize> = prefix.iter().copied().chain(section[from..].iter().copied()).collect();
             let shift = prefix.len() as isize - from as isize;
             // the stops from the bus on; one just behind it on its lane is where it stands
-            let stops: Vec<(usize, f32, f32, f64, i64)> = stops
+            let stops: Vec<(usize, f32, f32, f64, i64, f32)> = stops
                 .into_iter()
                 .filter(|st| st.0 >= from)
-                .filter_map(|(ri, ss, lat, t, id)| {
+                .filter_map(|(ri, ss, lat, t, id, side)| {
                     let nri = (ri as isize + shift) as usize;
                     if nri == 0 && ss <= s0 + 0.3 {
-                        (s0 - ss < 25.0).then_some((0, s0 + 0.3, 0.0, t, id))
+                        (s0 - ss < 25.0).then_some((0, s0 + 0.3, 0.0, t, id, side))
                     } else {
-                        Some((nri, ss, lat, t, id))
+                        Some((nri, ss, lat, t, id, side))
                     }
                 })
                 .collect();
@@ -2296,7 +2296,7 @@ impl Schedule {
         // a bus that would start a few metres short of its next stop stands at it (half a
         // metre short, so that it is served): starting before it, it had to pull over into
         // the stop - often a lane over - in less than its own length
-        if let Some(&(ri, ss, _, _, _)) = stops
+        if let Some(&(ri, ss, _, _, _, _)) = stops
             .iter()
             .find(|st| st.0 > start_index || (st.0 == start_index && st.1 > s))
         {
@@ -2352,10 +2352,10 @@ impl Schedule {
             return Placed::Busy;
         }
         self.startup.remove(&i);
-        let stops: Vec<(usize, f32, f32, f64, i64)> = stops
+        let stops: Vec<(usize, f32, f32, f64, i64, f32)> = stops
             .into_iter()
-            .filter(|(ri, ss, _, _, _)| *ri > start_index || (*ri == start_index && *ss > s))
-            .map(|(ri, ss, lat, t, id)| (ri - start_index, ss, lat, t, id))
+            .filter(|(ri, ss, _, _, _, _)| *ri > start_index || (*ri == start_index && *ss > s))
+            .map(|(ri, ss, lat, t, id, side)| (ri - start_index, ss, lat, t, id, side))
             .collect();
         let route: Vec<usize> = section[start_index..].to_vec();
         // the trip's own line (" 5"), which is what the displays show; the timetable line's
@@ -2843,7 +2843,32 @@ fn complex_line_text(line: &str, line_num: f32) -> String {
     }
 }
 
+/// The letter and digits of a line named letter first ("X10", "M41"), else None.
+fn line_prefix(line: &str) -> Option<(char, &str)> {
+    let line = line.trim();
+    let first = line.chars().next().filter(|c| c.is_ascii_alphabetic())?;
+    let digits = &line[1..];
+    (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+        .then_some((first.to_ascii_uppercase(), digits))
+}
+
 fn line_suffix_from_text(line: &str) -> u32 {
+    // the stock MAN matrices' and X10 Berlin's IBIS's "letter then number" codes
+    if let Some((letter, _)) = line_prefix(line) {
+        return match letter {
+            'E' => 1,
+            'S' => 5,
+            'A' => 6,
+            'D' => 11,
+            'C' => 12,
+            'B' => 13,
+            'U' => 25,
+            'M' => 28,
+            'N' => 35,
+            'X' => 36,
+            _ => 0,
+        };
+    }
     match line.trim().chars().last().map(|c| c.to_ascii_uppercase()) {
         // The stock Matrix scripts use two different E codes: 1 renders E5,
         // while 10 renders 5E. Timetable line names put the letter after the
@@ -2866,14 +2891,29 @@ fn line_suffix_from_text(line: &str) -> u32 {
 /// timetable line such as `5E`, the display suffix must therefore come from
 /// the text (`10` in the stock matrix scripts), while a plain `5` stays `500`.
 fn line_code_from_text(line: &str, route_code: Option<u32>) -> Option<u32> {
-    let digits: String = line
-        .trim()
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    match digits.parse::<u32>().ok().filter(|n| *n > 0 && *n < 1000) {
+    // a lettered line's IBIS number is the depot file's (X10 Berlin types X10 as 510)
+    if let (Some(_), Some(code)) = (line_prefix(line), route_code) {
+        return Some(code / 100 * 100 + line_suffix_from_text(line));
+    }
+    match line_number_digits(line)
+        .parse::<u32>()
+        .ok()
+        .filter(|n| *n > 0 && *n < 1000)
+    {
         Some(number) => Some(number * 100 + line_suffix_from_text(line)),
         None => route_code,
+    }
+}
+
+/// The line's number: its leading digits, or the digits after a prefix letter ("X10" → 10).
+fn line_number_digits(line: &str) -> String {
+    match line_prefix(line) {
+        Some((_, digits)) => digits.to_string(),
+        None => line
+            .trim()
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect(),
     }
 }
 
@@ -3049,7 +3089,7 @@ fn set_destination(
                     && !line_digits.is_empty()
             })
         });
-    let line_num = line_digits.parse::<f32>().unwrap_or(0.0);
+    let line_num = line_number_digits(line).parse::<f32>().unwrap_or(0.0);
     // The route's last two digits select its stop list; they must not replace
     // a display suffix. Otherwise an ordinary route code such as 505 becomes
     // suffix 5 and the stock matrix renders S5 instead of 5E.
@@ -3059,6 +3099,11 @@ fn set_destination(
     let line_code =
         line_code_from_text(line, route_code).unwrap_or_else(|| line_num.max(0.0) as u32 * 100);
     let line_suffix = (line_code % 100) as f32;
+    let line_num = if line_prefix(line).is_some() {
+        (line_code / 100) as f32
+    } else {
+        line_num
+    };
     // the original's way: SetLineTo + AI_target_index, then the ai_scheduled_settarget trigger
     set_line_to(v, line);
     if !player {
@@ -4356,6 +4401,19 @@ mod tests {
         assert_eq!(line_suffix_from_text("5S"), 23);
         assert_eq!(line_code_from_text("5E", Some(505)), Some(510));
         assert_eq!(line_code_from_text("5", Some(505)), Some(500));
+    }
+
+    /// #546: a letter-first line had no number, and the DL05's matrix blanks line 0.
+    #[test]
+    fn line_with_letter_prefix_keeps_its_number() {
+        assert_eq!(line_code_from_text("X10", None), Some(1036));
+        assert_eq!(line_code_from_text("X10", Some(51001)), Some(51036));
+        assert_eq!(line_code_from_text("M41", Some(4101)), Some(4128));
+        assert_eq!(line_code_from_text("N9", None), Some(935));
+        assert_eq!(line_code_from_text("TML", Some(7601)), Some(7601));
+        assert_eq!(line_suffix_from_text("X10"), 36);
+        assert_eq!(line_number_digits("X10"), "10");
+        assert_eq!(line_number_digits("5E"), "5");
     }
 
     #[test]

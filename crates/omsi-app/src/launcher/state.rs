@@ -185,6 +185,8 @@ pub struct State {
     pub keybindings: serde_json::Value,
     pub keybindings_error: String,
     pub instances: Vec<core::Instance>,
+    pub queued_launch: Option<core::Duty>,
+    pub launch_hold: Option<std::time::Instant>,
     /// A game started from here ended on an error: what it said, and the end of its log
     /// (see `crash_of`), for the dialog that asks to report it.
     pub crash: Option<(String, String)>,
@@ -247,6 +249,8 @@ impl State {
             keybindings,
             keybindings_error: String::new(),
             instances: Vec::new(),
+            queued_launch: None,
+            launch_hold: None,
             crash: None,
             jobs: Vec::new(),
             mods: None,
@@ -292,6 +296,11 @@ impl State {
             core::log_to_file(&format!("ERROR {t}"));
         }
         self.status = (t, err, Instant::now());
+    }
+
+    pub fn spawn_launch(&mut self, d: core::Duty) {
+        self.launch_hold = Some(std::time::Instant::now());
+        self.spawn(move || Msg::Launched(core::launch(&d).map_err(|e| format!("{e:#}"))));
     }
 
     fn spawn(&self, f: impl FnOnce() -> Msg + Send + 'static) {
@@ -478,7 +487,7 @@ impl State {
         }
         let d = self.duty();
         self.set_status("Starting the game…", false);
-        self.spawn(move || Msg::Launched(core::launch(&d).map_err(|e| format!("{e:#}"))));
+        self.queued_launch = Some(d);
     }
 
     /// The duty as the backend takes it.
@@ -550,7 +559,7 @@ impl State {
         d.situation = Some(file.to_string_lossy().to_string());
         d.lan = Some("off".into());
         self.set_status("Continuing where you left off…", false);
-        self.spawn(move || Msg::Launched(core::launch(&d).map_err(|e| format!("{e:#}"))));
+        self.queued_launch = Some(d);
     }
 
     /// Start one of OMSI's tutorials (1..4).
@@ -562,7 +571,7 @@ impl State {
         d.tutorial = Some(n);
         d.lan = Some("off".into());
         self.set_status("Starting the tutorial…", false);
-        self.spawn(move || Msg::Launched(core::launch(&d).map_err(|e| format!("{e:#}"))));
+        self.queued_launch = Some(d);
     }
 
     /// Settings a game changed while it ran: taken over, unless the launcher's own changes
@@ -832,7 +841,10 @@ impl State {
                 self.set_status(format!("Game started (process {}), log {}{}", l.pid, l.log, if l.others > 0 { format!(" - {} other game(s) keep running", l.others) } else { String::new() }), false);
                 self.poll_now();
             }
-            Msg::Launched(Err(e)) => self.set_status(e, true),
+            Msg::Launched(Err(e)) => {
+                self.launch_hold = None;
+                self.set_status(e, true)
+            }
             Msg::Stopped { pid, result } => {
                 self.stopping.remove(&pid);
                 match result {

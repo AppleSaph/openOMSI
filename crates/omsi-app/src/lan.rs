@@ -2676,6 +2676,10 @@ fn drive_remote(rv: &mut RemoteVehicle, pose: &Pose, dt: f32, exact: bool) {
         brake: pose.flags & omsi_net::FLAG_BRAKE != 0 || pose.brake > 0.1,
         lights: pose.head >= 2,
         at_station: if doors_open { 1 } else { -1 },
+        // Their stop's side is not on the wire: their doors are pinned to the openings
+        // they send (see `doors` above), so which side the player's own script opened is
+        // already in those values - the frame only runs the AI half of the script.
+        at_station_side: 0.0,
         priority_warning: false,
     };
     rv.vehicle.update_ai_with(dt, &frame, &inputs, &pinned);

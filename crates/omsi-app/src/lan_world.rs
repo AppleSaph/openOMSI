@@ -1169,6 +1169,10 @@ impl LanWorld {
             {
                 use rayon::prelude::*;
                 let odometer = &m.odometer;
+                // (read off the buses before the parallel block takes `t.cars` mutably:
+                // which side each stands at its stop is the host's own timetable state)
+                let sides: HashMap<usize, f32> =
+                    work.iter().map(|(i, _, _)| (*i, t.cars[*i].at_station_side())).collect();
                 let frames: HashMap<usize, AiFrame> = work
                     .iter()
                     .map(|(i, c, _)| {
@@ -1182,6 +1186,7 @@ impl LanWorld {
                                 brake: c.brake,
                                 lights: c.lights,
                                 at_station: c.at_station as i32,
+                                at_station_side: sides.get(i).copied().unwrap_or(0.0),
                                 priority_warning: false,
                             },
                         )

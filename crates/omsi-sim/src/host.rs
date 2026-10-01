@@ -22,6 +22,10 @@ pub struct VehicleHost {
     /// `{init}`, as Omsi.exe sets them when it makes the vehicle (0x70a174), before the
     /// scripts start. None: not known yet (`apply_paint_vars` later).
     pub paint_scheme: Option<Option<usize>>,
+    /// Fleet number and registration chosen by the vehicle dialog. They are copied to the
+    /// script's `number` / `ident` strings before `{init}`, like Omsi.exe does.
+    pub initial_number: Option<String>,
+    pub initial_ident: Option<String>,
     /// A time of day a script wrote to `(S.S.Time)` this frame: the game's clock takes it.
     pub time_written: Option<f64>,
     pub clock: SimClock,

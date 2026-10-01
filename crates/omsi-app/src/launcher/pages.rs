@@ -519,6 +519,7 @@ fn driving_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, c
     }
     toggle_setting(ui, s, dirty, c.row(), "The keyboard brake stays on until the throttle (as in OMSI)", "brake_hold");
     toggle_setting(ui, s, dirty, c.row(), "Automatic clutch (manual gearboxes)", "auto_clutch");
+    toggle_setting(ui, s, dirty, c.row(), "Hold manual gear buttons (release returns to neutral)", "momentary_gears");
     if ui.button("s-go-keys", c.row(), "Change the keys", Some("keyboard"), ButtonKind::Normal) {
         out.controls = Some(0);
     }
@@ -598,7 +599,8 @@ fn camera_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, co
         if get(s, "vr").as_bool().unwrap_or(false) {
             sel_setting(ui, s, dirty, "s-vr-scale", c.row(), "Eye resolution", "vr_scale", &[("0.5", "50%"), ("0.65", "65%"), ("0.8", "80%"), ("1", "100%")]);
             sel_setting(ui, s, dirty, "s-vr-head-smoothing", c.row(), "Head tracking smoothing", "vr_head_smoothing_ms", &[("0", "Off"), ("5", "5 ms"), ("10", "10 ms"), ("20", "20 ms"), ("30", "30 ms")]);
-            sel_setting(ui, s, dirty, "s-vr-mirror-rate", c.row(), "Bus mirror refresh", "vr_mirror_rate", &[("0", "Off"), ("8", "8/s"), ("16", "16/s"), ("24", "24/s"), ("32", "32/s")]);
+            sel_setting(ui, s, dirty, "s-vr-mirror-rate", c.row(), "Bus mirror refresh", "vr_mirror_rate", &[("0", "Off"), ("8", "8/s"), ("16", "16/s"), ("24", "24/s"), ("32", "32/s"), ("48", "48/s"), ("60", "60/s"), ("90", "90/s"), ("120", "120/s"), ("180", "180/s"), ("240", "240/s"), ("360", "360/s"), ("-1", "Every frame")]);
+            c.y += ui.paragraph("The rate is shared by all bus mirrors. Higher rates can reduce game FPS.", Vec2::new(c.inner.x, c.y), c.inner.w, 12.0, Weight::Regular, TEXT_DIM) + 8.0;
             toggle_setting(ui, s, dirty, c.row(), "Show headset picture on monitor", "vr_desktop_mirror");
             // (the VR keys head the Controls page's game list)
             if ui.button("s-go-vr-keys", c.row(), "Change the VR keys", Some("keyboard"), ButtonKind::Normal) {
@@ -1593,7 +1595,7 @@ pub fn mods(l: &mut Launcher, area: Rect) {
     if !l.state.mods_asked {
         l.state.load_mods();
     }
-    let body = l.page_title(area, "Mods", "A bus, a map, scenery, a whole OMSI folder - as a folder or a .zip. The original OMSI 2 folder is never written to.");
+    let body = l.page_title(area, "Mods", "A bus, a map, scenery, a whole OMSI folder - as a folder or a .zip, .7z or .rar. The original OMSI 2 folder is never written to.");
     let cols = 3;
     let cw = (body.w - GAP * 2.0 * (cols as f32 - 1.0)) / cols as f32;
     let colr = |k: usize| Rect::new(body.x + k as f32 * (cw + GAP * 2.0), body.y, cw, body.h);
@@ -1610,7 +1612,7 @@ pub fn mods(l: &mut Launcher, area: Rect) {
             l.state.install(p.to_string_lossy().to_string());
         }
     }
-    if l.ui.button("mod-zip", Rect::new(inner.x + half + GAP, y, half, 40.0), "Choose a .zip", Some("inventory_2"), ButtonKind::Normal) {
+    if l.ui.button("mod-zip", Rect::new(inner.x + half + GAP, y, half, 40.0), "Choose archive", Some("inventory_2"), ButtonKind::Normal) {
         if super::mobile::mobile() {
             l.browse(super::mobile::Purpose::ModZip, "");
         } else if let Some(p) = core::pick_mod(true) {
@@ -1618,7 +1620,7 @@ pub fn mods(l: &mut Launcher, area: Rect) {
         }
     }
     y += 52.0;
-    l.ui.label(Rect::new(inner.x, y, inner.w, 20.0), "A .zip archive is");
+    l.ui.label(Rect::new(inner.x, y, inner.w, 20.0), "Archive install mode");
     y += 22.0;
     let mut m = l.state.mod_mode;
     if l.ui.segmented("mod-mode", Rect::new(inner.x, y, inner.w, 34.0), &mut m, &["Auto", "Unpacked", "Used in place"]) {
@@ -1646,15 +1648,15 @@ pub fn mods(l: &mut Launcher, area: Rect) {
         l.ui.p().circle(p, 1.3, ACCENT.alpha(0.35 + 0.5 * t));
     }
     l.ui.icon("upload", Vec2::new(drop.center().x, drop.y + 38.0), 30.0, ACCENT.alpha(0.6 + 0.4 * t));
-    l.ui.text_in("…or drop a mod folder or .zip onto this window", Rect::new(drop.x, drop.y + 62.0, drop.w, 30.0), 12.5, Weight::Medium, TEXT_SOFT, Align::Center);
+    l.ui.text_in("…or drop a mod folder or .zip, .7z or .rar onto this window", Rect::new(drop.x, drop.y + 62.0, drop.w, 30.0), 12.5, Weight::Medium, TEXT_SOFT, Align::Center);
     y += 122.0;
     if !l.state.mod_path.is_empty() {
         let p = l.state.mod_path.clone();
         y += l.ui.paragraph(&p, Vec2::new(inner.x, y), inner.w, 11.5, Weight::Regular, TEXT_FAINT);
         match l.state.mod_info.clone() {
-            Some(Ok(i)) if i.is_zip => {
+            Some(Ok(i)) if i.is_archive => {
                 let fit = if i.fits { format!("fits ({} free)", fmt_bytes(i.free_bytes)) } else { format!("does not fit: needs {}, {} free", fmt_bytes(i.needed_bytes), fmt_bytes(i.free_bytes)) };
-                let place = if i.in_place_ok { "can be used in place".to_string() } else { format!("cannot be used in place - {}", i.in_place) };
+                let place = if i.in_place_ok { "can be used in place".to_string() } else { i.in_place.clone() };
                 y += l.ui.paragraph(&format!("{} archive, {} files, {} unpacked - {fit}; {place}", fmt_bytes(i.archive_bytes), i.files, fmt_bytes(i.unpacked_bytes)), Vec2::new(inner.x, y), inner.w, 12.0, Weight::Regular, if i.fits { TEXT_DIM } else { WARN });
             }
             Some(Err(e)) => {
@@ -1918,7 +1920,7 @@ mod settings_tests {
             graphics.push("s-api");
         }
         let driving = vec![
-            "s-keys", "set-steering_linear", "set-old_steering", "set-red_steer_spd", "s-mouse", "set-brake_hold", "set-auto_clutch", "s-go-keys",
+            "s-keys", "set-steering_linear", "set-old_steering", "set-red_steer_spd", "s-mouse", "set-brake_hold", "set-auto_clutch", "set-momentary_gears", "s-go-keys",
             "s-wrange", "s-wlock", "s-pedt", "s-pedb", "set-ff_enabled", "set-ff_invert", "s-wreset", "s-go-pads",
         ];
         let mut camera = vec![

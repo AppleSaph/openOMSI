@@ -179,6 +179,16 @@ pub fn gamepad_steering(x: f32, kmh: f32) -> f32 {
     curve * reach
 }
 
+/// Bus steering follows its characteristic, dead zone and range; feedback follows the physical
+/// wheel position, so it can keep returning even inside the input dead zone.
+fn wheel_steering(axis: f32, reversed: bool, flags: i32, deadzone: f32, gain: f32) -> (f32, f32) {
+    let position = if reversed { -axis } else { axis };
+    let shaped = axis_shape((position + 1.0) * 0.5, flags) * 2.0 - 1.0;
+    let deadzone = deadzone.clamp(0.0, 0.3);
+    let steering = shaped.signum() * ((shaped.abs() - deadzone).max(0.0) / (1.0 - deadzone)) * gain;
+    (steering.clamp(-1.0, 1.0), position.clamp(-1.0, 1.0))
+}
+
 /// A device connected now: its name, its axes (DirectInput slot, -1..1), whether the system
 /// knows it as a gamepad (a known layout of sticks and triggers), and whether it can push
 /// back (force feedback).
@@ -473,8 +483,8 @@ pub struct Controllers {
     announced: Vec<String>,
     /// A message for the screen: a wheel that is not set up.
     pub notice: Option<String>,
-    /// The steering device: its name, where the wheel stands (-1..1) and stood before, and
-    /// whether it pushes back.
+    /// The steering device: its name, physical position (-1..1, before dead zone
+    /// and steering gain) now and previously, and whether it pushes back.
     steer: Option<(String, f32, f32, bool)>,
     ff_t: f32,
     ff_lateral: f32,
@@ -557,24 +567,26 @@ impl Controllers {
                 Some(d) => {
                     for (k, v) in c.axes.iter().copied() {
                         let Some((f, inverted)) = d.axes[k] else { continue };
+                        if matches!(f, Func::Steering) {
+                            let (steering, position) = wheel_steering(v, inverted, d.axis_flags[k], dz, self.steer_gain);
+                            set(&mut out.steering, steering);
+                            if steer.is_none() {
+                                steer = Some((c.name.clone(), position, c.ff));
+                            }
+                            continue;
+                        }
                         let v = if inverted { -v } else { v };
                         // the characteristic set up for the axis (gamectrler.cfg flags)
                         let v = axis_shape((v + 1.0) * 0.5, d.axis_flags[k]) * 2.0 - 1.0;
                         // the dead zone: round the wheel's centre, or at a pedal's rest
                         let v = match f {
-                            Func::Steering | Func::ThrottleBrake => v.signum() * ((v.abs() - dz).max(0.0) / (1.0 - dz)),
+                            Func::ThrottleBrake => v.signum() * ((v.abs() - dz).max(0.0) / (1.0 - dz)),
                             _ => ((v + 1.0 - 2.0 * dz).max(0.0) / (1.0 - dz)) - 1.0,
                         };
                         // a pedal travels the whole range, -1 up to 1 down
                         let pedal = crate::settings::pedal_ends(((v + 1.0) * 0.5).clamp(0.0, 1.0));
                         match f {
-                            Func::Steering => {
-                                let v = v * self.steer_gain;
-                                set(&mut out.steering, v.clamp(-1.0, 1.0));
-                                if steer.is_none() {
-                                    steer = Some((c.name.clone(), v.clamp(-1.0, 1.0), c.ff));
-                                }
-                            }
+                            Func::Steering => unreachable!("steering handled before pedal mapping"),
                             Func::Throttle => set(&mut out.throttle, crate::settings::pedal_curve(pedal, self.pedal_throttle)),
                             Func::Brake => set(&mut out.brake, crate::settings::pedal_curve(pedal, self.pedal_brake)),
                             Func::Clutch => set(&mut out.clutch, pedal),
@@ -596,10 +608,10 @@ impl Controllers {
                         self.notice = Some(format!("{} is not set up: it steers; set up its pedals and buttons in the launcher (Controls → Game controllers)", c.name));
                     }
                     if let Some((_, v)) = c.axes.iter().find(|(k, _)| *k == 0) {
-                        let v = v.signum() * ((v.abs() - dz.max(0.02)).max(0.0) / (1.0 - dz.max(0.02))) * self.steer_gain;
-                        out.steering.get_or_insert(v.clamp(-1.0, 1.0));
+                        let (steering, position) = wheel_steering(*v, false, 0, dz.max(0.02), self.steer_gain);
+                        out.steering.get_or_insert(steering);
                         if steer.is_none() {
-                            steer = Some((c.name.clone(), v.clamp(-1.0, 1.0), c.ff));
+                            steer = Some((c.name.clone(), position, c.ff));
                         }
                     }
                 }
@@ -652,7 +664,7 @@ impl Controllers {
     /// lateral motion, front-wheel bumps and script-driven vibration. Other devices
     /// get vibration as rumble.
     pub fn feedback(&mut self, f: FfInput) {
-        let on = self.enabled && f.on && self.ff_enabled;
+        let on = self.enabled && f.on && self.ff_enabled && self.focused;
         let mut f = f;
         if on {
             // The bus body reacts to road and tyre forces every physics step. A short
@@ -802,13 +814,22 @@ fn wheel_force(f: &FfInput, x: f32, x0: f32, t: &mut f32, k_springs: f32, k_effe
     let dt = f.dt.max(1e-3);
     let v = f.kmh.abs();
     let x = x.clamp(-1.0, 1.0);
+    // A parked bus has no rolling self-aligning torque. Ignore tiny physics
+    // speed fluctuations, then smoothly restore the usual forces by 5 km/h.
+    let rolling = ((v - 0.5) / 4.5).clamp(0.0, 1.0);
+    let rolling = rolling * rolling * (3.0 - 2.0 * rolling);
     // At road speed, power steering gives the driver a firmer sense of direction.
     // Keep parking and town-speed forces familiar while separating 70 km/h from 10 km/h.
     let road_speed = ((v - 20.0) / 50.0).clamp(0.0, 1.0);
     let spring_strength = (0.22 + 0.28 * v / (v + 10.0)) * (1.0 + 0.5 * road_speed);
     let moving_steering_gain = 1.0 + 0.18 * v / (v + 8.0);
-    let spring = -spring_strength * x / (1.0 + 0.65 * x.abs());
-    let road_align = -(f.lateral_accel / 9.81).clamp(-0.45, 0.45) * 0.25 * (v / 5.0).clamp(0.0, 1.0);
+    // More return torque at small and medium angles, where wheel friction can
+    // otherwise stop the return. Compensate wheel friction near the centre with
+    // a smooth extra torque, tapered away at larger angles. It crosses zero
+    // continuously so there is no fixed kick when the wheel passes the centre.
+    let centre_return = 0.025 * x / (x * x + 0.004 * 0.004).sqrt() / (1.0 + (x / 0.12).powi(4));
+    let spring = -(spring_strength * x / (0.5 + 1.15 * x.abs()) + centre_return) * rolling;
+    let road_align = -(f.lateral_accel / 9.81).clamp(-0.45, 0.45) * 0.25 * (v / 5.0).clamp(0.0, 1.0) * rolling;
     // Assisted steering should not demand ever more hand force near full lock.
     let lock_assist = 1.0 / (1.0 + 0.55 * x * x);
     let turning_speed = ((x - x0) / dt).clamp(-4.0, 4.0);
@@ -818,17 +839,23 @@ fn wheel_force(f: &FfInput, x: f32, x0: f32, t: &mut f32, k_springs: f32, k_effe
     let turning_out = (x * turning_speed * 2.0).clamp(0.0, 1.0);
     let assist = 1.0 - (0.4 - 0.16 * (v / 80.0).min(1.0)) * turning_out;
     let parking_drag = 0.018 + 0.12 / (1.0 + (v / 6.0).powi(2));
-    // The power steering helps the wheel return; do not let parking resistance
-    // cancel the centring force while it is already moving towards the middle.
+    // Once rolling, reduce drag on return so it does not cancel the centring
+    // force. At a standstill, resist motion equally in either direction.
     let returning = x * turning_speed < 0.0;
-    let drag = -turning_speed * parking_drag * if returning { 0.2 } else { 1.0 };
+    let drag = -turning_speed * parking_drag * if returning { 1.0 - 0.8 * rolling } else { 1.0 };
+    // Keep some damping on return as well as when turning out. Reducing all
+    // resistance on return lets a quick wheel overshoot and oscillate around
+    // the centre, especially when force commands arrive at a low frame rate.
+    // This only resists motion: it adds no holding force or parked centring.
+    let damping = -0.03 * turning_speed * rolling;
     *t += dt;
     let period = (f.vib_period * 0.01).max(0.02);
     let shake = f.vib_amp.clamp(0.0, 1.0) * VIB_SHARE * (std::f32::consts::TAU * *t / period).sin();
     // Preserve small road details while softening kerb-sized peaks. One short
     // kick and rebound feels less like a continuously shaking wheel mount.
     let bump = f.wheel_bump.clamp(0.0, 1.0).sqrt() * 0.46 * (std::f32::consts::TAU * f.wheel_bump_age * 6.5).cos();
-    (((spring + road_align) * lock_assist * assist + drag) * moving_steering_gain * k_springs.clamp(0.0, 2.0) + (shake + bump) * k_effects.clamp(0.0, 2.0)).clamp(-1.0, 1.0)
+    let steering = ((spring + road_align) * lock_assist * assist + drag) * moving_steering_gain + damping;
+    (steering * k_springs.clamp(0.0, 2.0) + (shake + bump) * k_effects.clamp(0.0, 2.0)).clamp(-1.0, 1.0)
 }
 
 /// A control several set-up devices give: the first one set wins, unless a later one is
@@ -1138,6 +1165,45 @@ mod slot_tests {
 #[cfg(test)]
 mod cfg_tests {
     #[test]
+    fn feedback_keeps_the_physical_position_inside_the_steering_deadzone() {
+        for (axis, deadzone) in [(0.2, 0.3), (0.01, 0.02)] {
+            let (steering, position) = super::wheel_steering(axis, false, 0, deadzone, 1.0);
+            assert_eq!(steering, 0.0);
+            assert_eq!(position, axis);
+            let f = super::FfInput { on: true, kmh: 30.0, dt: 0.016, ..Default::default() };
+            let mut t = 0.0;
+            let force = super::wheel_force(&f, position, position, &mut t, 1.0, 0.0);
+            assert!(force < 0.0, "axis={axis}: {force}");
+        }
+    }
+
+    #[test]
+    fn steering_range_and_reversal_preserve_the_feedback_position() {
+        let (steering, position) = super::wheel_steering(0.5, false, 0, 0.1, 2.0);
+        assert!((steering - 8.0 / 9.0).abs() < 1e-6);
+        assert_eq!(position, 0.5);
+        let (steering, position) = super::wheel_steering(0.5, true, 0, 0.1, 2.0);
+        assert!((steering + 8.0 / 9.0).abs() < 1e-6);
+        assert_eq!(position, -0.5);
+        let (steering, position) = super::wheel_steering(0.5, false, 0, 0.0, 0.25);
+        assert_eq!(steering, 0.125);
+        assert_eq!(position, 0.5);
+    }
+
+    #[test]
+    fn axis_characteristics_change_bus_steering_but_not_feedback_position() {
+        let (steering, position) = super::wheel_steering(0.5, false, 24, 0.0, 1.0);
+        assert_eq!(steering, 0.25);
+        assert_eq!(position, 0.5);
+        let (steering, position) = super::wheel_steering(0.5, true, 24, 0.0, 1.0);
+        assert_eq!(steering, -0.25);
+        assert_eq!(position, -0.5);
+        let (steering, position) = super::wheel_steering(0.4, false, 2, 0.0, 1.0);
+        assert!((steering - 0.5).abs() < 1e-6);
+        assert_eq!(position, 0.4);
+    }
+
+    #[test]
     fn force_feedback_scales_are_saved_per_controller() {
         let devices = vec![
             super::DeviceCfg { name: "Wheel A".into(), ff_scale: Some((2.0, 0.5)), ..Default::default() },
@@ -1221,12 +1287,54 @@ mod button_tests {
     fn the_wheel_is_pulled_to_the_middle_harder_at_speed() {
         let mut t = 0.0;
         let f = |kmh| super::FfInput { on: true, kmh, dt: 0.016, ..Default::default() };
-        let slow = super::wheel_force(&f(0.0), 0.5, 0.5, &mut t, 1.0, 1.0);
+        let slow = super::wheel_force(&f(10.0), 0.5, 0.5, &mut t, 1.0, 1.0);
         let fast = super::wheel_force(&f(60.0), 0.5, 0.5, &mut t, 1.0, 1.0);
         assert!(slow < 0.0 && fast < slow, "{slow} {fast}");
-        // turned to the right, it is pushed left; turning, it is held back
+        // Moving to the right at a standstill, it is held back by tyre scrub.
         let turning = super::wheel_force(&f(0.0), 0.0, -0.05, &mut t, 1.0, 1.0);
         assert!(turning < 0.0);
+    }
+
+    #[test]
+    fn a_parked_wheel_is_not_pulled_to_the_middle() {
+        let mut t = 0.0;
+        for kmh in [-0.5, -0.1, 0.0, 0.1, 0.5] {
+            // Include residual lateral acceleration from the body's suspension.
+            let f = super::FfInput { on: true, kmh, lateral_accel: 3.0, dt: 0.016, ..Default::default() };
+            for x in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+                let force = super::wheel_force(&f, x, x, &mut t, 1.0, 0.0);
+                assert_eq!(force, 0.0, "kmh={kmh}, steering={x}");
+            }
+        }
+    }
+
+    #[test]
+    fn parking_drag_opposes_turning_in_both_directions() {
+        let mut t = 0.0;
+        let f = super::FfInput { on: true, dt: 0.016, ..Default::default() };
+        for x in [-0.5, 0.5] {
+            let right = super::wheel_force(&f, x, x - 0.01, &mut t, 1.0, 0.0);
+            let left = super::wheel_force(&f, x, x + 0.01, &mut t, 1.0, 0.0);
+            assert!(right < 0.0 && left > 0.0, "{right} {left}");
+            assert!((right + left).abs() < 1e-6, "{right} {left}");
+        }
+    }
+
+    #[test]
+    fn self_aligning_torque_builds_up_as_the_bus_rolls_in_either_direction() {
+        let mut t = 0.0;
+        let force = |kmh, t: &mut f32| {
+            let f = super::FfInput { on: true, kmh, dt: 0.016, ..Default::default() };
+            super::wheel_force(&f, 0.5, 0.5, t, 1.0, 0.0)
+        };
+        let mut previous = 0.0;
+        for kmh in [0.51, 1.0, 2.0, 3.0, 4.0, 5.0] {
+            let forward = force(kmh, &mut t);
+            let reverse = force(-kmh, &mut t);
+            assert!(forward < previous, "kmh={kmh}: {forward} >= {previous}");
+            assert_eq!(forward, reverse);
+            previous = forward;
+        }
     }
 
     #[test]
@@ -1248,6 +1356,90 @@ mod button_tests {
     }
 
     #[test]
+    fn a_ninety_degree_turn_has_return_torque_across_wheel_ranges() {
+        let mut t = 0.0;
+        let f = super::FfInput { on: true, kmh: 30.0, dt: 0.016, ..Default::default() };
+        for range in [900.0, 1080.0, 1800.0, 2880.0] {
+            let x = 90.0 / (range * 0.5);
+            let right = super::wheel_force(&f, x, x, &mut t, 1.0, 0.0);
+            let left = super::wheel_force(&f, -x, -x, &mut t, 1.0, 0.0);
+            assert!(right < -0.05, "range={range}: {right}");
+            assert_eq!(right, -left);
+        }
+    }
+
+    #[test]
+    fn small_remaining_angles_keep_returning_while_the_bus_rolls() {
+        let mut t = 0.0;
+        for kmh in [5.0, 20.0, 70.0] {
+            let f = super::FfInput { on: true, kmh, dt: 1.0 / 60.0, ..Default::default() };
+            for x in [0.005, 0.01, 0.05] {
+                // Already returning slowly: do not let steering drag cancel
+                // the last few degrees of return on a wheel with friction.
+                let right = super::wheel_force(&f, x, x + 0.001, &mut t, 1.0, 0.0);
+                let left = super::wheel_force(&f, -x, -x - 0.001, &mut t, 1.0, 0.0);
+                assert!(right < -0.02 && left > 0.02, "kmh={kmh}, x={x}: {right} {left}");
+                assert!((right + left).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn return_torque_fades_smoothly_at_the_physical_centre() {
+        let mut t = 0.0;
+        let f = super::FfInput { on: true, kmh: 30.0, dt: 0.016, ..Default::default() };
+        let mut previous: f32 = 1.0;
+        for x in [0.2, 0.1, 0.01, 0.001, 0.0001, 0.00001, 0.0] {
+            let force = super::wheel_force(&f, x, x, &mut t, 1.0, 0.0);
+            assert!(force.abs() < previous, "x={x}: {force}");
+            if x == 0.0 {
+                assert_eq!(force, 0.0);
+            } else {
+                assert!(force < 0.0);
+            }
+            if x <= 0.0001 {
+                assert!(force.abs() < 0.002, "x={x}: {force}");
+            }
+            previous = force.abs();
+        }
+    }
+
+    #[test]
+    fn a_moving_wheel_is_damped_when_it_crosses_the_centre() {
+        let mut t = 0.0;
+        for kmh in [5.0, 20.0, 70.0] {
+            let f = super::FfInput { on: true, kmh, dt: 0.02, ..Default::default() };
+            // At the centre there is no spring torque. The remaining force must
+            // slow a crossing wheel in either direction rather than accelerate it.
+            let right = super::wheel_force(&f, 0.0, -0.01, &mut t, 1.0, 0.0);
+            let left = super::wheel_force(&f, 0.0, 0.01, &mut t, 1.0, 0.0);
+            assert!(right < -0.015 && left > 0.015, "kmh={kmh}: {right} {left}");
+            assert!((right + left).abs() < 1e-6);
+            assert_eq!(super::wheel_force(&f, 0.0, 0.0, &mut t, 1.0, 0.0), 0.0);
+            // Steering strength controls damping too, independently of vibration.
+            assert_eq!(super::wheel_force(&f, 0.0, -0.01, &mut t, 0.0, 0.0), 0.0);
+        }
+    }
+
+    #[test]
+    fn the_same_wheel_velocity_gives_the_same_force_at_different_frame_rates() {
+        let mut t = 0.0;
+        for velocity in [-0.5, 0.5] {
+            let mut reference: Option<f32> = None;
+            for fps in [20.0, 30.0, 60.0, 144.0] {
+                let dt = 1.0 / fps;
+                let f = super::FfInput { on: true, kmh: 30.0, dt, ..Default::default() };
+                let force = super::wheel_force(&f, 0.05, 0.05 - velocity * dt, &mut t, 1.0, 0.0);
+                if let Some(previous) = reference {
+                    assert!((force - previous).abs() < 1e-6, "fps={fps}: {force} {previous}");
+                } else {
+                    reference = Some(force);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_real_turn_adds_aligning_torque_but_a_parked_bus_does_not() {
         let mut t = 0.0;
         let mut f = super::FfInput { on: true, kmh: 30.0, dt: 0.016, ..Default::default() };
@@ -1263,12 +1455,16 @@ mod button_tests {
     }
 
     #[test]
-    fn steering_assist_lightens_turning_out_without_weakening_return() {
+    fn steering_assist_lightens_turning_out() {
         let mut t = 0.0;
         let f = super::FfInput { on: true, kmh: 25.0, lateral_accel: 2.0, dt: 0.016, ..Default::default() };
+        let held = super::wheel_force(&f, 0.5, 0.5, &mut t, 1.0, 0.0);
         let turning_out = super::wheel_force(&f, 0.5, 0.48, &mut t, 1.0, 0.0);
         let returning = super::wheel_force(&f, 0.5, 0.52, &mut t, 1.0, 0.0);
-        assert!(returning < turning_out && turning_out < 0.0, "{turning_out} {returning}");
+        // Assistance still lightens turning out. A moving return also includes
+        // damping, so its net torque need not exceed the outward-turning torque.
+        assert!(held < turning_out && turning_out < 0.0, "{held} {turning_out}");
+        assert!(returning < 0.0, "{returning}");
     }
 
     #[test]

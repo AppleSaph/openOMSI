@@ -4,6 +4,42 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/turbo-devv/openOMSI/releases) page.
 
+## 0.1.721 - 2026-10-01
+
+Pull requests from the community: #455, #560, #563, #566, #570, #580, #583, #585, #588,
+#591, #592, #594, #597, #599, #604, #605, #608.
+
+### Traffic
+- AI cars no longer wait at junctions without traffic lights for no reason (#591).
+- AI buses at a stop on the left open their left doors (#592).
+
+### Controls
+- Force feedback fixes and improvements (#585); manual gear buttons can be held, letting go
+  returns to neutral (#570).
+
+### Launcher
+- Mods can be imported from .7z and RAR archives as well (#570).
+- Better vehicle selection with a livery preview (#583); the fleet number is set before the
+  bus starts up (#560).
+- The launcher gives its graphics device up while a game runs (#599).
+
+### Interface
+- Interior and exterior temperatures in the HUD and the navigator (#605), stop requests on the
+  minimap (#604), better roads and stop markers in the navigator (#563).
+- Route numbers that start with a letter (X10, M48, N9) on the destination display (#588).
+
+### Graphics
+- Scripted LED traffic lamps get their materials, and a same-name DDS texture is preferred
+  (#566); `[matl_freetex]` paths relative to the OMSI folder work (#580).
+- VR: the mirrors can refresh faster, up to every frame (#608).
+
+### Passengers
+- A map's `humans.txt` may name people in nested pack folders (#455).
+
+### Fixes
+- On foot: walking stays on the bus's right level (#594); a dedicated server updates the
+  passenger density and the time of day every tick (#597).
+
 ## 0.1.623 - 2026-10-01
 
 ### Passengers

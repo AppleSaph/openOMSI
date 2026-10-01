@@ -169,7 +169,7 @@ again only when something changes; drag on it to turn the bus, scroll to zoom. I
   it save its run (SIGTERM, up to 8 s, and only a stuck game is killed) and, for a LAN
   session, the code to copy, who is playing and the chat.
 * **Mods** - installing mods and archives (see *Mods and the content folder*); a folder or
-  .zip dropped on the window is installed.
+  .zip, .7z or .rar dropped on the window is installed.
 * **Timetable** - a map's lines, their tours and trips. Changes stay while you move between
   lines and are saved together (*Save all*); **New line** makes a line, **Repeat** turns a tour
   into a whole day of them (every *n* minutes up to a last departure).
@@ -293,11 +293,11 @@ been copied into OMSI 2, and a file of the same name replaces the stock one. The
 installation is never written to. `OMSI_CONTENT=/some/dir` moves the content folder.
 
 Installing a mod: the launcher's **Mods** page opens the system's folder / file picker
-(Finder, Explorer, GTK) for a mod folder or a `.zip` and sorts it
+(Finder, Explorer, GTK) for a mod folder or a `.zip`, `.7z` or `.rar` archive and sorts it
 into place (OMSI-style folders anywhere inside are merged; a lone bus, map, object or
 spline folder is recognised by its `.bus` / `global.cfg` / `.sco` / `.sli` files and put
 under the right folder), or drop it into `Mods/` next to the binary and open the page.
-`openomsi-launcher --cli install '{"path":"/path/to/mod.zip"}'` and `--cli mods` do the same
+`openomsi-launcher --cli install '{"path":"/path/to/mod.7z"}'` and `--cli mods` do the same
 from a shell. An installation is a background job: the archive's table of contents becomes
 a plan, the disk is checked for room, everything is unpacked into a staging folder on the
 content volume and moved into place in one step, and it can be cancelled and cleaned up at
@@ -310,6 +310,7 @@ content folder's `Archives/` (hard-linked when it is on the same disk, moved fro
 unpacking (`omsi_cfg::vfs` mounts every archive there, as well as `--content-zip` and
 `OMSI_CONTENT_ZIP`). The Mods page offers it ("use the archive in place"), and its default
 unpacks what fits on the disk and uses an archive in place when its unpacked size does not;
+`.7z` and `.rar` archives are always unpacked.
 `--cli install '{"path":…,"mode":"inplace"}'` (or `extract` / `auto`) and
 `--cli modinfo '{"path":…}'` do the same from a shell. The launcher's lists see the maps
 and buses inside the archives.

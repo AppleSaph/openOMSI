@@ -492,7 +492,9 @@ the bottom.
 * `[carpark_p]` `[onlyeditor]` scenery objects (`Generic\car_park.sco`) are parking spaces:
   the map's `parklist_p.txt` lists parked-car scenery objects (`Vehicles\X\parked_*.sco`,
   `[CTC]` colour schemes from the vehicle's `.cti`); one is placed per space at random,
-  some spaces stay empty.
+  some spaces stay empty. A numeric first caption on a parking object or spline attachment
+  chooses an indexed list: `1` reads `parklist_p_1.txt`, `2` reads `parklist_p_2.txt`.
+  An empty or nonnumeric caption uses the ordinary `parklist_p.txt`.
 * `.ovh`/`.bus` `[type]`: 2 = rail vehicle (also `[rail_body_osc]`, `[contact_shoe]`),
   3 = aircraft; spline `[path]` type 3 = flight path. Street traffic only uses type 0
   vehicles on street paths, aircraft fly the flight paths, rail vehicles come from `.zug`

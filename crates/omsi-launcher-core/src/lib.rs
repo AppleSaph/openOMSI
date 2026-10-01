@@ -428,8 +428,9 @@ pub struct ModsStatus {
     pub jobs: Vec<install::Progress>,
 }
 
-/// Start installing the mod at `src` (a folder, or a .zip) into the content folder in the
-/// background; `mode` is "auto" (unpack, or use a .zip in place when it does not fit),
+/// Start installing the mod at `src` (a folder, .zip, .7z or .rar) into the content folder in the
+/// background; `mode` is "auto" (unpack, or use a .zip in place when it does not fit; .7z
+/// and .rar are always unpacked),
 /// "extract" or "inplace".
 pub fn start_install(src: &Path, mode: &str) -> Result<install::Progress> {
     let content = content_dir().ok_or_else(|| anyhow!("no game binary configured, so no content folder"))?;
@@ -462,7 +463,7 @@ fn inbox_entries(content: &Path) -> Vec<PathBuf> {
         .filter(|p| {
             let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
             !(name.starts_with('.') || name.eq_ignore_ascii_case("installed") || name.eq_ignore_ascii_case(install::WAITING) || name.eq_ignore_ascii_case(install::PLUGINS_HELD) || name.eq_ignore_ascii_case("README.txt"))
-                && (p.is_dir() || p.extension().map(|x| x.eq_ignore_ascii_case("zip")).unwrap_or(false))
+                && (p.is_dir() || p.extension().map(|x| ["zip", "7z", "rar"].iter().any(|ext| x.eq_ignore_ascii_case(ext))).unwrap_or(false))
         })
         .collect();
     v.sort();
@@ -711,6 +712,9 @@ pub struct VehicleInfo {
     pub file: String,
     pub folder: String,
     pub description: String,
+    /// The original third [friendlyname] line, shown for the bus's standard paint.
+    #[serde(default)]
+    pub default_paint: String,
     pub paints: Vec<String>,
     pub hofs: Vec<String>,
     /// Installed as a mod (the bus file is in the content folder).
@@ -822,12 +826,12 @@ pub fn list_vehicles() -> Result<Vec<VehicleInfo>> {
                 stamped.extend(subs);
             }
         }
-        let key = format!("bus2|{lang}|{}", dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>().join("|"));
+        let key = format!("bus4|{lang}|{}", dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>().join("|"));
         keys.push(key.clone());
         let list: Vec<VehicleInfo> = index::cached(&key, index::folder_stamp(&stamped), || read_vehicle_folder(&folder, &dirs, lang));
         out.extend(list);
     }
-    index::save("bus2|", Some(&keys));
+    index::save("bus4|", Some(&keys));
     if out.is_empty() {
         log_empty("Vehicles", ".bus file");
     }
@@ -907,7 +911,7 @@ fn read_vehicle_folder(folder: &str, dirs: &[PathBuf], lang: &str) -> (Vec<Vehic
         if !missing_packs.is_empty() {
             log_line(&format!("vehicles: {} borrows parts from packs that are not installed: {}", f.display(), missing_packs.join(", ")));
         }
-        out.push(VehicleInfo { name: if name.is_empty() { stem.clone() } else { name }, manufacturer: v.manufacturer.trim().to_string(), type_name: v.type_name.trim().to_string(), file: rel, folder: folder.to_string(), description: description.chars().take(600).collect(), paints, hofs, installed: in_content(f), missing_packs, numbers: v.numbers_with_plates() });
+        out.push(VehicleInfo { name: if name.is_empty() { stem.clone() } else { name }, manufacturer: v.manufacturer.trim().to_string(), type_name: v.type_name.trim().to_string(), file: rel, folder: folder.to_string(), description: description.chars().take(600).collect(), default_paint: v.default_paint.trim().to_string(), paints, hofs, installed: in_content(f), missing_packs, numbers: v.numbers_with_plates() });
     }
     deps.sort();
     deps.dedup();
@@ -1638,7 +1642,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
             "pax_density" => v[&k] = json!(val.trim_end_matches('%').parse::<f64>().map(|x| if x > 5.0 { x / 100.0 } else { x }).unwrap_or(1.0)),
             "vr_scale" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.5, 1.0)).unwrap_or(0.65)),
             "vr_head_smoothing_ms" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 30.0) as i64).unwrap_or(0)),
-            "vr_mirror_rate" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 60.0) as i64).unwrap_or(16)),
+            "vr_mirror_rate" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(-1.0, 360.0) as i64).unwrap_or(16)),
             "mirror_size" => v[&k] = json!(val.parse::<i64>().map(|x| if x == 0 { 0 } else { x.clamp(64, 2048) }).unwrap_or(256)),
             "max_fps" => v[&k] = json!(val.parse::<f64>().map(|x| x as i64).unwrap_or(0)),
             "max_obj_dist" => v[&k] = if val.eq_ignore_ascii_case("auto") { json!("auto") } else { json!(val.parse::<f64>().map(|m| (m.round() as i64).to_string()).unwrap_or_else(|_| "auto".into())) },
@@ -1912,7 +1916,7 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
     );
     let vr_scale = v.get("vr_scale").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(0.65).clamp(0.5, 1.0);
     let vr_head_smoothing_ms = v.get("vr_head_smoothing_ms").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(0.0).clamp(0.0, 30.0);
-    let vr_mirror_rate = v.get("vr_mirror_rate").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(16.0).clamp(0.0, 60.0);
+    let vr_mirror_rate = v.get("vr_mirror_rate").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(16.0).clamp(-1.0, 360.0);
     let text = format!("{text}vr={}\nvr_scale={vr_scale}\nvr_head_smoothing_ms={vr_head_smoothing_ms}\nvr_mirror_rate={vr_mirror_rate}\nvr_desktop_mirror={}\n", b("vr", false), b("vr_desktop_mirror", true));
     // what the page does not manage (keys of newer games, hand-written ones) stays as it
     // was in the file; other spellings of the keys just written go
@@ -2199,7 +2203,7 @@ pub fn pick_mod(zip: bool) -> Option<PathBuf> {
     #[cfg(not(target_os = "android"))]
     {
         if zip {
-            rfd::FileDialog::new().set_title("Choose a mod archive").add_filter("Mod archive", &["zip"]).pick_file()
+            rfd::FileDialog::new().set_title("Choose a mod archive").add_filter("Mod archive", &["zip", "7z", "rar"]).pick_file()
         } else {
             rfd::FileDialog::new().set_title("Choose the mod folder").pick_folder()
         }
@@ -2425,6 +2429,20 @@ mod tests {
         for key in ["vr", "vr_scale", "vr_head_smoothing_ms", "vr_mirror_rate", "vr_desktop_mirror"] {
             assert_eq!(loaded[key], settings[key], "{key} was not saved");
         }
+    }
+
+    #[test]
+    fn high_vr_mirror_rates_survive_launcher_settings() {
+        for rate in [-1, 0, 16, 60, 120, 240, 360] {
+            let mut settings = settings_from_text(None);
+            // Select controls store their values as strings.
+            settings["vr_mirror_rate"] = json!(rate.to_string());
+            let saved = settings_to_text(&settings, None);
+            let loaded = settings_from_text(Some(&saved));
+            assert_eq!(loaded["vr_mirror_rate"], json!(rate));
+        }
+        assert_eq!(settings_from_text(Some("vr_mirror_rate=NaN\n"))["vr_mirror_rate"], json!(16));
+        assert_eq!(settings_from_text(Some("vr_mirror_rate=999\n"))["vr_mirror_rate"], json!(360));
     }
 
     /// The interface size: 100% without a file, kept as set, and a hand-written value out

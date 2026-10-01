@@ -23,11 +23,16 @@ pub struct Stop {
     pub depart: f64,
     /// The stop's map object (its `[busstop]` strings weigh who gets off there).
     pub id: i64,
+    /// The side the platform lies on (see `tiles::stop_side`): 0 = right, 1 = the other,
+    /// 2 = both. A bus whose doors are on both sides opens only these (it reads the value
+    /// as `AI_Scheduled_AtStation_Side`).
+    pub side: f32,
 }
 
 impl Stop {
-    pub fn from_tuple(t: (usize, f32, f32, f64, i64)) -> Stop {
-        Stop { ri: t.0, s: t.1, bay: t.2, depart: t.3, id: t.4 }
+    #[allow(clippy::type_complexity)]
+    pub fn from_tuple(t: (usize, f32, f32, f64, i64, f32)) -> Stop {
+        Stop { ri: t.0, s: t.1, bay: t.2, depart: t.3, id: t.4, side: t.5 }
     }
 }
 
@@ -148,6 +153,16 @@ impl BusService {
     /// Doors open for people (`AI_Scheduled_AtStation`).
     pub fn at_station(&self) -> bool {
         self.phase == Phase::Boarding
+    }
+
+    /// The side's doors the bus opens at the stop it is at (`AI_Scheduled_AtStation_Side`):
+    /// the front stop's while it boards, else 0 (nobody at a stop, nothing to open).
+    pub fn at_station_side(&self) -> f32 {
+        if self.phase == Phase::Boarding {
+            self.stops.front().map(|s| s.side).unwrap_or(0.0)
+        } else {
+            0.0
+        }
     }
 
     pub fn trip_done(&self) -> bool {
@@ -431,5 +446,24 @@ mod tests {
         assert!((s.standing_for(40.0) - 62.0).abs() < 1e-3);
         s.phase = Phase::TripDone;
         assert!(s.standing_for(0.0) > 100.0);
+    }
+
+    #[test]
+    fn station_side_comes_from_the_stop_it_boards_at() {
+        let stop = |side: f32| Stop::from_tuple((0, 0.0, 0.0, 0.0, 1, side));
+        let mut s = BusService::new(vec![stop(1.0)], 0);
+        // off a stop: nothing to open
+        s.phase = Phase::Running;
+        assert_eq!(s.at_station_side(), 0.0);
+        // boarding: the front stop's side
+        s.phase = Phase::Boarding;
+        assert_eq!(s.at_station_side(), 1.0);
+        // waiting to pull out (doors shut): the side is not asked for any more
+        s.phase = Phase::Waiting;
+        assert_eq!(s.at_station_side(), 0.0);
+        // an empty queue answers 0, not a panic
+        s.phase = Phase::Boarding;
+        s.stops.clear();
+        assert_eq!(s.at_station_side(), 0.0);
     }
 }
