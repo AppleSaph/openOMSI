@@ -6,7 +6,7 @@
 //! Every text is rendered once into a small texture and kept while it is shown; the
 //! overlays are rectangles in physical pixels (`Scene::overlays`).
 
-use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
+use ab_glyph::{Font, FontVec, PxScale, ScaleFont, VariableFont};
 use omsi_render::{Renderer, Scene, TextureId};
 
 /// Roboto (Apache 2.0), the interface font.
@@ -28,18 +28,23 @@ pub struct TextCache {
     frame: u64,
     /// How strongly the background plates are drawn this frame (`backdrop`).
     backdrop: f32,
+    /// No outline round the texts that ask for none (the game menu's: flat text on its card).
+    flat: bool,
 }
 
 impl TextCache {
     pub fn new() -> Option<TextCache> {
-        let font = FontVec::try_from_vec(ROBOTO.to_vec()).ok()?;
-        Some(TextCache { font, labels: hashbrown::HashMap::new(), frame: 0, backdrop: 1.0 })
+        let mut font = FontVec::try_from_vec(ROBOTO.to_vec()).ok()?;
+        // a little heavier than the regular 400: light text on a dark panel is thin and
+        // greyish at menu sizes otherwise
+        let _ = font.set_variation(b"wght", 500.0);
+        Some(TextCache { font, labels: hashbrown::HashMap::new(), frame: 0, backdrop: 1.0, flat: false })
     }
 
     /// The texture of `text` at `px` pixels in `color` (alpha = opacity of the outline), and
     /// its size.
     fn label(&mut self, r: &Renderer, scene: &mut Scene, text: &str, px: u32, color: [u8; 4]) -> Label {
-        let color = [color[0], color[1], color[2], outline_for(color, self.backdrop)];
+        let color = [color[0], color[1], color[2], outline_for(color, if self.flat { 1.0 } else { self.backdrop })];
         // (in the interface's language: the menu, the notes, the windows)
         let text = &*omsi_ui::tr(text);
         let key = (text.to_string(), px, color);
@@ -124,6 +129,10 @@ fn render_text(font: &FontVec, text: &str, px: f32, color: [u8; 4]) -> omsi_text
     let pad = stroke.ceil() as i32 + 1;
     let asc = f.ascent();
     let h = (asc - f.descent()).ceil() as i32 + pad * 2;
+    // the baseline and every glyph on whole pixels: glyphs drawn between pixels came out
+    // different from letter to letter and soft (the pen itself still runs on fractions, so
+    // the text keeps its width)
+    let base = (pad as f32 + asc).round();
     // lay the glyphs out
     let mut glyphs: Vec<(&FontVec, ab_glyph::Glyph)> = Vec::new();
     let mut x = pad as f32;
@@ -137,7 +146,7 @@ fn render_text(font: &FontVec, text: &str, px: f32, color: [u8; 4]) -> omsi_text
                 x += sf.kern(p, id);
             }
         }
-        glyphs.push((gf, id.with_scale_and_position(PxScale::from(px), ab_glyph::point(x, pad as f32 + asc))));
+        glyphs.push((gf, id.with_scale_and_position(PxScale::from(px), ab_glyph::point(x.round(), base))));
         x += sf.h_advance(id);
         prev = Some((id, gf as *const FontVec));
     }
@@ -155,6 +164,15 @@ fn render_text(font: &FontVec, text: &str, px: f32, color: [u8; 4]) -> omsi_text
                     cov[i] = (cov[i] + c).min(1.0);
                 }
             });
+        }
+    }
+    // the texture is sRGB and blended in linear light: light text on a dark panel comes out
+    // too fat and blurry, dark text on a light one too thin - bend the coverage to match
+    let light = 0.299 * color[0] as f32 + 0.587 * color[1] as f32 + 0.114 * color[2] as f32 > 100.0;
+    let gamma = if light { 1.45 } else { 0.8 };
+    for c in cov.iter_mut() {
+        if *c > 0.0 && *c < 1.0 {
+            *c = c.powf(gamma);
         }
     }
     // the outline: the coverage grown by the stroke radius
@@ -615,7 +633,9 @@ impl Ui {
         }
         // --- the game menu and its lists, in the middle over a dimmed picture
         self.anim_dt = dt.clamp(0.0, 0.1);
+        self.text.flat = true;
         self.draw_menu(r, scene, f);
+        self.text.flat = false;
         // --- the mouse-over name, right of the cursor
         self.vr_tooltip_overlay = None;
         if let Some(t) = f.tooltip.as_ref().filter(|t| !t.is_empty()) {
@@ -1592,11 +1612,11 @@ mod tests {
     #[test]
     fn text_renders_with_an_outline() {
         let f = FontVec::try_from_vec(ROBOTO.to_vec()).unwrap();
-        let img = render_text(&f, "Savva: hi", 16.0, [255, 255, 255, 220]);
+        let img = render_text(&f, "Savva: hi", 20.0, [255, 255, 255, 220]);
         assert!(img.width > 40 && img.height > 14);
         // white text and dark outline pixels are both there
         let px: Vec<&[u8]> = img.rgba.chunks(4).collect();
-        assert!(px.iter().any(|p| p[3] > 200 && p[0] > 240));
+        assert!(px.iter().any(|p| p[3] > 200 && p[0] > 200));
         assert!(px.iter().any(|p| p[3] > 100 && p[0] < 40));
     }
 
