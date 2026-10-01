@@ -1123,13 +1123,13 @@ impl Ui {
         // as many lines as fit at a readable height; a longer menu scrolls (the wheel, the
         // arrow keys), the chosen line kept in view
         // (lines and tours: a card of one fixed height, a share of the screen's)
-        // "Back" of lines and tours stands alone under the list (not a line of it: no scrolling
-        // down to it)
+        // "Back" of lines, tours and the other lists stands alone under the list (not a line of
+        // it: no scrolling down to it), and their card keeps one size
         let back_txt = omsi_ui::tr("Back").into_owned();
-        let back_footer = timetable_kind && items.last().is_some_and(|&(id, l)| id == "back" && l == back_txt.as_str());
+        let back_footer = (timetable_kind || kind == MenuKind::List) && items.last().is_some_and(|&(id, l)| id == "back" && l == back_txt.as_str());
         let nl = items.len() - back_footer as usize;
         let foot_h = if back_footer { 48.0 * s } else { 0.0 };
-        let fixed_h = matches!(kind, MenuKind::Lines | MenuKind::Tours).then(|| if f.vr { f.height * 0.60 } else { (520.0 * s).min(f.height * 0.94) });
+        let fixed_h = matches!(kind, MenuKind::Lines | MenuKind::Tours | MenuKind::List).then(|| if f.vr { f.height * 0.60 } else { (520.0 * s).min(f.height * 0.94) });
         let room = match fixed_h {
             Some(fh) => fh - header_h - pad - foot_h,
             None => f.height * (if f.vr { 0.60 } else { 0.92 }) - header_h - pad - 8.0 * s,
@@ -1221,13 +1221,13 @@ impl Ui {
             let danger = id == "quit";
             let is_back = id == "back" && label == back_txt.as_str();
             // a thin line between the groups: the everyday lines apart from the rarer ones
+            // (none in the other lists: "Back" there stands apart under them, without a line)
             let apart = k > start
-                && ((is_back && !matches!(kind, MenuKind::Lines | MenuKind::Tours))
-                || match kind {
+                && match kind {
                 MenuKind::Game => matches!(id, "save" | "admin" | "quit"),
                 MenuKind::Lines => id == "free",
                 _ => false,
-            });
+            };
             if apart {
                 let sy = (ry - 2.0 * s).round();
                 scene.overlays.push((sep, [x + pad + tin, sy, right - tin, sy + 1.0]));

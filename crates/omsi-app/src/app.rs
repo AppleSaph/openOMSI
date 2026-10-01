@@ -23,6 +23,8 @@ pub(crate) struct App {
     /// The object editor, while it is on (`crate::editor`).
     pub(crate) editor: Option<crate::editor::Editor>,
     pub(crate) vehicle_list: Vec<(String, String)>,
+    /// (manufacturer, type) of each vehicle of `vehicle_list`, by its path.
+    pub(crate) vehicle_meta: std::collections::HashMap<String, (String, String)>,
     pub(crate) world: Option<Arc<World>>,
     /// Tile streaming around the camera (the window's default).
     pub(crate) streamer: Option<tiles::Streamer>,

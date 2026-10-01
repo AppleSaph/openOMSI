@@ -29,7 +29,10 @@ pub(crate) enum ListKind {
     RouteNumbers,
     /// The depot files (.hof) of the bus driven.
     Hofs,
-    /// Placing a vehicle: its livery, then its depot file (bus file; bus file and livery).
+    /// Placing a vehicle: its manufacturer, then its type (the manufacturer's key), its
+    /// livery, then its depot file (bus file; bus file and livery).
+    PlaceMaker,
+    PlaceType(String),
     PlaceLivery(String),
     PlaceHof(String, String),
 }
@@ -64,6 +67,56 @@ fn route_numbers(app: &App) -> Vec<String> {
     }
     out.sort_by(|a, b| natural(a, b));
     out
+}
+
+/// Names in older packs often use underscores as spaces.
+fn bus_label(name: &str) -> String {
+    name.replace('_', " ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Numbers inside names sort as numbers (DL9 before DL10), case does not matter.
+fn bus_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (a, b) = (a.to_lowercase(), b.to_lowercase());
+    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (a.peek().copied(), b.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, _) => return Ordering::Less,
+            (_, None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let x: String = std::iter::from_fn(|| a.next_if(|c| c.is_ascii_digit())).collect();
+                let y: String = std::iter::from_fn(|| b.next_if(|c| c.is_ascii_digit())).collect();
+                let (x, y) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
+                let order = x.len().cmp(&y.len()).then_with(|| x.cmp(y));
+                if order != Ordering::Equal {
+                    return order;
+                }
+            }
+            (Some(x), Some(y)) => {
+                let order = x.cmp(&y);
+                if order != Ordering::Equal {
+                    return order;
+                }
+                a.next();
+                b.next();
+            }
+        }
+    }
+}
+
+/// The vehicles of the place list as (manufacturer's key, manufacturer, type, path).
+fn place_vehicles(app: &App, unknown: &str) -> Vec<(String, String, String, String)> {
+    app.vehicle_list
+        .iter()
+        .map(|(name, path)| {
+            let (maker, ty) = app.vehicle_meta.get(path).cloned().unwrap_or_default();
+            let maker = bus_label(&maker);
+            let ty = if ty.trim().is_empty() { bus_label(name) } else { bus_label(&ty) };
+            let shown = if maker.is_empty() { unknown.to_string() } else { maker.clone() };
+            (maker.to_lowercase(), shown, ty, path.clone())
+        })
+        .collect()
 }
 
 /// The paint schemes of a vehicle file, by name (without loading its meshes).
@@ -185,6 +238,43 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
             }
             if out.is_empty() {
                 out.push((tr("This bus has no depot files (.hof)"), "back".into()));
+            }
+        }
+        ListKind::PlaceMaker => {
+            let all = place_vehicles(app, &tr("Unknown manufacturer"));
+            let mut groups: Vec<(String, String, Vec<&(String, String, String, String)>)> = Vec::new();
+            for v in &all {
+                match groups.iter_mut().find(|g| g.0 == v.0) {
+                    Some(g) => g.2.push(v),
+                    None => groups.push((v.0.clone(), v.1.clone(), vec![v])),
+                }
+            }
+            groups.sort_by(|a, b| bus_cmp(&a.1, &b.1).then_with(|| a.0.cmp(&b.0)));
+            for (key, name, vs) in groups {
+                if vs.len() == 1 {
+                    // (a manufacturer with one type: that type at once)
+                    out.push((format!("{name}  ·  {}", vs[0].2), format!("bus {}", vs[0].3)));
+                } else {
+                    out.push((format!("{name}  ({} {})", vs.len(), tr("models")), format!("maker {key}")));
+                }
+            }
+        }
+        ListKind::PlaceType(key) => {
+            let all = place_vehicles(app, &tr("Unknown manufacturer"));
+            let mut types: Vec<(String, String)> = all.iter().filter(|v| v.0 == *key).map(|v| (v.2.clone(), v.3.clone())).collect();
+            types.sort_by(|a, b| bus_cmp(&a.0, &b.0).then_with(|| a.1.cmp(&b.1)));
+            // (a type name used twice: with its pack's folder, then with its file)
+            let same = |t: &[(String, String)], n: &str| t.iter().filter(|x| x.0.to_lowercase() == n.to_lowercase()).count();
+            let counts: Vec<usize> = types.iter().map(|t| same(&types, &t.0)).collect();
+            for (t, n) in types.iter().zip(counts) {
+                let mut label = t.0.clone();
+                if n > 1 {
+                    let parts: Vec<&str> = t.1.split('/').collect();
+                    let folder = parts.get(1).copied().unwrap_or_default();
+                    let file = parts.last().copied().unwrap_or_default().rsplit_once('.').map(|x| x.0).unwrap_or_default();
+                    label = format!("{label}  ·  {}  ·  {}", bus_label(folder), bus_label(file));
+                }
+                out.push((label, format!("bus {}", t.1)));
             }
         }
         ListKind::PlaceLivery(bus) => {
@@ -311,7 +401,7 @@ pub(crate) fn menu_extras(
         ListKind::Destinations => (MenuKind::List, head("Destination display..."), None),
         ListKind::RouteNumbers => (MenuKind::List, Some((tr("Route number"), String::new())), None),
         ListKind::Hofs => (MenuKind::List, head("Depot file (HOF)..."), None),
-        ListKind::PlaceLivery(_) | ListKind::PlaceHof(..) => (MenuKind::List, head("Place a vehicle..."), None),
+        ListKind::PlaceMaker | ListKind::PlaceType(_) | ListKind::PlaceLivery(_) | ListKind::PlaceHof(..) => (MenuKind::List, head("Place a vehicle..."), None),
         ListKind::Admin => (MenuKind::List, Some((tr("Administration"), String::new())), None),
     }
 }
@@ -325,7 +415,11 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
 /// `Move::Next`; the arrows and a click on a slider or a stepper the others).
 pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -> Option<ListKind> {
     if action == "back" {
-        return if matches!(kind, ListKind::Tours(..)) { Some(ListKind::Lines) } else { None };
+        return match kind {
+            ListKind::Tours(..) => Some(ListKind::Lines),
+            ListKind::PlaceType(_) | ListKind::PlaceLivery(_) | ListKind::PlaceHof(..) => Some(ListKind::PlaceMaker),
+            _ => None,
+        };
     }
     let (verb, arg) = action.split_once(' ').unwrap_or((action, ""));
     match kind {
@@ -430,6 +524,8 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
             }
             None
         }
+        ListKind::PlaceMaker | ListKind::PlaceType(_) if verb == "maker" => Some(ListKind::PlaceType(arg.to_string())),
+        ListKind::PlaceMaker | ListKind::PlaceType(_) => Some(ListKind::PlaceLivery(arg.to_string())),
         ListKind::PlaceLivery(bus) => Some(ListKind::PlaceHof(bus.clone(), arg.to_string())),
         ListKind::PlaceHof(bus, paint) => {
             let (bus, paint, hof) = (bus.clone(), paint.clone(), arg.trim().to_string());

@@ -2194,7 +2194,9 @@ impl App {
         match id {
             "place" => {
                 if self.vehicle_list.is_empty() {
-                    self.vehicle_list = crate::menu::Menu::new(&self.args.root, &self.args.map).vehicles;
+                    let menu = crate::menu::Menu::new(&self.args.root, &self.args.map);
+                    self.vehicle_meta = menu.vehicles.iter().zip(menu.vehicle_meta).map(|(v, meta)| (v.1.clone(), meta)).collect();
+                    self.vehicle_list = menu.vehicles;
                     // (alphabetical)
                     self.vehicle_list.sort_by_key(|v| v.0.to_lowercase());
                     crate::mt::protect(self.vehicle_list.iter().map(|v| v.0.as_str()));
@@ -2202,7 +2204,8 @@ impl App {
                 if self.vehicle_list.is_empty() {
                     self.service_msg = Some(("No vehicles found".into(), 3.0));
                 } else {
-                    self.chooser = Some(0);
+                    // (as the launcher's bus step: the manufacturer, then the type)
+                    self.open_list(crate::game_lists::ListKind::PlaceMaker);
                 }
             }
             "couple" => {
