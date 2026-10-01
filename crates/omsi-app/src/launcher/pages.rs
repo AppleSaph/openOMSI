@@ -1471,8 +1471,9 @@ fn wizard_result(rest: &[Option<f32>; 8], at: &[[Option<f32>; 8]]) -> [Option<(c
     let throttle = pedal(1, &taken);
     let brake = pedal(2, &taken);
     match (throttle, brake) {
-        // one axis for both (pedals on a single axis): the throttle one way, the brake the other
-        (Some((kt, dt)), Some((kb, db))) if kt == kb && dt * db < 0.0 => axes[kt] = Some((Func::ThrottleBrake, dt > 0.0)),
+        // one axis for both (pedals on a single axis): the throttle towards the raw maximum
+        // (as in Omsi.exe), else the axis is reversed
+        (Some((kt, dt)), Some((kb, db))) if kt == kb && dt * db < 0.0 => axes[kt] = Some((Func::ThrottleBrake, dt < 0.0)),
         _ => {
             // a pedal pressed goes towards 1
             if let Some((k, dl)) = throttle {
@@ -2102,7 +2103,7 @@ mod wizard_tests {
         let rest = [Some(0.0), Some(0.0), None, None, None, None, None, None];
         let a = super::wizard_result(&rest, &[[Some(0.9), Some(0.0), None, None, None, None, None, None], [Some(0.0), Some(-1.0), None, None, None, None, None, None], [Some(0.0), Some(1.0), None, None, None, None, None, None], [None; 8]]);
         assert_eq!(a[0], Some((Func::Steering, true)));
-        assert_eq!(a[1], Some((Func::ThrottleBrake, false)));
+        assert_eq!(a[1], Some((Func::ThrottleBrake, true)));
     }
 }
 
