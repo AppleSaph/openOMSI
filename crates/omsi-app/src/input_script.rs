@@ -699,41 +699,9 @@ impl App {
     /// The indicator lever: 1 left, 2 right, 3 the hazard lights - each a toggle, as the
     /// Z / C / X keys and the phone's buttons work it.
     pub(crate) fn blinker(&mut self, want: u8) {
-        let Some(p) = self.player.as_mut() else { return };
-        // (as the lever stands now: the scripts put it back themselves after
-        // a turn, and the key remembered "left" - the next Z switched off a
-        // blinker that was off, and it took two presses)
-        let lever = if p.vehicle.var("lights_sw_warnblinker").is_some_and(|v| v > 0.5) {
-            Some(3)
-        } else {
-            p.vehicle.var("lights_sw_blinker").map(|v| match v.round() as i32 {
-                1 => 1u8,
-                2 => 2,
-                _ => 0,
-            })
-        };
-        if let Some(l) = lever {
-            p.blinker_key_state = l;
+        if let Some(player) = self.player.as_mut() {
+            player.toggle_indicator(want);
         }
-        // (the hazard lights have a switch of their own that toggles: pressed
-        // again with them on, "blinker_off" only let go of the indicator
-        // lever, and the hazards - the phone's button too - never went off)
-        let action = if want == 3 {
-            p.blinker_key_state = if p.blinker_key_state == 3 { 0 } else { 3 };
-            "blinker_warn_toggle"
-        } else if p.blinker_key_state == want {
-            p.blinker_key_state = 0;
-            "blinker_off"
-        } else {
-            p.blinker_key_state = want;
-            match want {
-                1 => "blinker_left_set",
-                2 => "blinker_right_set",
-                _ => "blinker_warn_toggle",
-            }
-        };
-        p.action(action, true);
-        p.action(action, false);
     }
 
     /// The right mouse button (or both) held in a view of the bus: start OMSI's mouse zoom

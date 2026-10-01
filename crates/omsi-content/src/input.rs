@@ -87,6 +87,11 @@ impl KeyboardCfg {
         if !q_taken && !self.vehicles.iter().any(|b| b.action.eq_ignore_ascii_case("IBIS_vor")) {
             self.vehicles.push(KeyBinding { action: "IBIS_vor".into(), scan_code: 16, modifier: 0 });
         }
+        for action in ["blinker_left_toggle", "blinker_right_toggle"] {
+            if !self.vehicles.iter().any(|b| b.action.eq_ignore_ascii_case(action)) {
+                self.vehicles.push(KeyBinding { action: action.into(), scan_code: 0, modifier: 0 });
+            }
+        }
         self
     }
 
@@ -196,6 +201,17 @@ pub fn load_key_names(path: &Path) -> Result<Vec<(i32, String)>, omsi_cfg::CfgEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indicator_toggles_are_unbound_and_preserve_existing_bindings() {
+        let custom = KeyBinding { action: "BLINKER_LEFT_TOGGLE".into(), scan_code: 44, modifier: 0 };
+        let cfg = KeyboardCfg { vehicles: vec![custom.clone()], ..Default::default() }
+            .with_game_defaults().with_game_defaults();
+        assert_eq!(cfg.vehicles.iter().filter(|b| b.action.eq_ignore_ascii_case("blinker_left_toggle")).count(), 1);
+        assert!(cfg.vehicles.contains(&custom));
+        let right = cfg.vehicles.iter().find(|b| b.action == "blinker_right_toggle").unwrap();
+        assert_eq!((right.scan_code, right.modifier), (0, 0));
+    }
 
     #[test]
     fn the_third_value_is_held_shift_ctrl_as_omsi_reads_it() {
