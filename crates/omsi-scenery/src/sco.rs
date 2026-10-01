@@ -175,6 +175,18 @@ fn read_list(r: &mut omsi_cfg::CfgReader, base: &Path) -> Vec<PathBuf> {
 }
 
 impl SceneryObject {
+    /// Cutter filenames and their source folders. A separate model.cfg does not replace
+    /// the object's own [terrainhole] declarations, which are not render-mesh overrides.
+    pub fn terrain_hole_sources<'a>(&'a self, model: &'a Model) -> impl Iterator<Item = (&'a Path, &'a str)> {
+        let model_dir = model.path.parent().unwrap_or_else(|| Path::new(""));
+        let sco_dir = self.path.parent().unwrap_or_else(|| Path::new(""));
+        model.terrain_hole_meshes().map(move |f| (model_dir, f)).chain(
+            self.model_file.iter().flat_map(move |_| {
+                self.model.terrain_hole_meshes().map(move |f| (sco_dir, f))
+            }),
+        )
+    }
+
     pub fn load(path: &Path) -> Result<SceneryObject, omsi_cfg::CfgError> {
         let f = CfgFile::read(path)?;
         Ok(Self::parse(&f))
@@ -407,6 +419,30 @@ pub const ATTACH_TOKENS: &[&str] = &["attach_trans", "attach_rot_x", "attach_rot
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_hole_sources_keep_inline_and_referenced_declarations() {
+        let inline = SceneryObject::parse(&CfgFile::from_str(
+            "objects/cutting.sco",
+            "[terrainhole]\ncut.o3d\n[mesh]\nvisible.o3d\n[terrainhole]\nend.o3d\n",
+        ));
+        assert_eq!(inline.terrain_hole_sources(&inline.model).collect::<Vec<_>>(), [
+            (Path::new("objects"), "cut.o3d"),
+            (Path::new("objects"), "end.o3d"),
+        ]);
+        let wrapper = SceneryObject::parse(&CfgFile::from_str(
+            "objects/cutting.sco",
+            "[terrainhole]\ncut.o3d\n[model]\nmodel/model.cfg\n",
+        ));
+        let model = Model::parse(&CfgFile::from_str(
+            "objects/model/model.cfg",
+            "[terrainhole]\nend.o3d\n[mesh]\nvisible.o3d\n",
+        ));
+        assert_eq!(wrapper.terrain_hole_sources(&model).collect::<Vec<_>>(), [
+            (Path::new("objects/model"), "end.o3d"),
+            (Path::new("objects"), "cut.o3d"),
+        ]);
+    }
 
     /// The stock timetable pole: the `attach_trans` after `[complexity]` belongs to the
     /// attachment; an indented or differently spelled one does not.

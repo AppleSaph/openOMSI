@@ -721,6 +721,10 @@ pub struct VehicleInfo {
     /// drives, but with holes in the cockpit, as it would in OMSI.
     #[serde(default)]
     pub missing_packs: Vec<String>,
+    /// The fleet numbers of the bus's `[number]` list with the plate each comes with
+    /// (Omsi.exe's number combo in the vehicle dialog; empty: the bus has no list).
+    #[serde(default)]
+    pub numbers: Vec<(String, String)>,
 }
 
 /// The vehicle packs whose parts a model file names and that are installed nowhere.
@@ -903,7 +907,7 @@ fn read_vehicle_folder(folder: &str, dirs: &[PathBuf], lang: &str) -> (Vec<Vehic
         if !missing_packs.is_empty() {
             log_line(&format!("vehicles: {} borrows parts from packs that are not installed: {}", f.display(), missing_packs.join(", ")));
         }
-        out.push(VehicleInfo { name: if name.is_empty() { stem.clone() } else { name }, manufacturer: v.manufacturer.trim().to_string(), type_name: v.type_name.trim().to_string(), file: rel, folder: folder.to_string(), description: description.chars().take(600).collect(), paints, hofs, installed: in_content(f), missing_packs });
+        out.push(VehicleInfo { name: if name.is_empty() { stem.clone() } else { name }, manufacturer: v.manufacturer.trim().to_string(), type_name: v.type_name.trim().to_string(), file: rel, folder: folder.to_string(), description: description.chars().take(600).collect(), paints, hofs, installed: in_content(f), missing_packs, numbers: v.numbers_with_plates() });
     }
     deps.sort();
     deps.dedup();
@@ -1968,6 +1972,9 @@ pub struct Duty {
     /// `[number]` list or the map's `registrations.txt` gives it (empty: as the content says).
     #[serde(default)]
     pub plate: Option<String>,
+    /// The fleet number picked from the bus's `[number]` list (none: its first).
+    #[serde(default)]
+    pub number: Option<String>,
     pub hof: Option<String>,
     pub entry: Option<i32>,
     pub line: Option<String>,
@@ -2041,6 +2048,9 @@ pub fn duty_args(d: &Duty) -> Result<Vec<String>> {
     }
     if let Some(pl) = d.plate.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
         a.extend(["--plate".into(), pl.to_string()]);
+    }
+    if let Some(n) = d.number.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        a.extend(["--number".into(), n.to_string()]);
     }
     // (a vehicle file taken for a depot from a broken ailists.cfg by older launchers is none)
     if let Some(h) = d.hof.as_deref().filter(|h| !h.trim().is_empty() && !h.to_ascii_lowercase().contains(".bus") && !h.to_ascii_lowercase().contains(".ovh")) {
@@ -2365,6 +2375,14 @@ mod tests {
         assert_eq!(old.plate, None);
         let typed: Duty = serde_json::from_str(r#"{"map":"maps/x/global.cfg","bus":"Vehicles/x.bus","time":"09:00","plate":"B-AB 1234"}"#).unwrap();
         assert_eq!(typed.plate.as_deref(), Some("B-AB 1234"));
+    }
+
+    /// The fleet number picked in the launcher reaches the game.
+    #[test]
+    fn a_duty_passes_its_fleet_number() {
+        let d: Duty = serde_json::from_str(r#"{"map":"maps/x/global.cfg","bus":"Vehicles/x.bus","time":"09:00","number":"4711"}"#).unwrap();
+        let a = duty_args(&d).unwrap();
+        assert!(a.windows(2).any(|w| w[0] == "--number" && w[1] == "4711"), "{a:?}");
     }
 
     #[test]

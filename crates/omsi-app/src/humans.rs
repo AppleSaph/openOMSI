@@ -97,7 +97,7 @@ const EXIT_REACH: f64 = 0.6;
 /// Seconds a bus may stand at a stop with every door still shut before a waiting passenger
 /// gives up on it coming to serve them: the driver's own door buttons take a moment, and
 /// the timetable buses' door scripts open a beat after they roll to a stop.
-const DOOR_GRACE: f64 = 4.0;
+const DOOR_GRACE: f64 = 10.0;
 /// How long after a door of a standing bus was last open the people at it wait on (s).
 const DOOR_SHUT_PATIENCE: f64 = 25.0;
 
@@ -173,6 +173,9 @@ struct Door {
     queue_dir: f32,
     /// A passenger who still has to buy a ticket may board here (no `{noticketsale}`).
     sells: bool,
+    /// `{withbutton}`: a door the passenger opens with the request button, worth walking to
+    /// while it is still shut.
+    button: bool,
     /// Where people getting off wait for the door to open: the path point next to it.
     wait: Vec3,
     /// The aisle beyond `wait`, where the others getting off line up.
@@ -287,8 +290,8 @@ impl Cabin {
         let mut links: Vec<(i32, i32, bool)> = Vec::new();
         let mut link_pack: Vec<Option<usize>> = Vec::new();
         let mut step_packs: Vec<Arc<[String]>> = Vec::new();
-        // (merged path point or -1, sells tickets, half width of the section)
-        let mut entry_points: Vec<(i32, bool, f32)> = Vec::new();
+        // (merged path point or -1, sells tickets, {withbutton}, half width of the section)
+        let mut entry_points: Vec<(i32, bool, bool, f32)> = Vec::new();
         let mut exit_points: Vec<(i32, f32)> = Vec::new();
         let mut places: Vec<(omsi_vehicle::cabin::PassPos, Vec3)> = Vec::new();
         let mut cabin_parts: Vec<CabinPart> = Vec::new();
@@ -361,7 +364,7 @@ impl Cabin {
             entry_points.extend(
                 cab.entries
                     .iter()
-                    .map(|e| (shift(e.path_point), !e.no_ticket_sale, half)),
+                    .map(|e| (shift(e.path_point), !e.no_ticket_sale, e.with_button, half)),
             );
             exit_points.extend(cab.exits.iter().map(|e| (shift(*e), half)));
             places.extend(cab.pass_positions.iter().map(|p| (p.clone(), *offset)));
@@ -373,7 +376,7 @@ impl Cabin {
         let graph = PathGraph::new(points.clone(), &links);
         // (the side of the road the stops are on: where a door's own point does not tell)
         let kerb = if LEFT_HAND.load(std::sync::atomic::Ordering::Relaxed) { -1.0f32 } else { 1.0 };
-        let door = |pp: i32, sells: bool, half_width: f32| -> Door {
+        let door = |pp: i32, sells: bool, button: bool, half_width: f32| -> Door {
             let point = (pp >= 0 && (pp as usize) < points.len()).then_some(pp as usize);
             let inside = point
                 .map(|i| points[i])
@@ -420,17 +423,18 @@ impl Cabin {
                 side,
                 queue_dir: -1.0,
                 sells,
+                button,
                 wait,
                 aisle,
             }
         };
         let mut entries: Vec<Door> = entry_points
             .iter()
-            .map(|(pp, sells, half)| door(*pp, *sells, *half))
+            .map(|(pp, sells, button, half)| door(*pp, *sells, *button, *half))
             .collect();
         let exits: Vec<Door> = exit_points
             .iter()
-            .map(|(pp, half)| door(*pp, false, *half))
+            .map(|(pp, half)| door(*pp, false, false, *half))
             .collect();
         // two leaves of one door: the queue of the front leaf runs forwards, the other's back,
         // so that the two lines do not stand in each other
@@ -3596,34 +3600,44 @@ impl Humans {
         }
     }
 
+    /// Whether the bus script reports `name`: it writes it (`PAX_*` are engine variables every
+    /// vehicle has, so stock scripts set them without a varlist entry) or declares it.
+    fn script_reports(v: &VehicleInstance, name: &str) -> bool {
+        v.has_script_var(name) || v.ty.program.var(name).is_some_and(|id| v.ty.program.stores(id))
+    }
+
     /// `PAX_Entry<i>_Open` / `PAX_Exit<i>_Open` as the bus script reports them. A bus whose
-    /// script never sets them (they are not in every mod, or only the front door uses them)
-    /// falls back to its `door_<i>`.
+    /// script never sets them (or only sets some of them) falls back to its physical `door_<i>`
+    /// or `door<i>` animations.
     fn doors_open(v: &VehicleInstance, n_entry: usize, n_exit: usize) -> (Vec<bool>, Vec<bool>) {
-        let doors: Vec<bool> = (0..8)
-            .map(|i| v.var(&format!("door_{i}")).unwrap_or(0.0) > 0.9)
-            .collect();
+        let door_val = |k: usize| -> bool {
+            v.var(&format!("door_{k}"))
+                .or_else(|| v.var(&format!("door{k}")))
+                .unwrap_or(0.0)
+                > 0.5
+        };
+        // Exits in standard OMSI city buses (2 or more front door leaves) begin at door_2 (middle door),
+        // while coaches with a single front door leaf begin at door_1. Exits must not be offset by
+        // n_entry, because buses with all doors configured as entries (e.g. 3-door buses with 6 entries)
+        // still place middle-door exits at door_2/3 and rear-door exits at door_4/5.
+        let exit_door_base = if n_entry <= 1 { 1 } else { 2 };
         let entry: Vec<bool> = (0..n_entry)
             .map(|i| {
                 let name = format!("PAX_Entry{i}_Open");
-                if v.has_script_var(&name) {
+                if Self::script_reports(v, &name) {
                     v.var(&name).unwrap_or(0.0) > 0.5
                 } else {
-                    doors[i.min(7)]
+                    door_val(i.min(7))
                 }
             })
             .collect();
         let exit: Vec<bool> = (0..n_exit)
             .map(|i| {
                 let name = format!("PAX_Exit{i}_Open");
-                if v.has_script_var(&name) {
+                if Self::script_reports(v, &name) {
                     v.var(&name).unwrap_or(0.0) > 0.5
                 } else {
-                    // the exits follow the entries in the door_<i> numbering (door_0/1 the
-                    // front leaves, door_2.. the others): a bus with three or more doors and
-                    // no PAX_Exit vars of its own must still report its middle and rear doors
-                    // separately, not the front leaf's state for every one of them
-                    doors[(n_entry + i).min(7)]
+                    door_val((exit_door_base + i).min(7))
                 }
             })
             .collect();
@@ -3701,9 +3715,11 @@ impl Humans {
         };
         if let (Some(b), Some(cabin)) = (bus, self.player_cabin.clone()) {
             // A bus that is already serving a stop keeps serving it until it really pulls
-            // away: a frame-time spike must not "leave" and re-enter the stop.
+            // away: a frame-time spike must not "leave" and re-enter the stop, nor a driver
+            // rolling a metre on to line up a door (Omsi.exe keeps people walking up to a
+            // bus slower than 3 m/s, 0x62a6a0).
             let speed = b.physics.velocity_kmh() as f64 / 3.6;
-            let limit = if self.served_stop.is_some() { 4.0 } else { 0.5 };
+            let limit = if self.served_stop.is_some() { 10.8 } else { 0.5 };
             let (entry_open, exit_open) =
                 Self::doors_open(b, cabin.entries.len(), cabin.exits.len());
             let all_exit_here = match (b.var("target_index_int"), b.host.hof.as_ref()) {
@@ -3797,7 +3813,7 @@ impl Humans {
                     vec![false; cabin.exits.len()],
                 );
                 if open {
-                    if c.vehicle.has_script_var("PAX_Entry0_Open") || c.vehicle.has_script_var("door_0") {
+                    if Self::script_reports(&c.vehicle, "PAX_Entry0_Open") || c.vehicle.var("door_0").is_some() || c.vehicle.var("door0").is_some() {
                         let (e, x) =
                             Self::doors_open(&c.vehicle, cabin.entries.len(), cabin.exits.len());
                         entry_open = e;
@@ -5562,21 +5578,31 @@ impl Humans {
                 } else {
                     Activity::Stand
                 };
+                let avoid = self.people[i].avoid;
+                let bus_arriving = buses.iter().any(|b| {
+                    (b.approach == Some(stop) || b.stop == Some(stop)) && avoid != Some(b.id)
+                });
+                let face_bus = buses
+                    .iter()
+                    .find(|b| (b.approach == Some(stop) || b.stop == Some(stop)) && avoid != Some(b.id))
+                    .map(|b| {
+                        let to = b.pos.truncate() - pos2;
+                        to.x.atan2(to.y).to_degrees()
+                    });
                 let stand = Want {
-                    vel: if idle == Activity::Sit {
+                    vel: if idle == Activity::Sit || bus_arriving {
                         DVec2::ZERO
                     } else {
                         arrive(pos2, sp.floor().truncate(), pace * 0.6)
                     },
-                    face: Some(sp.face),
-                    give: 0.3,
+                    face: if bus_arriving { face_bus.or(Some(sp.face)) } else { Some(sp.face) },
+                    give: if bus_arriving { 0.0 } else { 0.3 },
                     corridor: None,
                     idle,
                     follow: false,
                     goal_dist: None,
                 };
                 // a bus here: board it?
-                let avoid = self.people[i].avoid;
                 let t_state = self.people[i].t_state;
                 let mirror = self.mirror;
                 for bn in buses
@@ -5680,7 +5706,7 @@ impl Humans {
                         return Want {
                             vel: arrive(pos2, target, pace * 0.7),
                             face: Some(face),
-                            give: 0.5,
+                            give: 0.0,
                             corridor: None,
                             idle: Activity::Stand,
                             follow: false,
@@ -5688,7 +5714,7 @@ impl Humans {
                         };
                     }
                     self.people[i].why = "waits at the kerb for the bus";
-                    return Want::stand(Some(face), Activity::Stand);
+                    return Want { give: 0.0, ..Want::stand(Some(face), Activity::Stand) };
                 }
                 if t_state > patience && !buses.iter().any(|b| b.stop == Some(stop)) {
                     // waited long enough: walks off (and somebody else will come)
@@ -5754,7 +5780,8 @@ impl Humans {
                     return Want::stand(None, Activity::Stand);
                 };
                 let bn = &buses[bi];
-                if bn.stop != Some(stop) || !bn.standing() {
+                // (Omsi.exe 0x62a6a0 states 2-3: the bus still counts while slower than 3 m/s)
+                if bn.stop != Some(stop) || bn.speed.abs() >= 3.0 {
                     back(self, "the bus pulls away");
                     self.people[i].avoid = Some(bus);
                     return Want::stand(None, Activity::Stand);
@@ -5814,6 +5841,36 @@ impl Humans {
                     follow: slot > 0,
                     goal_dist: Some(d),
                 };
+                // Omsi.exe re-picks the entry every frame until the passenger reaches the
+                // door (0x62c4c8 -> 0x72506c): a door the driver opens on the way draws the
+                // ones it is nearer to. (A choice at most 2 m nearer is no reason to change
+                // queues: the two leaves of one door, and the pass holders who moved to
+                // the other leaf, stay put.) Somebody at a shut door goes to another door
+                // only once that one is open.
+                let at_door = slot == 0 && (base - pos2).length() <= 1.0;
+                if let Some(other) = self.choose_entry(i, bn).filter(|&e| e != entry) {
+                    let pays = self.pays_on(i, bn);
+                    let here = (bn.world(door.outside).truncate() - pos2).length();
+                    let there = (bn.world(bn.cabin.entries[other].outside).truncate() - pos2).length();
+                    let switch = if at_door {
+                        !bn.entry_open.get(entry).copied().unwrap_or(false) && bn.entry_open.get(other).copied().unwrap_or(false)
+                    } else {
+                        !Self::entry_candidate(bn, entry, pays) || there + 2.0 < here
+                    };
+                    if switch {
+                        self.set_state(
+                            i,
+                            State::Queue {
+                                bus,
+                                entry: other,
+                                stop,
+                                spot,
+                                joined,
+                            },
+                        );
+                        return w;
+                    }
+                }
                 if slot > 0 {
                     self.people[i].why = "in the queue";
                     // A pass holder behind people who pay goes to the other leaf when it is
@@ -5843,32 +5900,9 @@ impl Humans {
                     return w;
                 }
                 if !bn.entry_open.get(entry).copied().unwrap_or(false) {
-                    // another entry of the bus is open: go there - on the way, or when this
-                    // door has stayed shut a while (not the moment it closes behind the one
-                    // before)
-                    if let Some(other) = self
-                        .choose_entry(i, bn)
-                        .filter(|e| *e != entry && bn.entry_open.get(*e).copied().unwrap_or(false))
-                    {
-                        self.set_state(
-                            i,
-                            State::Queue {
-                                bus,
-                                entry: other,
-                                stop,
-                                spot,
-                                joined,
-                            },
-                        );
-                        return w;
-                    }
-                    // every door has been shut long enough that none is about to open
-                    // either (the driver parked here, or gave up on this stop): back to
-                    // the waiting place rather than standing at a door that never opens
-                    if !self.doors_open_or_arriving(bn) {
-                        back(self, "every door is shut and none looks about to open");
-                        return Want::stand(None, Activity::Stand);
-                    }
+                    // Omsi.exe (0x62a6a0 state 3) waits at the shut door and presses the
+                    // request (PAX_Entry<n>_Req) until the bus moves off; only the 120 s
+                    // cap above sends them back
                     self.people[i].why = "the door is shut";
                     return w;
                 }
@@ -6647,41 +6681,27 @@ impl Humans {
         }
     }
 
-    /// The entry of `bus` person `i` walks to: the nearest open one they may use (one with
-    /// a cash desk for somebody who still has to buy a ticket), else the nearest allowed.
+    /// Whether person `i` may walk to entry `e` of `bn` now: it is open or opens with the
+    /// request button (`{withbutton}`), and, for somebody who still has to buy a ticket
+    /// (`pays`), it is not `{noticketsale}` (Omsi.exe 0x72506c).
+    fn entry_candidate(bn: &BusNow, e: usize, pays: bool) -> bool {
+        let d = &bn.cabin.entries[e];
+        (bn.entry_open.get(e).copied().unwrap_or(false) || d.button) && (!pays || d.sells)
+    }
+
+    /// Whether person `i` still has to buy a ticket at the desk of `bn`.
+    fn pays_on(&self, i: usize, bn: &BusNow) -> bool {
+        self.people[i].ticket.is_some() && !(bn.id == BusId::Player && self.boarding.eq_ignore_ascii_case("walk"))
+    }
+
+    /// The entry of `bus` person `i` walks to, as Omsi.exe 0x72506c picks it: the nearest
+    /// open (or `{withbutton}`) one they may use - one with a cash desk for somebody who
+    /// still has to buy a ticket - else the nearest open one at all, else the first entry.
     fn choose_entry(&self, i: usize, bn: &BusNow) -> Option<usize> {
-        let p = &self.people[i];
-        let pays = p.ticket.is_some()
-            && !(bn.id == BusId::Player && self.boarding.eq_ignore_ascii_case("walk"));
-        let pos = p.position.truncate();
-        let allowed: Vec<usize> = (0..bn.cabin.entries.len())
-            .filter(|&e| !pays || bn.cabin.entries[e].sells)
-            .collect();
-        let allowed = if allowed.is_empty() {
-            (0..bn.cabin.entries.len()).collect()
-        } else {
-            allowed
-        };
+        let pays = self.pays_on(i, bn);
+        let pos = self.people[i].position.truncate();
         let dist = |e: usize| (bn.world(bn.cabin.entries[e].outside).truncate() - pos).length();
-        // A door still shut counts as some metres farther, the more the longer one has
-        // waited at it: an open door not much farther is taken, a far one only once the
-        // near door stays shut. (Only the doors open at the moment counted: a bus whose
-        // rear doors opened a moment before its front one sent the people waiting at the
-        // front to the back.)
-        let waited = if matches!(p.state, State::Queue { .. }) { p.t_state.max(0.0) as f64 } else { 0.0 };
-        let shut = |e: usize| {
-            if bn.entry_open.get(e).copied().unwrap_or(false) {
-                0.0
-            } else {
-                6.0 + 2.0 * waited
-            }
-        };
-        // with both leaves open, spread out: the shorter queue wins at similar distance
-        allowed.iter().copied().min_by(|a, b| {
-            let qa = self.people.iter().filter(|q| matches!(q.state, State::Queue { bus, entry, .. } if bus == bn.id && entry == *a)).count() as f64;
-            let qb = self.people.iter().filter(|q| matches!(q.state, State::Queue { bus, entry, .. } if bus == bn.id && entry == *b)).count() as f64;
-            (dist(*a) + qa * 0.8 + shut(*a)).total_cmp(&(dist(*b) + qb * 0.8 + shut(*b)))
-        })
+        nearest_entry(bn.cabin.entries.len(), |e, pays| Self::entry_candidate(bn, e, pays), pays, dist)
     }
 
     /// The other door leaf a pass holder in place `slot` of the queue at `entry` should move
@@ -9398,6 +9418,92 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn nearest_open_or_button_entry_is_chosen() {
+        // passenger next to entry 1 (1 m), entry 0 is 8 m away
+        let dist = |e: usize| if e == 1 { 1.0 } else { 8.0 };
+        let pick = |open: [bool; 2], button: [bool; 2]| {
+            nearest_entry(2, |e, _| open[e] || button[e], false, dist)
+        };
+        assert_eq!(pick([true, false], [false, false]), Some(0));
+        assert_eq!(pick([true, true], [false, false]), Some(1));
+        assert_eq!(pick([true, false], [false, true]), Some(1));
+        assert_eq!(pick([false, false], [false, false]), Some(0));
+        // a payer skips the {noticketsale} door, unless nothing else is open
+        let sells = [true, false];
+        let pay = |open: [bool; 2]| nearest_entry(2, |e, pays| open[e] && (!pays || sells[e]), true, dist);
+        assert_eq!(pay([true, true]), Some(0));
+        assert_eq!(pay([false, true]), Some(1));
+    }
+
+    #[test]
+    fn doors_open_reads_pax_vars_the_script_writes_without_declaring() {
+        let dir = std::env::temp_dir().join(format!("omsi-doors-open-undeclared-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("test.bus"),
+            "[model]\nmodel.cfg\n[varnamelist]\n1\nvars.txt\n[script]\n1\nmain.osc\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("model.cfg"), "").unwrap();
+        std::fs::write(dir.join("vars.txt"), "door_0\n").unwrap();
+        std::fs::write(dir.join("main.osc"), "{frame}\n1 (S.L.PAX_Entry0_Open)\n{end}\n").unwrap();
+
+        let ty = std::sync::Arc::new(omsi_sim::VehicleType::load(&dir, &dir.join("test.bus")).unwrap());
+        let mut v = VehicleInstance::new(ty, omsi_sim::VehicleHost::new(Default::default()));
+        v.set_var("door_0", 0.0);
+        v.set_var("PAX_Entry0_Open", 1.0);
+        let (e, _) = Humans::doors_open(&v, 1, 0);
+        assert_eq!(e, vec![true]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn doors_open_3door_bus_handles_middle_and_rear_exits() {
+        let dir = std::env::temp_dir().join(format!("omsi-doors-3door-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("test.bus"),
+            "[model]\nmodel.cfg\n[varnamelist]\n1\nvars.txt\n[script]\n1\nmain.osc\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("model.cfg"), "").unwrap();
+        std::fs::write(dir.join("vars.txt"), "door_0\ndoor_1\ndoor_2\ndoor_3\ndoor_4\ndoor_5\n").unwrap();
+        std::fs::write(dir.join("main.osc"), "{init}\n{end}\n").unwrap();
+
+        let ty = std::sync::Arc::new(omsi_sim::VehicleType::load(&dir, &dir.join("test.bus")).unwrap());
+        let mut v = VehicleInstance::new(ty, omsi_sim::VehicleHost::new(Default::default()));
+
+        // 3-door bus: 6 entries (all 3 doors), 4 exits (middle door leaves 2,3; rear door leaves 4,5)
+        let (e, x) = Humans::doors_open(&v, 6, 4);
+        assert_eq!(e, vec![false; 6]);
+        assert_eq!(x, vec![false; 4]);
+
+        // Middle doors (door_2 and door_3) open
+        v.set_var("door_2", 1.0);
+        v.set_var("door_3", 1.0);
+        let (e, x) = Humans::doors_open(&v, 6, 4);
+        assert_eq!(e, vec![false, false, true, true, false, false]);
+        assert_eq!(x, vec![true, true, false, false]);
+
+        // Rear doors (door_4 and door_5) open
+        v.set_var("door_4", 1.0);
+        v.set_var("door_5", 1.0);
+        let (e, x) = Humans::doors_open(&v, 6, 4);
+        assert_eq!(e, vec![false, false, true, true, true, true]);
+        assert_eq!(x, vec![true, true, true, true]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Omsi.exe 0x72506c over `n` entries: the nearest one `candidate(e, pays)` lets the
+/// passenger use, else the nearest without the ticket-sale condition, else the first.
+fn nearest_entry(n: usize, candidate: impl Fn(usize, bool) -> bool, pays: bool, dist: impl Fn(usize) -> f64) -> Option<usize> {
+    let nearest = |pays: bool| (0..n).filter(|&e| candidate(e, pays)).min_by(|a, b| dist(*a).total_cmp(&dist(*b)));
+    nearest(pays).or_else(|| nearest(false)).or_else(|| (n > 0).then_some(0))
 }
 
 /// A heading in 0..360 degrees.

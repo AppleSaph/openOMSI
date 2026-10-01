@@ -14,7 +14,7 @@ pub(crate) struct Player {
     pub(crate) axes: omsi_sim::KeyboardAxes,
     /// A game controller's pedals and steering this frame (they win over the keys).
     pub(crate) analog: crate::controllers::Analog,
-    /// The interior cameras chosen (OMSI's `view_toggle_viewpoint`,
+    /// The interior cameras chosen (OMSI's
     /// `view_interiorcam_minus`/`_plus`): the driver's and the passengers' camera numbers.
     pub(crate) cam_choice: (usize, usize),
     /// (scan code, modifier bits) → action name, from `Inputs/keyboard.cfg` `[vehicles]`.
@@ -116,7 +116,8 @@ pub(crate) struct Player {
 /// can still be put into gear. `--drive-keys arrows` leaves W/A/S/D to OMSI entirely.
 /// The driving keys of a control preset (`drive_keys` in the settings):
 /// `omsi` - only the original layout of Inputs/keyboard.cfg (Shift + numpad), nothing extra;
-/// `simple` - W/S/A/D and the arrow keys both drive; `wasd` - W/S/A/D only;
+/// `simple` - W/S/A/D and Up/Down drive (plain Left/Right keep OMSI's interior camera
+/// switch, view_interiorcam_minus/plus, Omsi.exe 0x706278; A/D steer); `wasd` - W/S/A/D only;
 /// `arrows` - the arrow keys only (W/S/D keep their OMSI meaning: wipers, viewpoint, gear).
 pub(crate) fn fallback_action(code: KeyCode, preset: &str) -> Option<omsi_sim::EngineAction> {
     use omsi_sim::EngineAction as A;
@@ -130,8 +131,8 @@ pub(crate) fn fallback_action(code: KeyCode, preset: &str) -> Option<omsi_sim::E
     Some(match code {
         KeyCode::ArrowUp if arrows => A::Throttle,
         KeyCode::ArrowDown if arrows => A::Brake,
-        KeyCode::ArrowLeft if arrows => A::SteeringLeft,
-        KeyCode::ArrowRight if arrows => A::SteeringRight,
+        KeyCode::ArrowLeft if arrows && preset == "arrows" => A::SteeringLeft,
+        KeyCode::ArrowRight if arrows && preset == "arrows" => A::SteeringRight,
         KeyCode::KeyW if wasd => A::Throttle,
         KeyCode::KeyS if wasd => A::Brake,
         KeyCode::KeyA if wasd => A::SteeringLeft,
@@ -1605,6 +1606,10 @@ impl Player {
     /// The driver's chosen camera as it is fixed in the bus (before the bus's own motion), turned
     /// by the look and the steering: what a glide between two cameras mixes.
     pub(crate) fn driver_local(&self, look: (f32, f32)) -> Option<omsi_vehicle::Camera> {
+        // (no glide onto a coupled part's camera: it is not in the front's frame)
+        if self.trailer_driver_camera().is_some() {
+            return None;
+        }
         let def = &self.vehicle.ty.def;
         let n = def.cameras_driver.len().max(1);
         let c = def.cameras_driver.get((def.camera_std + self.cam_choice.0) % n).or(def.cameras_driver.first())?;
@@ -1691,6 +1696,31 @@ impl Player {
         self.vehicle.ty.def.cameras_pax.len() + self.vehicle.trailers.iter().map(|t| t.ty.def.cameras_pax.len()).sum::<usize>()
     }
 
+    /// How many driver cameras the bus has, its coupled parts' included: Omsi.exe's
+    /// interior-camera keys go on from the last of one part's into the next part's
+    /// (0x706278 @0x7067d1, @0x706a3c).
+    pub(crate) fn driver_camera_count(&self) -> usize {
+        self.vehicle.ty.def.cameras_driver.len() + self.vehicle.trailers.iter().map(|t| t.ty.def.cameras_driver.len()).sum::<usize>()
+    }
+
+    /// The driver camera chosen past the front's own: the coupled part it is on and the
+    /// camera (None while one of the front's is chosen).
+    pub(crate) fn trailer_driver_camera(&self) -> Option<(&omsi_sim::vehicle::TrailerPart, &omsi_vehicle::Camera)> {
+        let front = self.vehicle.ty.def.cameras_driver.len();
+        let mut k = self.cam_choice.0 % self.driver_camera_count().max(1);
+        if k < front {
+            return None;
+        }
+        k -= front;
+        for t in &self.vehicle.trailers {
+            if let Some(c) = t.ty.def.cameras_driver.get(k) {
+                return Some((t, c));
+            }
+            k -= t.ty.def.cameras_driver.len();
+        }
+        None
+    }
+
     /// `look`: yaw/pitch the player has turned the head (or the orbit) by; `dist`: how far
     /// the outside camera sits from the vehicle.
     pub(crate) fn camera_look(&self, view: &str, fallback: &Camera, look: (f32, f32), dist: f32) -> Camera {
@@ -1705,6 +1735,12 @@ impl Player {
         }
         let cam = match view {
             "driver" => {
+                // (a coupled part's driver camera, on that part's body)
+                if let Some((t, c)) = self.trailer_driver_camera() {
+                    let turned = omsi_vehicle::Camera { yaw: c.yaw + look.0, pitch: (c.pitch + look.1).clamp(-89.0, 89.0), ..c.clone() };
+                    let (eye, yaw, pitch, roll) = t.camera_world_full(&turned);
+                    return Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: c.fov, near: 0.25, far: 6000.0 };
+                }
                 let n = def.cameras_driver.len().max(1);
                 def.cameras_driver
                     .get((def.camera_std + self.cam_choice.0) % n)
@@ -2111,5 +2147,21 @@ fn route_line(t: &omsi_vehicle::hof::InfoTrip) -> String {
         (code / 100).to_string()
     } else {
         raw.to_string()
+    }
+}
+#[cfg(test)]
+mod preset_tests {
+    use super::fallback_action;
+    use omsi_sim::EngineAction as A;
+    use winit::keyboard::KeyCode;
+
+    #[test]
+    fn plain_left_right_steer_only_with_the_arrows_preset() {
+        assert_eq!(fallback_action(KeyCode::ArrowLeft, "simple"), None);
+        assert_eq!(fallback_action(KeyCode::ArrowRight, "simple"), None);
+        assert_eq!(fallback_action(KeyCode::ArrowUp, "simple"), Some(A::Throttle));
+        assert_eq!(fallback_action(KeyCode::KeyA, "simple"), Some(A::SteeringLeft));
+        assert_eq!(fallback_action(KeyCode::ArrowLeft, "arrows"), Some(A::SteeringLeft));
+        assert_eq!(fallback_action(KeyCode::ArrowRight, "arrows"), Some(A::SteeringRight));
     }
 }

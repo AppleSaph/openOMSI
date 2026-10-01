@@ -689,6 +689,10 @@ impl Controllers {
             // (the file's [FFScale] of the device: steering forces, then vibration)
             let cfg = find_device_cfg(&self.cfg, &name);
             let (k_s, k_e) = cfg.and_then(|d| d.ff_scale).unwrap_or((1.0, 1.0));
+            // The scripts' shaking is the wheel's own periodic effect where it has one
+            // (a rattle of a few ms sampled once a frame comes out as a random wobble).
+            let vib_amp = if on { f.vib_amp.clamp(0.0, 1.0) * VIB_SHARE * k_e.clamp(0.0, 2.0) } else { 0.0 };
+            let f = if di.set_vibration(&name, vib_amp, f.vib_period) { FfInput { vib_amp: 0.0, ..f } } else { f };
             let force = if on { wheel_force(&f, x, x0, &mut self.ff_t, k_s, k_e) } else { 0.0 };
             // The wheel force is calculated from the steering axis after its configured
             // reversal, while DirectInput sends forces in the physical axis direction.
@@ -786,6 +790,9 @@ fn bump_strength(compression_rate: f32, impact_speed: f32, kmh: f32) -> f32 {
     suspension.max(impact) * (kmh.abs() / 4.0).clamp(0.0, 1.0)
 }
 
+/// How much of the full force `FF_Vib_Amp` 1 shakes the wheel with.
+const VIB_SHARE: f32 = 0.25;
+
 /// The force on a wheel standing at `x` (-1 full left .. 1), `x0` the frame before: -1..1.
 /// Tyre scrub resists turning the wheel at a standstill and falls away once the bus rolls.
 /// Self-aligning torque then returns the wheel to centre, with a softer response near full
@@ -817,7 +824,7 @@ fn wheel_force(f: &FfInput, x: f32, x0: f32, t: &mut f32, k_springs: f32, k_effe
     let drag = -turning_speed * parking_drag * if returning { 0.2 } else { 1.0 };
     *t += dt;
     let period = (f.vib_period * 0.01).max(0.02);
-    let shake = f.vib_amp.clamp(0.0, 1.0) * 0.25 * (std::f32::consts::TAU * *t / period).sin();
+    let shake = f.vib_amp.clamp(0.0, 1.0) * VIB_SHARE * (std::f32::consts::TAU * *t / period).sin();
     // Preserve small road details while softening kerb-sized peaks. One short
     // kick and rebound feels less like a continuously shaking wheel mount.
     let bump = f.wheel_bump.clamp(0.0, 1.0).sqrt() * 0.46 * (std::f32::consts::TAU * f.wheel_bump_age * 6.5).cos();
@@ -1281,6 +1288,19 @@ mod button_tests {
         assert!(super::bump_strength(0.5, 0.0, 20.0) > 0.3);
         assert!(super::bump_strength(1.0, 0.0, 20.0) > 0.5);
         assert!(super::bump_strength(0.0, 1.0, 20.0) > 0.5);
+    }
+
+    /// Where the wheel plays the shaking as its own periodic effect, the force set each
+    /// frame carries none of it.
+    #[test]
+    fn the_shaking_leaves_the_force_when_the_wheel_plays_it() {
+        let f = super::FfInput { on: true, kmh: 0.0, vib_amp: 1.0, vib_period: 2.5, dt: 0.016, ..Default::default() };
+        let mut t = 0.0;
+        let soft = super::wheel_force(&f, 0.0, 0.0, &mut t, 0.0, 1.0);
+        assert!(soft.abs() > 0.01, "{soft}");
+        t = 0.0;
+        let periodic = super::wheel_force(&super::FfInput { vib_amp: 0.0, ..f }, 0.0, 0.0, &mut t, 0.0, 1.0);
+        assert_eq!(periodic, 0.0);
     }
 
     #[test]

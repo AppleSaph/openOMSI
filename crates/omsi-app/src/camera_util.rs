@@ -308,6 +308,9 @@ pub(crate) fn mirror_view(v: &omsi_sim::VehicleInstance, c: &omsi_vehicle::Camer
 
 /// Where the driver's eye is (for a mirror drawn with no view to aim it by).
 pub(crate) fn driver_eye(p: &Player) -> DVec3 {
+    if let Some((t, c)) = p.trailer_driver_camera() {
+        return t.camera_world_full(c).0;
+    }
     let def = &p.vehicle.ty.def;
     let n = def.cameras_driver.len().max(1);
     match def.cameras_driver.get((def.camera_std + p.cam_choice.0) % n) {

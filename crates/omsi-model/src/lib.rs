@@ -145,7 +145,8 @@ pub struct MeshDef {
     pub light_enh: Vec<LightEnh>,
     pub light_enh_2: Vec<LightEnh2>,
     pub no_distance_check: bool,
-    /// `[terrainhole]` cutter mesh for this mesh (scenery objects).
+    /// Compatibility mirror of the last `[terrainhole]` after this mesh. Use
+    /// [`Model::terrain_hole_meshes`] to include model-wide and repeated declarations.
     pub terrain_hole: Option<String>,
 }
 
@@ -365,6 +366,8 @@ pub struct Model {
     pub render_type: Option<String>,
     /// `[surface]` from model.cfg, inherited by a scenery object's .sco wrapper when absent.
     pub surface: Option<bool>,
+    /// Object-wide `[terrainhole]` cutters, independent of render meshes and LODs.
+    pub terrain_holes: Vec<String>,
     pub lods: Vec<Lod>,
     /// The first level was opened by a `[mesh]` before any `[LOD]` (see "lod" below).
     pub implicit_lod: bool,
@@ -406,6 +409,14 @@ pub struct ModelItem {
 }
 
 impl Model {
+    /// All declared cutters, plus legacy mesh fields supplied by programmatic callers.
+    pub fn terrain_hole_meshes(&self) -> impl Iterator<Item = &str> {
+        self.terrain_holes.iter().map(String::as_str).chain(
+            self.meshes.iter().filter_map(|m| m.terrain_hole.as_deref())
+                .filter(move |f| !self.terrain_holes.iter().any(|declared| declared.as_str() == *f)),
+        )
+    }
+
     pub fn load(path: &Path) -> Result<Model, omsi_cfg::CfgError> {
         let f = CfgFile::read(path)?;
         Ok(Self::parse(&f))
@@ -508,6 +519,9 @@ impl Model {
             }
             "terrainhole" => {
                 let f = r.str().to_string();
+                // This declares an object-wide cutter, often before the first [mesh].
+                // Keep every command; multiple cutters may follow a single render mesh.
+                self.terrain_holes.push(f.clone());
                 if let Some(m) = self.cur_mesh() {
                     m.terrain_hole = Some(f);
                 }
@@ -1035,6 +1049,32 @@ pub fn load_texchanges(base: &Path, files: &[String]) -> Vec<TexChangeMaster> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn terrain_hole_meshes_are_independent_of_render_meshes() {
+        let mut model = super::Model::parse(&omsi_cfg::CfgFile::from_str(
+            "cutters.cfg",
+            "[terrainhole]\nfirst.o3d\n[terrainhole]\nsecond.o3d\n",
+        ));
+        assert!(model.meshes.is_empty());
+        assert!(model.lods.is_empty());
+        assert_eq!(model.terrain_hole_meshes().collect::<Vec<_>>(), ["first.o3d", "second.o3d"]);
+
+        model = super::Model::parse(&omsi_cfg::CfgFile::from_str(
+            "cutters.cfg",
+            "[terrainhole]\nfirst.o3d\n[mesh]\nvisible.o3d\n[terrainhole]\nsecond.o3d\n[terrainhole]\nthird.o3d\n",
+        ));
+        assert_eq!(model.meshes.len(), 1);
+        assert_eq!(model.meshes[0].file, "visible.o3d");
+        assert_eq!(model.meshes[0].terrain_hole.as_deref(), Some("third.o3d"));
+        assert_eq!(model.terrain_hole_meshes().collect::<Vec<_>>(), ["first.o3d", "second.o3d", "third.o3d"]);
+
+        model.meshes.push(super::MeshDef {
+            terrain_hole: Some("legacy.o3d".into()),
+            ..Default::default()
+        });
+        assert_eq!(model.terrain_hole_meshes().collect::<Vec<_>>(), ["first.o3d", "second.o3d", "third.o3d", "legacy.o3d"]);
+    }
 
     /// Two [matl] blocks of one material are one material (Absperrung_grau.sco).
     #[test]

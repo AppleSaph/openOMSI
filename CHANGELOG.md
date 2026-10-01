@@ -4,6 +4,51 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/turbo-devv/openOMSI/releases) page.
 
+## 0.1.623 - 2026-10-01
+
+### Passengers
+- Passengers see the doors open on buses whose script sets `PAX_Entry`/`PAX_Exit` without
+  listing them in its varlist (stock MAN NL, MAN NLC, many Citaros), and on 3-door buses the
+  middle and rear doors let people out again; `door<i>` without the underscore works too
+  (#532, #535, #512, #537, #179, from #551).
+- They walk to the nearest open door or one with a request button, as OMSI does, and switch
+  when the driver opens a nearer one, instead of all crowding the front door (#535).
+- Waiting at a door that is still shut, they press the request and stay, and the bus
+  creeping a metre or two to line up no longer sends them back to the shelter (#532, #512).
+
+### Controls
+- With the default keys plain Left/Right switch the interior camera as in OMSI (A/D steer;
+  the "Arrow keys only" preset still steers with them), and the camera keys go on into the
+  rear section's driver cameras of an articulated bus (#519, #525, #464).
+- The viewpoint key steps through the driver, passenger, outside and map views as in OMSI
+  (#519).
+- Wheels: the scripts' shaking (`FF_Vib_Amp`, `FF_Vib_Period`) plays as a real periodic
+  force-feedback effect (#501).
+- Head tracking on Windows also reads opentrack's freetrack output (TrackIR protocol) (#522).
+
+### Launcher
+- The fleet number can be picked from the bus's number list before driving (also in a duty
+  and with `--number`), as in OMSI's vehicle dialog (#538, #133).
+
+### Graphics
+- A `[matl_lightmap]` on a variable the bus does not have is always lit, as in OMSI, not
+  always dark (dashboard lamps, #475, #352, #231).
+- Painted ground no longer darkens through stacked layers at shallow angles, and painted
+  edges no longer shift with the texture's mip level (#552).
+
+### Maps
+- `[surface]` objects stand on the terrain like every other object without `[absheight]`,
+  as in OMSI (#531, #453, #460, #417).
+- Stairs and excavations of presurface objects are no longer filled by the terrain (#526),
+  and declared `[terrainhole]`s cut railway cuttings and underpasses however deep (#550).
+- Terrain-mapped textures of a map's own folder win over global seasonal copies (#548).
+- On a Windows with a Chinese, Japanese or Korean code page, content text is read in that
+  code page, as OMSI does.
+
+### Traffic
+- Random AI cars at a dead end or the map edge leave at once, as in OMSI, instead of standing
+  there and blocking the cars behind (#536, #327).
+
 ## 0.1.592 - 2026-10-01
 
 ### Passengers

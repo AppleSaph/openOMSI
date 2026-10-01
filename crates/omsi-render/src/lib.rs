@@ -8202,7 +8202,7 @@ impl Renderer {
                         let kind = if mat.alpha != AlphaMode::Blend && !mat.no_z_check {
                             // (a model drawn in order: its opaque and cut-out slots too)
                             kind_of(mat.alpha)
-                        } else if mat.no_z_write || mat.no_z_check || world_surface_phase(inst.render_phase) {
+                        } else if mat.no_z_write || mat.no_z_check || (world_surface_phase(inst.render_phase) && !inst.presurface) {
                             PIPE_BLEND_NO_WRITE
                         } else {
                             PIPE_BLEND

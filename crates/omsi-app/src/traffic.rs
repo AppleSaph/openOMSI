@@ -1764,10 +1764,12 @@ impl Traffic {
             off_ground += unloaded as usize;
             let random = !c.is_bus() || c.gone;
             let r = (c.state.length as f64 * 0.5).max(2.0);
-            // standing at the end of the network (the map's edge, where OMSI takes its cars
-            // away): once out of sight, or too far off for the renderer to draw it
+            // standing at the end of the network (the map's edge): Omsi.exe never lets a
+            // random car stand there - once 0x71dc9c finds no next segment (0x612e10) its
+            // segment stays -1 and 0x6fe3fc deletes it the same frame (0x703bb0); a bus
+            // that gave up goes once out of sight, or too far off for the renderer to draw it
             let at_end = c.gone
-                && c.stopped > 20.0
+                && c.stopped > if c.is_bus() { 20.0 } else { 0.5 }
                 && c.state.route.is_empty()
                 && self.net.lanes[c.state.lane].next.is_empty();
             let from_eye = self.viewer.map(|v| (p - v.pos).length()).unwrap_or(dist);
@@ -1787,7 +1789,7 @@ impl Traffic {
                 self.hidden(world, p, r) || (c.stopped > 8.0 && from_eye > 180.0) || c.stopped > 150.0
             } else if !random {
                 false
-            } else if at_end && (self.hidden(world, p, r) || (c.stopped > 8.0 && from_eye > 180.0) || c.stopped > 150.0 || (c.stopped > 25.0 && queued.contains(&c.id) && from_eye > 25.0)) {
+            } else if at_end && (!c.is_bus() || self.hidden(world, p, r) || (c.stopped > 8.0 && from_eye > 180.0) || c.stopped > 150.0 || (c.stopped > 25.0 && queued.contains(&c.id) && from_eye > 25.0)) {
                 // (and in view too once others wait behind it: a fire engine at the end of a
                 // dead-end street held a queue of fourteen cars for two and a half minutes)
                 // (taken at once it vanished in plain view 300 m ahead; but a car kept

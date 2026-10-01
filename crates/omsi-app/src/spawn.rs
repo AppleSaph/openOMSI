@@ -267,7 +267,13 @@ pub(crate) fn spawn_player(
         if let Ok(nl) =
             omsi_vehicle::vehicle::NumberList::load(&omsi_cfg::resolve_path(vt.def.dir(), list))
         {
-            if let Some(n) = nl.numbers.first() {
+            // the number picked in the vehicle dialog (Omsi.exe's number combo, 0x67e150)
+            let wanted = args.number.as_deref().map(str::trim).filter(|n| !n.is_empty());
+            let picked = wanted.and_then(|w| nl.numbers.iter().find(|n| n.trim() == w));
+            if let (Some(w), None) = (wanted, picked) {
+                log::warn!("--number {w}: not in the bus's [number] list, the first one is taken");
+            }
+            if let Some(n) = picked.or(nl.numbers.first()) {
                 if let Some(i) = vt.program.str_var("number") {
                     vehicle.state.str_vars[i as usize] = n.clone();
                 }

@@ -3,7 +3,9 @@
 //! button boxes - the system's newer Windows.Gaming.Input misses many of them), the eight
 //! axes in the slots `gamectrler.cfg` numbers (X, Y, Z, Rx, Ry, Rz, the two sliders), up to
 //! 128 buttons, and force feedback: one constant force on the wheel's axis the game sets
-//! every frame (its centring spring, the drag of the steering, the shaking of the bus).
+//! every frame (its centring spring, the drag of the steering), and a sine on the same axis
+//! for the scripts' shaking (`FF_Vib_Amp`, `FF_Vib_Period`), which the wheel itself plays:
+//! a rattle of a few milliseconds cannot be drawn into a force set once a frame.
 //!
 //! The list of devices is looked up on a thread of its own, when Windows says a HID device
 //! (every game controller is one) was plugged in or out: with some drivers the lookup takes
@@ -53,6 +55,11 @@ pub(crate) struct Device {
     state: RawState,
     ff: Option<IDirectInputEffect>,
     ff_error_logged: bool,
+    /// The periodic effect of the shaking, the magnitude and period last given it, and when
+    /// (set at most 100 times a second, as the constant force).
+    vib: Option<IDirectInputEffect>,
+    vib_last: (u32, u32),
+    vib_at: Option<Instant>,
     pub buttons: usize,
 }
 
@@ -356,6 +363,11 @@ impl DirectInput {
                     if let Some(e) = d.ff.as_ref() {
                         let _ = e.Stop();
                     }
+                    // (the shaking is started again once the focus is back)
+                    if let Some(e) = d.vib.as_ref() {
+                        let _ = e.Stop();
+                    }
+                    d.vib_last = (0, 0);
                     let _ = d.dev.Unacquire();
                 }
             }
@@ -414,6 +426,7 @@ impl DirectInput {
             }
             let ff_axis = ff_axis.unwrap_or(0);
             let mut ff = None;
+            let mut vib = None;
             if wants_ff {
                 // the wheel's own centring off: the game's forces take its place
                 let mut ac = DIPROPDWORD { diph: DIPROPHEADER { dwSize: std::mem::size_of::<DIPROPDWORD>() as u32, dwHeaderSize: std::mem::size_of::<DIPROPHEADER>() as u32, dwObj: 0, dwHow: DIPH_DEVICE }, dwData: DIPROPAUTOCENTER_OFF };
@@ -451,9 +464,19 @@ impl DirectInput {
                     }
                     Err(err) => log::warn!("{name}: says it has force feedback, but its constant force could not be made ({err}): no forces"),
                 }
+                if ff.is_some() {
+                    let mut pf = DIPERIODIC { dwMagnitude: 0, lOffset: 0, dwPhase: 0, dwPeriod: 100_000 };
+                    eff.cbTypeSpecificParams = std::mem::size_of::<DIPERIODIC>() as u32;
+                    eff.lpvTypeSpecificParams = &mut pf as *mut _ as *mut core::ffi::c_void;
+                    let mut e: Option<IDirectInputEffect> = None;
+                    match dev.CreateEffect(&GUID_Sine, &mut eff, &mut e, None) {
+                        Ok(()) => vib = e,
+                        Err(err) => log::warn!("{name}: the shaking's periodic effect could not be made ({err}): it is part of the constant force"),
+                    }
+                }
             }
             log::info!("game controller (DirectInput): {name}, {} axes, {} buttons{}", has_axis.iter().filter(|a| **a).count(), caps.dwButtons, if ff.is_some() { format!(", force feedback on axis {}", ff_axis / 4) } else if ff_capable && self.ff { ", force feedback capable (effect unavailable)".into() } else if ff_capable { ", force feedback capable".into() } else { String::new() });
-            Some(Device { name: name.to_string(), guid: *guid, hardware_id, dev, has_axis, ff_capable, ff_axis, state: RawState::default(), ff, ff_error_logged: false, buttons: caps.dwButtons as usize })
+            Some(Device { name: name.to_string(), guid: *guid, hardware_id, dev, has_axis, ff_capable, ff_axis, state: RawState::default(), ff, ff_error_logged: false, vib, vib_last: (0, 0), vib_at: None, buttons: caps.dwButtons as usize })
         }
     }
 
@@ -571,13 +594,67 @@ impl DirectInput {
         }
         true
     }
+
+    /// The shaking on the wheel of device `name`: `amp` 0..1 of the full force, `period` as
+    /// `FF_Vib_Period` (OMSI hands DirectInput Round(period × 10000) µs). Returns whether
+    /// the device plays it as an effect of its own.
+    pub fn set_vibration(&mut self, name: &str, amp: f32, period: f32) -> bool {
+        let found = self.devices.iter().any(|d| d.name == name && d.vib.is_some());
+        if !found || !self.focused {
+            return found;
+        }
+        let magnitude = (amp.clamp(0.0, 1.0) * DI_FFNOMINALMAX as f32) as u32;
+        let period_us = if period.is_finite() { (period.max(0.0) * 10_000.0).round().min(u32::MAX as f32) as u32 } else { 0 };
+        let period_us = if magnitude == 0 { 0 } else { period_us.max(1) };
+        for d in self.devices.iter_mut().filter(|d| d.name == name) {
+            let Some(e) = d.vib.as_ref() else { continue };
+            let switching = (d.vib_last.0 == 0) != (magnitude == 0);
+            if d.vib_last == (magnitude, period_us) || (!switching && d.vib_at.is_some_and(|t| t.elapsed() < Duration::from_millis(10))) {
+                continue;
+            }
+            let mut axes = [d.ff_axis; 1];
+            let mut dirs = [0i32; 1];
+            let mut pf = DIPERIODIC { dwMagnitude: magnitude, lOffset: 0, dwPhase: 0, dwPeriod: period_us.max(1) };
+            let mut eff = DIEFFECT {
+                dwSize: std::mem::size_of::<DIEFFECT>() as u32,
+                dwFlags: DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS,
+                cAxes: 1,
+                rgdwAxes: axes.as_mut_ptr(),
+                rglDirection: dirs.as_mut_ptr(),
+                cbTypeSpecificParams: std::mem::size_of::<DIPERIODIC>() as u32,
+                lpvTypeSpecificParams: &mut pf as *mut _ as *mut core::ffi::c_void,
+                ..Default::default()
+            };
+            unsafe {
+                let result = if magnitude == 0 {
+                    e.Stop()
+                } else {
+                    // (DIEP_START restarts a playing sine from its phase 0: only when it
+                    // starts, or an amplitude changing every frame cut it to its first 10 ms)
+                    let flags = if switching { DIEP_TYPESPECIFICPARAMS | DIEP_START } else { DIEP_TYPESPECIFICPARAMS };
+                    let r = e.SetParameters(&mut eff, flags);
+                    if r.is_err() {
+                        reacquire(&d.dev, true);
+                        e.SetParameters(&mut eff, DIEP_TYPESPECIFICPARAMS | DIEP_START)
+                    } else {
+                        r
+                    }
+                };
+                if result.is_ok() {
+                    d.vib_last = (magnitude, period_us);
+                    d.vib_at = Some(Instant::now());
+                }
+            }
+        }
+        true
+    }
 }
 
 impl Drop for DirectInput {
     fn drop(&mut self) {
         for d in &self.devices {
             unsafe {
-                if let Some(e) = d.ff.as_ref() {
+                for e in [d.ff.as_ref(), d.vib.as_ref()].into_iter().flatten() {
                     let _ = e.Stop();
                 }
                 let _ = d.dev.Unacquire();

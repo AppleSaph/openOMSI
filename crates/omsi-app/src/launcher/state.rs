@@ -75,6 +75,8 @@ pub struct Choice {
     pub paint: String,
     /// The number plate the player typed for the bus (empty: as the content says).
     pub plate: String,
+    /// The fleet number picked from the bus's `[number]` list (empty: its first).
+    pub number: String,
     pub hof: String,
     /// The depot file was chosen by hand (else it follows the map and the date).
     pub hof_manual: bool,
@@ -110,6 +112,7 @@ impl Default for Choice {
             bus: String::new(),
             paint: String::new(),
             plate: String::new(),
+            number: String::new(),
             hof: String::new(),
             hof_manual: false,
             map: String::new(),
@@ -500,6 +503,7 @@ impl State {
             bus: c.bus.clone(),
             paint: Some(c.paint.clone()).filter(|p| !p.is_empty()),
             plate: Some(c.plate.clone()).filter(|p| !p.trim().is_empty()),
+            number: Some(c.number.clone()).filter(|n| !n.trim().is_empty()),
             hof: Some(c.hof.clone()).filter(|p| !p.is_empty()),
             entry: Some(c.entry),
             line: if c.free { None } else { c.line.clone() },
@@ -911,6 +915,7 @@ impl State {
         }
         self.choice.bus = file.to_string();
         self.choice.paint.clear();
+        self.choice.number.clear();
         // (a hand-picked depot file stays when the new bus has one of that name)
         let keep = self.choice.hof_manual && self.bus().is_some_and(|v| v.hofs.iter().any(|h| h.eq_ignore_ascii_case(&self.choice.hof)));
         if !keep {

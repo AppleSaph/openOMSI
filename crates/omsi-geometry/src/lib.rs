@@ -1034,6 +1034,49 @@ mod tests {
     }
 
     #[test]
+    fn declared_terrain_holes_cut_deep_ground_without_cutting_surroundings() {
+        let side = tile_size() as f32;
+        let (lo, hi, middle) = (side * 0.25, side * 0.75, side * 0.5);
+        let cutter = MeshData {
+            positions: vec![
+                Vec3::new(lo, lo, -12.0), Vec3::new(hi, lo, -12.0),
+                Vec3::new(hi, hi, -12.0), Vec3::new(lo, hi, -12.0),
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
+        };
+        let mut object_hole = TileSurface::new(64);
+        object_hole.rasterize_hole(&cutter, &Mat4::IDENTITY, DVec3::ZERO, 0, 0);
+
+        // An aligned spline's generated outline has the same explicit-hole semantics.
+        let def = strip(side * 0.25, 0.0);
+        let curve = SplineCurve {
+            start: DVec3::new(middle as f64, lo as f64, -12.0),
+            ..plain_curve((hi - lo) as f64, 0.0)
+        };
+        let mut spline_hole = TileSurface::new(64);
+        for ring in spline_hole_outlines(&def, &curve, false, 1) {
+            assert!(!outline_crosses_itself(&ring));
+            spline_hole.add_outline(&ring, 0, 0);
+        }
+        for hole in [&object_hole, &spline_hole] {
+            assert!(hole.cuts_anything(&|_, _| 2.0, 0.12));
+            assert!(hole.cut_at(middle, middle, 2.0, 0.12));
+            assert!(!hole.cut_at(side * 0.1, middle, 2.0, 0.12));
+            let mask = hole.mask_image(&|_, _| 2.0, 0.12);
+            assert_eq!(mask[hole.texel(middle, middle) * 4 + 3], 0);
+            assert_eq!(mask[hole.texel(side * 0.1, middle) * 4 + 3], 255);
+        }
+
+        // Ordinary deep road geometry still does not request an excavation, even when
+        // the optional automatic road-cut heuristic is enabled.
+        let mut road = TileSurface::new(64);
+        road.rasterize_kind(&cutter, &Mat4::IDENTITY, DVec3::ZERO, 0, 0, true);
+        assert!(!road.cuts_anything(&|_, _| 2.0, 0.12));
+        assert!(!road.cut_at(middle, middle, 2.0, 0.12));
+    }
+
+    #[test]
     fn surface_raster_keeps_its_layers() {
         let mut ts = TileSurface::new(512);
         let cell = tile_size() as f32 / 512.0;
@@ -1730,10 +1773,9 @@ pub struct TileSurface {
     blocks: Vec<Option<Box<SurfaceBlock>>>,
     /// `[terrainhole]`: the ground is cut here whatever its height - a junction, an
     /// underpass or a tunnel mouth names a cutter mesh in its model, and OMSI takes the
-    /// terrain away under it instead of leaving a mound over the carriageway. With the
-    /// highest point of the cutter over each texel: a hole only takes the ground away where
-    /// it reaches up to it, so a junction a mapper left thirty metres down does not open a
-    /// window into the sky. In blocks like the surfaces; most tiles have none.
+    /// terrain away under it instead of leaving a mound over the carriageway. Stores the
+    /// highest point of the cutter over each texel, in blocks like the surfaces; most
+    /// tiles have none. Explicit holes do not use the optional road-cut height heuristic.
     holes: Vec<Option<Box<[f32; BLOCK * BLOCK]>>>,
     /// The outlines the splines laid with `[spline_terrain_align]` cut out of the ground
     /// ([`spline_hole_outlines`]), in tile metres, with their bounds (x0, y0, x1, y1): cut
@@ -2138,13 +2180,10 @@ impl TileSurface {
         for j in 0..n {
             for i in 0..n {
                 let k = j * n + i;
-                if let Some(top) = self.hole_height(k) {
-                    // a [terrainhole] takes the ground away where it reaches up to it
-                    let t = terrain_at((i as f32 + 0.5) * cell, (j as f32 + 0.5) * cell);
-                    if t <= top + DEEP_CUT {
-                        cut[k] = true;
-                        continue;
-                    }
+                if self.hole_height(k).is_some() {
+                    // An authored excavation can lie more than a storey below the ground.
+                    cut[k] = true;
+                    continue;
                 }
                 if !self.covered(k) {
                     continue;
@@ -2212,7 +2251,7 @@ impl TileSurface {
             return true;
         }
         let i = self.texel(x, y);
-        if self.hole_height(i).map(|top| terrain_h <= top + DEEP_CUT).unwrap_or(false) {
+        if self.hole_height(i).is_some() {
             return true;
         }
         self.cuts(i, terrain_h, flush)
@@ -2260,7 +2299,7 @@ impl TileSurface {
         self.touched().any(|k| {
             let (i, j) = (k % n, k / n);
             let t = terrain_at((i as f32 + 0.5) * cell, (j as f32 + 0.5) * cell);
-            self.hole_height(k).map(|top| t <= top + DEEP_CUT).unwrap_or(false) || (self.covered(k) && self.cuts(k, t, flush))
+            self.hole_height(k).is_some() || (self.covered(k) && self.cuts(k, t, flush))
         })
     }
 }

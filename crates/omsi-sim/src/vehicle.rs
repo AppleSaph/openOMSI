@@ -2609,7 +2609,8 @@ pub fn compute_mesh_props(ty: &VehicleType, var: &dyn Fn(&str) -> Option<f32>) -
                             .parse::<f32>()
                             .ok()
                             .or_else(|| var(v))
-                            .unwrap_or(0.0);
+                            // (a variable the bus does not have: always on, see below)
+                            .unwrap_or(1.0);
                         props.slot_light[slot] = props.slot_light[slot].max(if x >= 0.5 { 1.0 } else { 0.0 });
                     }
                 }
@@ -2690,7 +2691,7 @@ impl PropSource {
 #[derive(Debug, Clone, Default)]
 struct MeshPlan {
     slots: usize,
-    /// `[matl_change]` (default 1) and `[matl_lightmap]` (default 0) per slot.
+    /// `[matl_change]` (default 1) and `[matl_lightmap]` (default 1: a variable the bus does not have is on) per slot.
     night: Vec<(usize, PropSource)>,
     light: Vec<(usize, PropSource)>,
     /// `[visible]` variable and value.
@@ -2810,9 +2811,10 @@ impl PropsPlan {
                 props.slot_light[slot] = 0.0;
             }
             // (a light map is on at its variable's 0.5 and off below - Omsi.exe skips the
-            // texture stage of one whose variable reads under 0.5, 0x7fe51f - never half lit)
+            // texture stage of one whose variable reads under 0.5, 0x7fe51f - never half lit;
+            // one whose variable the bus does not have - index -1 - is always on, 0x7fe4e7)
             for &(slot, src) in &plan.light {
-                props.slot_light[slot] = props.slot_light[slot].max(if src.value(vars, 0.0) >= 0.5 { 1.0 } else { 0.0 });
+                props.slot_light[slot] = props.slot_light[slot].max(if src.value(vars, 1.0) >= 0.5 { 1.0 } else { 0.0 });
             }
             if let Some((i, value)) = plan.visible {
                 if let Some(x) = vars.get(i) {
@@ -3744,6 +3746,54 @@ mod tests {
         // Dirt_Norm is not declared by the scripts; the engine adds it later
         v.set_engine_var("Dirt_Norm", 0.63);
         compare(&v);
+    }
+
+    /// A `[matl_lightmap]` whose variable the bus does not have is always on (Omsi.exe's
+    /// index -1, 0x7fe4e7); one on a variable at 0.3 is off.
+    #[test]
+    fn a_lightmap_on_an_unknown_variable_is_on() {
+        let root = omsi_cfg::env::var_os("OMSI_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("../../../OMSI 2 Original"));
+        let bus = root.join("Vehicles/MAN_NL_NG/MAN_EN92_main.bus");
+        if !bus.exists() {
+            eprintln!("skipped: no {}", bus.display());
+            return;
+        }
+        let light = |name: Option<&str>, value: f32| {
+            let mut ty = VehicleType::load(&root, &bus).expect("EN92");
+            let (i, slot, var) = ty
+                .meshes
+                .iter()
+                .enumerate()
+                .find_map(|(i, vm)| {
+                    ty.model.meshes[vm.def_index].materials.iter().find_map(|m| {
+                        let (_, v) = m.lightmaps.first()?;
+                        Some((i, override_slot(&vm.materials, m)?, v.clone()))
+                    })
+                })
+                .expect("a lightmap");
+            let di = ty.meshes[i].def_index;
+            for m in ty.model.meshes[di].materials.iter_mut() {
+                if let Some(l) = m.lightmaps.first_mut() {
+                    l.1 = name.unwrap_or(&var).to_string();
+                    m.lightmaps.truncate(1);
+                }
+            }
+            let mut v = VehicleInstance::new(Arc::new(ty), VehicleHost::new(crate::SimClock::default()));
+            for x in v.state.vars.iter_mut() {
+                *x = value;
+            }
+            let mut plan = PropsPlan::default();
+            plan.refresh(&v.ty, &v.var_index);
+            let mut got = vec![MeshProps::default(); 3];
+            plan.apply(&v.state.vars, &mut got);
+            let want = compute_mesh_props(&v.ty, &|n| v.var(n));
+            assert_eq!(got[i].slot_light[slot], want[i].slot_light[slot]);
+            got[i].slot_light[slot]
+        };
+        assert_eq!(light(Some("no_such_var"), 0.3), 1.0);
+        assert_eq!(light(None, 0.3), 0.0);
     }
 
     /// The articulated GN92 turning right: the angle goes to `articulation_0_alpha` (the

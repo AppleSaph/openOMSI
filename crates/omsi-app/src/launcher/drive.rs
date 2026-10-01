@@ -174,6 +174,18 @@ fn step_bus(l: &mut Launcher, r: Rect) {
                 l.state.touched();
             }
         }
+        // the fleet number from the bus's `[number]` list (Omsi.exe's number combo,
+        // 0x67e150): it gives the `number` variable and the plate the list pairs with it
+        if !v.numbers.is_empty() {
+            y += ROW + 8.0;
+            l.ui.label(Rect::new(r.x, y, 130.0, ROW), "Fleet number");
+            let opts: Vec<String> = v.numbers.iter().map(|(n, p)| if p.trim().is_empty() { n.clone() } else { format!("{n}  ({})", p.trim()) }).collect();
+            let mut sel = v.numbers.iter().position(|(n, _)| *n == l.state.choice.number).unwrap_or(0);
+            if l.ui.select("number", Rect::new(r.x + 130.0, y, r.w - 130.0, ROW), &mut sel, &opts) {
+                l.state.choice.number = v.numbers[sel].0.clone();
+                l.state.touched();
+            }
+        }
         // the number plate (registration) by hand: empty leaves it to the bus's `[number]`
         // list and the map's `registrations.txt`, as before
         y += ROW + 8.0;

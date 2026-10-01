@@ -281,9 +281,12 @@ far end at the spline's end, 3 and 4 the near end at its start, otherwise each p
 third value moves it past the end. A `.sli` without `[terrainholeprofile]` gets one per
 string of joined `[profile]`s (0x5ab908): its left end and right end 3 cm in and 3 mm
 down, a bottom 10 cm under its lowest point reaching 0.5 m past both ends. An outline
-that crosses itself cuts nothing. `[terrainhole] <mesh.o3d>` inside a `[mesh]` block of a model.cfg names a
-cutter that takes the ground away under the object - 85 of the stock junction objects carry
-one, next to the model or in its `model` folder. Both matter: without them the terrain
+that crosses itself cuts nothing. Each `[terrainhole] <mesh.o3d>` in a `.sco` or model.cfg names an
+object-wide cutter, including declarations before the first `[mesh]` and repeated commands.
+The cutter sits next to its declaring file or in its `model` folder; declarations in a `.sco`
+also apply when it references a separate model.cfg. Explicit cutters apply even to deep
+excavations; the optional automatic road-cut height limit does not restrict them.
+Both object and spline cutters matter: without them the terrain
 stands over the carriageway, which from the driver's seat looks like a missing road.
 
 `[groundtex]` (global.cfg) is one ground texture the map may be painted with: texture,

@@ -354,9 +354,8 @@ fn shade_enhanced(in: VsOut) -> vec4<f32> {
         }
         tex.a = select(1.0, tm.a, material.params.w > 0.5);
         if (terrain && material.params.x > 1.5) {
-            let lum = dot(tex.rgb, vec3<f32>(0.333, 0.333, 0.333));
-            let m = tex.a + (lum - 0.5) * 0.45;
-            tex.a = smoothstep(0.32, 0.68, m);
+            // Coverage belongs to the brush mask, not the angle-dependent diffuse mip.
+            tex.a = smoothstep(0.32, 0.68, tex.a);
         }
     }
     let mode = material.params.x;
@@ -419,7 +418,9 @@ fn shade_enhanced(in: VsOut) -> vec4<f32> {
     // is a depth-disabled blended layer; env/transmap data then tells us it is a pane,
     // rather than a dirt/text overlay.  This restores traffic interiors and keeps bus
     // panes on the reflection/transmission path after the material-depth repair.
-    let glass = mode > 1.5 && material.bump.z > 0.5 &&
+    // Painted terrain also blends a transmap without writing depth. It is never glass:
+    // Fresnel opacity on its empty mask pixels darkens every lower layer at grazing angles.
+    let glass = !terrain && mode > 1.5 && material.bump.z > 0.5 &&
         (has_env || material.params.z > 0.5 || material.emissive.w > 0.5);
     let painted_transmap = material.params.z > 0.5 && !glass;
     // An envmap on opaque vehicle paint is legacy material data, not a request to make

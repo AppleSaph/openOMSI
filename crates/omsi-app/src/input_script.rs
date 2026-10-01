@@ -2603,15 +2603,30 @@ impl App {
                     p.cam_choice = (0, 0);
                 }
             }
-            "view_toggle_viewpoint" | "view_interiorcam_plus" | "view_interiorcam_minus" => {
+            // the next (or the previous) view mode, driver - passenger - outside - map and
+            // round again; nothing on foot (Omsi.exe 0x706278 @0x70634a: (mode + 1) and 3,
+            // @0x706392 the inverse)
+            "view_toggle_viewpoint" | "view_toggle_viewpoint_inverse" => {
+                if self.ego {
+                    return true;
+                }
+                let mode = match self.view.as_str() {
+                    "driver" => 0,
+                    "pax" => 1,
+                    "outside" => 2,
+                    _ => 3,
+                };
+                let next = if name == "view_toggle_viewpoint" { (mode + 1) % 4 } else { (mode + 3) % 4 };
+                return self.game_action(["view_set_driver", "view_set_passenger", "view_set_outside", "view_set_map"][next]);
+            }
+            "view_interiorcam_plus" | "view_interiorcam_minus" => {
                 let Some(p) = self.player.as_mut() else { return true };
                 // (the interior cameras only cycle in the interior: from outside the keys
                 // would change an invisible camera)
                 if !matches!(self.view.as_str(), "driver" | "pax") {
                     return true;
                 }
-                let def = &p.vehicle.ty.def;
-                let (count, pax) = if self.view == "pax" { (p.pax_camera_count(), true) } else { (def.cameras_driver.len(), false) };
+                let (count, pax) = if self.view == "pax" { (p.pax_camera_count(), true) } else { (p.driver_camera_count(), false) };
                 if count > 1 {
                     let c = if pax { &mut p.cam_choice.1 } else { &mut p.cam_choice.0 };
                     *c = if name == "view_interiorcam_minus" { (*c + count - 1) % count } else { (*c + 1) % count };

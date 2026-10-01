@@ -5,8 +5,10 @@
 //! Russian installation reads Windows-1251, a Polish or Czech one Windows-1250, a German
 //! one Windows-1252. A mod is written for the code page of its author, so the LiAZ 5292 or
 //! the Scania Citywide's Russian cockpit texts only read as Cyrillic on a Russian Windows;
-//! read as 1252, the LiAZ called itself "ËèÀÇ 5292.20". openOMSI has no system code
-//! page to borrow, so every file is looked at on its own ([`detect`]).
+//! read as 1252, the LiAZ called itself "ËèÀÇ 5292.20". openOMSI looks at every file on
+//! its own ([`detect`]), except on a Windows whose ANSI code page is a double-byte one
+//! (Chinese, Japanese, Korean): there it reads what is not UTF-8 in that code page, as
+//! OMSI does, since a hanzi folder name in an `ailists.cfg` reads as nothing else.
 //!
 //! File names have a second problem: a zip archive stores a name without its UTF-8 flag in
 //! the OEM code page of the machine that made it (CP866 on a Russian one), and the tool
@@ -23,6 +25,14 @@ pub enum CodePage {
     Windows1250,
     Windows1251,
     Windows1252,
+    /// CP936, simplified Chinese.
+    Gbk,
+    /// CP950, traditional Chinese.
+    Big5,
+    /// CP932, Japanese.
+    ShiftJis,
+    /// CP949, Korean.
+    EucKr,
 }
 
 impl CodePage {
@@ -32,7 +42,41 @@ impl CodePage {
             CodePage::Windows1250 => encoding_rs::WINDOWS_1250,
             CodePage::Windows1251 => encoding_rs::WINDOWS_1251,
             CodePage::Windows1252 => encoding_rs::WINDOWS_1252,
+            CodePage::Gbk => encoding_rs::GBK,
+            CodePage::Big5 => encoding_rs::BIG5,
+            CodePage::ShiftJis => encoding_rs::SHIFT_JIS,
+            CodePage::EucKr => encoding_rs::EUC_KR,
         }
+    }
+
+    /// The double-byte code page a Windows ANSI code page number stands for.
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
+    fn double_byte(acp: u32) -> Option<CodePage> {
+        match acp {
+            936 => Some(CodePage::Gbk),
+            950 => Some(CodePage::Big5),
+            932 => Some(CodePage::ShiftJis),
+            949 => Some(CodePage::EucKr),
+            _ => None,
+        }
+    }
+}
+
+/// The system's ANSI code page when it is a double-byte one (Windows only).
+fn system_double_byte() -> Option<CodePage> {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetACP() -> u32;
+        }
+        static ACP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        // SAFETY: GetACP takes nothing and only returns a number.
+        CodePage::double_byte(*ACP.get_or_init(|| unsafe { GetACP() }))
+    }
+    #[cfg(not(windows))]
+    {
+        None
     }
 }
 
@@ -59,12 +103,21 @@ fn central_european_upper(b: u8) -> bool {
 ///   at most two, "Größe"), so half of the high letters sitting in such runs means 1251;
 /// * a Polish or Czech text has 1250 letters that are signs in 1252 next to plain letters;
 /// * everything else is Windows-1252, the code page of the stock content.
+///
+/// On a Windows with a double-byte ANSI code page, what is not UTF-8 is in that one.
 pub fn detect(bytes: &[u8]) -> CodePage {
+    detect_on(bytes, system_double_byte())
+}
+
+fn detect_on(bytes: &[u8], system: Option<CodePage>) -> CodePage {
     if bytes.is_ascii() {
         return CodePage::Windows1252;
     }
     if std::str::from_utf8(bytes).is_ok() {
         return CodePage::Utf8;
+    }
+    if let Some(page) = system {
+        return page;
     }
     let (mut letters, mut in_runs, mut run) = (0usize, 0usize, 0usize);
     let close_run = |run: &mut usize, in_runs: &mut usize| {
@@ -250,6 +303,17 @@ mod tests {
         assert_eq!(detect(&cp1252("Volumenstrom in m³/s, Dichte in g/m³")), CodePage::Windows1252);
         assert_eq!(detect("Überlandbus".as_bytes()), CodePage::Utf8);
         assert_eq!(decode(&cp1251("ЛиАЗ")), "ЛиАЗ");
+    }
+
+    #[test]
+    fn reads_the_double_byte_system_code_page() {
+        let gbk = encoding_rs::GBK.encode("Vehicles\\公交车\\x.bus").0.into_owned();
+        let page = detect_on(&gbk, CodePage::double_byte(936));
+        assert_eq!(page, CodePage::Gbk);
+        assert_eq!(page.encoding().decode_without_bom_handling(&gbk).0, "Vehicles\\公交车\\x.bus");
+        // UTF-8 stays UTF-8, and other systems keep the guess
+        assert_eq!(detect_on("公交车".as_bytes(), CodePage::double_byte(936)), CodePage::Utf8);
+        assert_ne!(detect_on(&gbk, CodePage::double_byte(1251)), CodePage::Gbk);
     }
 
     #[test]

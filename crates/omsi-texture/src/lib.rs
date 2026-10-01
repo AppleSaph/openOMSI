@@ -245,6 +245,10 @@ pub fn find_texture(name: &str, dirs: &[&Path]) -> Option<PathBuf> {
 }
 
 fn find_texture_uncached(name: &str, dirs: &[&Path]) -> Option<PathBuf> {
+    find_texture_in_season(name, dirs, season_folder().as_deref())
+}
+
+fn find_texture_in_season(name: &str, dirs: &[&Path], season: Option<&str>) -> Option<PathBuf> {
     // a file named in full (a paint scheme's picture, resolved in its scheme's folder)
     let full = Path::new(name.trim());
     if full.is_absolute() && omsi_cfg::vfs::is_file(full) {
@@ -256,13 +260,12 @@ fn find_texture_uncached(name: &str, dirs: &[&Path]) -> Option<PathBuf> {
     }
     let stem_path = Path::new(&name);
     let stem = stem_path.with_extension("");
-    let season = season_folder();
     // A seasonal texture lives in a subfolder of the folder the texture itself is in:
     // `Texture\WinterSnow\gras.bmp` for `Texture\gras.bmp`. The name often carries that
     // folder with it, so the season goes in front of the file name, not in front of the
     // whole path; both spellings are tried.
     let mut names: Vec<String> = Vec::new();
-    if let Some(f) = &season {
+    if let Some(f) = season {
         match (stem_path.parent(), stem_path.file_name()) {
             (Some(par), Some(file)) if !par.as_os_str().is_empty() => names.push(format!("{}/{}/{}", par.display(), f, file.to_string_lossy())),
             (_, Some(file)) => names.push(format!("{}/{}", f, file.to_string_lossy())),
@@ -275,9 +278,12 @@ fn find_texture_uncached(name: &str, dirs: &[&Path]) -> Option<PathBuf> {
     // BS_Gehweg_Allgemein1.bmp` in a spline of another folder of that add-on).
     let from_root: Vec<PathBuf> = if name.contains('/') { omsi_cfg::content_roots().into_iter().take(1).collect() } else { Vec::new() };
     let dirs: Vec<&Path> = dirs.iter().copied().chain(from_root.iter().map(|p| p.as_path())).collect();
-    for cand_name in &names {
-        let cand_stem = Path::new(cand_name).with_extension("");
-        for dir in &dirs {
+    // A global seasonal picture must not replace a pack's own base texture: its
+    // sidecar can mark a terrain-mapped slot, while the unrelated global copy cannot.
+    // Preserve the directory priority, then prefer the season within that directory.
+    for dir in &dirs {
+        for cand_name in &names {
+            let cand_stem = Path::new(cand_name).with_extension("");
             let p = omsi_cfg::resolve_path(dir, cand_name);
             if omsi_cfg::vfs::is_file(&p) {
                 return Some(p);
@@ -308,7 +314,7 @@ fn find_texture_uncached(name: &str, dirs: &[&Path]) -> Option<PathBuf> {
             }
         }
         if let Some(file) = parts.last() {
-            if let Some(p) = find_texture_uncached(file, &dirs) {
+            if let Some(p) = find_texture_in_season(file, &dirs, season) {
                 return Some(p);
             }
         }
@@ -508,6 +514,53 @@ impl TextureCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seasonal_textures_keep_pack_priority_and_terrain_mapping() {
+        let dir = std::env::temp_dir().join(format!(
+            "omsi-texture-season-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let local = dir.join("pack/texture");
+        let global = dir.join("Texture");
+        for folder in [&local, &global] {
+            std::fs::create_dir_all(folder.join("Fall")).unwrap();
+        }
+        for path in [
+            local.join("mapped.dds"),
+            global.join("Fall/mapped.bmp"),
+            local.join("seasonal.bmp"),
+            local.join("Fall/seasonal.dds"),
+            global.join("Fall/seasonal.bmp"),
+            global.join("fallback.bmp"),
+            global.join("Fall/fallback.dds"),
+        ] {
+            std::fs::write(path, b"lookup-only fixture").unwrap();
+        }
+        for name in ["mapped.bmp.cfg", "seasonal.bmp.cfg"] {
+            std::fs::write(local.join(name), "[terrainmapping]\n").unwrap();
+        }
+        let dirs = [local.as_path(), global.as_path()];
+        // A local placeholder may use a different extension from the authored name.
+        // The map's unrelated autumn grass must not hide its terrain-mapping flag.
+        let mapped = find_texture_in_season("mapped.bmp", &dirs, Some("Fall")).unwrap();
+        assert_eq!(mapped, local.join("mapped.dds"));
+        assert!(TextureCfg::load(&cfg_path("mapped.bmp", &mapped).unwrap()).terrain_mapping);
+        // The pack's own seasonal variant still wins and inherits its base sidecar.
+        let seasonal = find_texture_in_season("seasonal.bmp", &dirs, Some("Fall")).unwrap();
+        assert_eq!(seasonal, local.join("Fall/seasonal.dds"));
+        assert!(TextureCfg::load(&cfg_path("seasonal.bmp", &seasonal).unwrap()).terrain_mapping);
+        // A texture absent from the pack keeps the global seasonal fallback.
+        assert_eq!(
+            find_texture_in_season("fallback.bmp", &dirs, Some("Fall")),
+            Some(global.join("Fall/fallback.dds")),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// A mesh's texture name with Windows' quirks (Ahlheim's `anz-oben.jpg.`) finds the file.
     #[test]

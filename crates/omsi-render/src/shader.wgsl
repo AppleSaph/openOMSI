@@ -1379,14 +1379,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         if (material.extra.x > 0.5 && material.params.x > 1.5) {
             // A painted ground layer. The brush mask is coarse (0.6-3 m per texel) and
             // binary; the loader smooths it into a soft ramp around a smooth curve
-            // (`smooth_paint_mask` in scene.rs). Sharpen the ramp and let the ground
-            // texture's own light and dark decide where the new surface wins within the
-            // ramp - cobbles then fray into the grass stone by stone instead of in soft
-            // rectangles. (On the raw mask this sharpening is what drew the texel grid
-            // as a staircase along every painted edge.)
-            let lum = dot(tex.rgb, vec3<f32>(0.333, 0.333, 0.333));
-            let m = tex.a + (lum - 0.5) * 0.45;
-            tex.a = smoothstep(0.32, 0.68, m);
+            // (`smooth_paint_mask` in scene.rs). Sharpen only that coverage ramp:
+            // diffuse/detail mip colours change with viewing angle, and including
+            // their luminance made covered ground fade into lower layers at a slant.
+            tex.a = smoothstep(0.32, 0.68, tex.a);
         }
     }
     let mode = material.params.x;
