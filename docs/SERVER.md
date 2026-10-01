@@ -30,8 +30,8 @@ Players reach it two ways:
   Multiplayer → Servers list shows. With `share_positions = 1` it also answers
   `GET /players`: a JSON array of the players (`id`, `name`, `bus`, `line`, `destination`,
   `tour`, `x`/`y` in world metres east/north, `heading` in degrees clockwise from north,
-  `speed_kmh`, `on_foot` and `aboard` - a player on foot is where it walks, one sitting in
-  another player's bus is with that bus (its id) - and `lat`/`lon` on a `[worldcoordinates]`
+  `speed_kmh`, `on_foot` and `aboard` - a player on foot is where it walks (even with its
+  own bus parked nearby), one sitting in another player's bus is with that bus (its id) - and `lat`/`lon` on a `[worldcoordinates]`
   map such as Berlin-Spandau, `null` elsewhere), refreshed every second - what a live map of
   the server on a website needs.
   It is off by default: the players' names and positions are then nobody's business.

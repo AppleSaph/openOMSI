@@ -204,20 +204,20 @@ pub(crate) fn tick_status(lan: &omsi_net::LanSession, time: f64, weather: &str) 
     crate::lan::update_server_players(list);
 }
 
-/// A player for `GET /players`: placed with the bus it drives; on foot, where it walks (the
-/// vehicle fields of such a state are left at zero); aboard another player's bus, with that
-/// bus (the walker's own point lags behind it). `None`: no place known.
+/// A player for `GET /players`: on foot - a walker in its state - where it walks, or with the
+/// bus it sits in (`Walker::aboard`; the walker's own point lags behind that bus); otherwise
+/// with the bus it drives. The walker comes first: a player who got out keeps its vehicle, so
+/// such a state carries `FLAG_VEHICLE` (the parked bus) and the walker. `None`: no place known.
 pub(crate) fn player_info<'a>(q: &omsi_net::Pose, pose_of: impl Fn(u32) -> Option<&'a omsi_net::Pose>) -> Option<omsi_net::ws::PlayerInfo> {
-    let driving = q.has_vehicle();
-    let (x, y, heading, speed_kmh, aboard) = if driving {
-        (q.x, q.y, q.heading, q.speed_kmh, None)
-    } else {
-        let w = q.walker?;
-        match w.aboard.and_then(|a| pose_of(a.owner)).filter(|b| b.has_vehicle()) {
+    let driving = q.walker.is_none() && q.has_vehicle();
+    let (x, y, heading, speed_kmh, aboard) = match q.walker {
+        Some(w) => match w.aboard.and_then(|a| pose_of(a.owner)).filter(|b| b.has_vehicle()) {
             Some(b) => (b.x, b.y, b.heading, b.speed_kmh, Some(b.id)),
             // (a walker's speed is in m/s)
             None => (w.x, w.y, w.heading, w.speed * 3.6, None),
-        }
+        },
+        None if driving => (q.x, q.y, q.heading, q.speed_kmh, None),
+        None => return None,
     };
     Some(omsi_net::ws::PlayerInfo {
         id: q.id,
@@ -266,6 +266,18 @@ mod players_tests {
         // aboard a bus that is gone: its own point
         let g = player_info(&w, none).unwrap();
         assert_eq!((g.x, g.y, g.aboard), (90.0, 190.0, None));
+        // got out of its own bus: the state keeps FLAG_VEHICLE and the parked bus's place, and
+        // has the walker - the walker wins
+        let mut out = bus(5, 100.0, 200.0);
+        out.walker = Some(Walker { x: 104.0, y: 197.0, heading: 180.0, speed: 1.0, ..Default::default() });
+        assert!(out.has_vehicle());
+        let o = player_info(&out, none).unwrap();
+        assert_eq!((o.x, o.y, o.heading, o.on_foot, o.aboard, o.bus.as_str(), o.line.as_str()), (104.0, 197.0, 180.0, true, None, "", ""));
+        assert!((o.speed_kmh - 3.6).abs() < 1e-4);
+        // and sitting in another player's bus after getting out of its own: with that bus
+        out.walker = Some(Walker { x: 1.0, y: 1.0, aboard: Some(Aboard { owner: 2, ..Default::default() }), ..Default::default() });
+        let oa = player_info(&out, |id| (id == 2).then_some(&driver)).unwrap();
+        assert_eq!((oa.x, oa.y, oa.on_foot, oa.aboard), (100.0, 200.0, true, Some(2)));
         // neither a bus nor a walker: not listed
         assert!(player_info(&Pose { id: 4, ..Default::default() }, none).is_none());
     }
