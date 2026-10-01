@@ -944,49 +944,49 @@ fn options_pages(app: &App) -> Vec<Page> {
     let pct = |v: f32| format!("{:.0} %", v * 100.0);
     let cm = |v: f32| format!("{:+.0} cm", v * 100.0);
     let game: Vec<(String, String)> = vec![
-        switch_row(app, "navigator", "Navigator", "Route and next stops on the navigation screen."),
-        switch_row(app, "get_up", "Ability to get up (Ctrl+Shift+G)", "Leave the seat and walk about."),
-        switch_row(app, "coll_objects", "Collisions with objects", "The vehicle stops at buildings, poles and other scenery."),
-        switch_row(app, "coll_vehicles", "Collisions with vehicles", "Vehicles can run into each other."),
-        switch_row(app, "timetable_win", "Timetable window", "The stops of the current trip, on the right (needs an active route)."),
-        switch_row(app, "info_bar", "Information bar", "Time, line and delay along the top of the picture."),
+        switch_row(app, "navigator", "Navigator", "Enables/Disables the Minimap"),
+        switch_row(app, "get_up", "Ability to get up (Ctrl+Shift+G)", "Allows you to get out of the car and explore the world"),
+        switch_row(app, "coll_objects", "Collisions with objects", "Enables/disables collisions with objects such as buildings, streetlights, etc."),
+        switch_row(app, "coll_vehicles", "Collisions with vehicles", "Enables/Disables Collisions with Other Vehicles"),
+        switch_row(app, "timetable_win", "Timetable window", "Displays a list of all stops (only when a tour is active)"),
+        switch_row(app, "info_bar", "Information bar", "Displays information such as the time, speed, and other details at the top of the screen"),
     ]
         .into_iter()
         .flatten()
         .collect();
     let picture: Vec<(String, String)> = vec![
-        slider_row(app, "volume", "Volume", "The loudness of the whole game.", &pct),
-        switch_row(app, "shadows", "Sun shadows", "Shadows cast by the sun. Turn them off for more frames per second."),
-        switch_row(app, "fps", "Frame rate", "Show the frames per second in the top right corner."),
-        slider_row(app, "led_glow", "LED glow", "How strongly the dots of LED destination displays glow.", &|v| format!("{}/15", v as i64)),
+        slider_row(app, "volume", "Volume", "Set how loud the game should be", &pct),
+        switch_row(app, "shadows", "Sun shadows", "Enables/Disabled shadows"),
+        switch_row(app, "fps", "Frame rate", "Show the frames per second in the top right corner"),
+        slider_row(app, "led_glow", "LED glow", "How strongly the dots of LED destination displays glow", &|v| format!("{}/15", v as i64)),
         slider_row(app, "led_mips", "LED mask mipmaps", "Keep the mip chain of the LED masks (smoother from a distance).", &|v| format!("{v:.2}")),
     ]
         .into_iter()
         .flatten()
         .collect();
     let mut camera: Vec<(String, String)> = vec![
-        switch_row(app, "head", "Head movement", "The view moves with the vehicle's acceleration."),
-        switch_row(app, "cam_smooth", "Smooth viewpoint changes", "The camera glides between viewpoints instead of jumping."),
-        switch_row(app, "camcoll", "Camera collisions", "The outside camera cannot pass through objects."),
-        switch_row(app, "steer_look", "View turns with steering", "The view follows the steering wheel."),
-        switch_row(app, "hands_in_cab", "Driver's hands in the cab view", "Show the driver's hands on the wheel in the cab view."),
-        switch_row(app, "headtrack", "Head tracking", &format!("Head tracking with opentrack (UDP port {}).", s.head_tracking_port)),
-        slider_row(app, "seat 1", "Seat forward and back", "Move the driver's seat along the vehicle.", &cm),
-        slider_row(app, "seat 2", "Seat height", "Raise or lower the driver's seat.", &cm),
-        slider_row(app, "seat 0", "Seat left and right", "Move the driver's seat sideways.", &cm),
+        switch_row(app, "head", "Head movement", "The view moves with the vehicle's acceleration"),
+        switch_row(app, "cam_smooth", "Smooth viewpoint changes", "Enables a smooth transition between camera perspectives"),
+        switch_row(app, "camcoll", "Camera collisions", "The outside camera cannot pass through objects"),
+        switch_row(app, "steer_look", "View turns with steering", "Camera turns with the steering wheel (cockpit only)"),
+        switch_row(app, "hands_in_cab", "Driver's hands in the cab view", "Shows the driver's hand on the steering wheel (Cockpit only)"),
+        switch_row(app, "headtrack", "Head tracking", &format!("Head tracking with opentrack (UDP port {})", s.head_tracking_port)),
+        slider_row(app, "seat 1", "Seat forward and back", "Adjust the driver's seat position forward or backward", &cm),
+        slider_row(app, "seat 2", "Seat height", "Adjust the driver's seat height", &cm),
+        slider_row(app, "seat 0", "Seat left and right", "Adjust the driver's seat position from side to side", &cm),
     ]
         .into_iter()
         .flatten()
         .collect();
     camera.push(button("Reset the seat position", "Reset", "Put the seat back where the vehicle has it.", "seat_reset"));
     let controls: Vec<(String, String)> = vec![
-        switch_row(app, "mouse", "Steering with the mouse", "Steer and use the pedals with the mouse."),
-        slider_row(app, "mouse_sens", "Mouse steering sensitivity", "How far the wheel turns for the cursor's way across the window.", &pct),
-        switch_row(app, "ff", "Force feedback and vibration", "Force feedback of the wheel and the controller's vibration."),
-        switch_row(app, "brake_hold", "Keyboard brake stays on", "The brake stays applied until the throttle is pressed."),
-        switch_row(app, "auto_clutch", "Automatic clutch", "The clutch is operated for you."),
-        slider_row(app, "pedal_t", "Throttle pedal strength", "How strongly a pedal input acts on the throttle.", &|v| format!("x{v}")),
-        slider_row(app, "pedal_b", "Brake pedal strength", "How strongly a pedal input acts on the brake.", &|v| format!("x{v}")),
+        switch_row(app, "mouse", "Steering with the mouse", "Steer and control the pedals using the mouse"),
+        slider_row(app, "mouse_sens", "Mouse steering sensitivity", "Adjust how much the steering wheel turns based on mouse movement", &pct),
+        switch_row(app, "ff", "Force feedback and vibration", "Enable force feedback for the steering wheel and vibration for controllers"),
+        switch_row(app, "brake_hold", "Keyboard brake stays on", "Keep the brake applied until the throttle is pressed"),
+        switch_row(app, "auto_clutch", "Automatic clutch", "Automatically operate the clutch for you"),
+        slider_row(app, "pedal_t", "Throttle pedal strength", "Adjust how strongly pedal input affects the throttle", &|v| format!("x{v}")),
+        slider_row(app, "pedal_b", "Brake pedal strength", "Adjust how strongly pedal input affects the brake", &|v| format!("x{v}"))
     ]
         .into_iter()
         .flatten()
@@ -999,37 +999,37 @@ fn vehicle_pages(app: &App) -> Vec<Page> {
     let server = crate::input_script::on_server(&app.args);
     let mut display: Vec<(String, String)> = Vec::new();
     if has {
-        display.push(opens("Destination display", "The destination and the route number shown on the vehicle.", "dest"));
-        display.push(opens("Depot file (HOF)", "The depot file the vehicle's display and timetable use.", "hof"));
-        display.push(opens("Fleet number", "The vehicle's number and registration.", "number"));
+        display.push(opens("Destination display", "Change the current destination", "dest"));
+        display.push(opens("Depot file (HOF)", "Change the current depot file (used for the timetable)", "hof"));
+        display.push(opens("Fleet number", "Change the vehicle's current fleet number", "number"));
     }
     if !server {
-        display.push(opens("Driver", "Whose personnel file this run goes into.", "driver"));
+        display.push(opens("Driver", "Change the current driver profile", "driver"));
     }
     let mut fleet: Vec<(String, String)> = Vec::new();
     if has || !app.placed.is_empty() {
-        fleet.push(button("Drive the next vehicle", "Switch", "Take the wheel of another vehicle standing in the world.", "switch"));
+        fleet.push(button("Drive the next vehicle", "Switch", "Take the wheel of another vehicle standing in the world", "switch"));
     }
-    fleet.push(opens("Place a vehicle", "Put another vehicle down beside you.", "place"));
+    fleet.push(opens("Place a vehicle", "Place a vehicle of your choice", "place"));
     if has {
-        fleet.push(button("Couple", "Couple", "Couple the vehicle to the one in front of or behind it.", "couple"));
-        fleet.push(button("Uncouple", "Uncouple", "Separate the coupled vehicles.", "uncouple"));
+        fleet.push(button("Couple", "Couple", "Couple the vehicle to the one in front of or behind it", "couple"));
+        fleet.push(button("Uncouple", "Uncouple", "Separate the coupled vehicles", "uncouple"));
         if app.on_foot.is_none() {
-            fleet.push(button("Get up and out", "Get out", "Leave the seat and walk about.", "getout"));
+            fleet.push(button("Get up and out", "Get out", "Step out of your car and explore the world", "getout"));
         }
-        fleet.push(button("Remove this vehicle", "Remove", "Take this vehicle out of the world (you go on foot).", "remove"));
+        fleet.push(button("Remove this vehicle", "Remove", "Removes the current vehicle", "remove"));
     }
     if !app.placed.is_empty() {
-        fleet.push(button("Remove the placed vehicles", "Remove", "Take every vehicle you placed out of the world.", "clearplaced"));
+        fleet.push(button("Remove the placed vehicles", "Remove", "Removes all vehicles you've placed from the world", "clearplaced"));
     }
     let mut service: Vec<(String, String)> = Vec::new();
     if has {
-        service.push(button("Refuel", "Refuel", "Fill the tank.", "refuel"));
-        service.push(button("Wash", "Wash", "Clean the vehicle.", "wash"));
-        service.push(button("Repair", "Repair", "Repair the damage.", "repair"));
-        service.push(button("Put back on its wheels", "Reset", "Stand the vehicle on its wheels again.", "reset"));
+        service.push(button("Refuel", "Refuel", "Fills the tank of the current vehicle", "refuel"));
+        service.push(button("Wash", "Wash", "Cleans the current vehicle", "wash"));
+        service.push(button("Repair", "Repair", "Repairs the current vehicle", "repair"));
+        service.push(button("Put back on its wheels", "Reset", "Return the vehicle to an upright position", "reset"));
         if !server && app.navigator.is_some() {
-            service.push(button("Move on the map", "Pick", "Click a street on the city map: the vehicle is put there.", "teleport"));
+            service.push(button("Move on the map", "Pick", "Teleports you to any location on the map", "teleport"));
         }
     }
     vec![("Display and driver", display), ("Vehicles", fleet), ("Service", service)]
@@ -1051,15 +1051,15 @@ fn world_pages(app: &App) -> Vec<Page> {
                 let mut c: Vec<char> = d.chars().collect();
                 c.resize(6, '_');
                 let typed = format!("{}{}:{}{}:{}{}", c[0], c[1], c[2], c[3], c[4], c[5]);
-                time.push((row("Exact time", 'E', &typed, "Type the digits, Enter sets the time, Esc cancels.", None), "time_edit".to_string()));
+                time.push((row("Exact time", 'E', &typed, "Press Enter to change, Esc to cancel", None), "time_edit".to_string()));
             }
             None => {
                 let secs = format!("{}:{:02}", now, (t as i64) % 60);
-                time.push((row("Exact time", 'e', &secs, "Press Enter, then type hours, minutes and seconds.", None), "time_edit".to_string()));
+                time.push((row("Exact time", 'e', &secs, "Change the current time (Press Enter to change)", None), "time_edit".to_string()));
             }
         }
-        time.extend(slider_row(app, "hour", "Hour", "Set the hour of the day directly.", &|v| format!("{:02}", v as i64)));
-        time.extend(slider_row(app, "minute", "Minute", "Set the minute directly.", &|v| format!("{:02}", v as i64)));
+        time.extend(slider_row(app, "hour", "Hour", "Set the hour of the day directly", &|v| format!("{:02}", v as i64)));
+        time.extend(slider_row(app, "minute", "Minute", "Set the minute directly", &|v| format!("{:02}", v as i64)));
         for (name, hm, secs) in [("Morning", "06:00", 6 * 3600), ("Noon", "12:00", 12 * 3600), ("Evening", "18:00", 18 * 3600), ("Night", "23:00", 23 * 3600)] {
             time.push(button(name, hm, "Jump to this time of day.", &format!("clock_set {secs}")));
         }
@@ -1067,11 +1067,11 @@ fn world_pages(app: &App) -> Vec<Page> {
             let d = p.vehicle.host.tt_delay as f64;
             if d.abs() >= 1.0 {
                 let text = format!("{}{}:{:02}", if d < 0.0 { "−" } else { "+" }, (d.abs() / 60.0) as i64, d.abs() as i64 % 60);
-                time.push(button("On time with the timetable", &text, "Move the clock so that the vehicle is on time.", "clock_ontime"));
+                time.push(button("On time with the timetable", &text, "Move the clock so that the vehicle is on time", "clock_ontime"));
             }
         }
         if app.lan.is_none() {
-            time.extend(slider_row(app, "speed", "Time speed", "How fast the world's clock runs.", &|v| format!("x{v}")));
+            time.extend(slider_row(app, "speed", "Time speed", "How fast the world's clock runs", &|v| format!("x{v}")));
         }
         weather.push((row("Preset", 'c', &weather_name(app), "A ready-made weather. It blends in over a few minutes; everything below adjusts it.", None), "weather".to_string()));
         let cloud = app.weather.as_ref().and_then(|w| cloud_index(&w.clouds.0)).map(|i| CLOUD_TYPES[i].1.to_string()).or_else(|| app.weather.as_ref().map(|w| w.clouds.0.trim().to_string())).unwrap_or_default();
