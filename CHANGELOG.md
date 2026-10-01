@@ -15,8 +15,6 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
   game's language instead of German everywhere (#629).
 
 ### Controls
-- Keyboard steering works as in OMSI by default: the keys turn the wheel at a steady pace
-  and it stays where they leave it (the self-centring mode is still in the options) (#488).
 - The combined throttle/brake axis puts the throttle on the right half, as OMSI does (#577).
 - A vJoy device no longer crashes the game when vibration starts (#655).
 
