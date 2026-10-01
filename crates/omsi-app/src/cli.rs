@@ -256,7 +256,7 @@ pub(crate) fn parse_cam(s: &str) -> Result<Camera> {
         pitch: v[4],
         roll: 0.0,
         fov_deg: v.get(5).copied().unwrap_or(60.0),
-        near: 0.5,
+        near: 0.1,
         far: 6000.0,
     })
 }

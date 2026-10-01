@@ -307,7 +307,9 @@ impl Devices {
                     // such as Xbox controllers are listed through gilrs.
                     EventType::ButtonPressed(_, code) | EventType::ButtonReleased(_, code)
                         if use_gilrs_buttons(di, is_system_gamepad(pad.name(), is_di(&pad))) => {
-                        out.push((pad.name().to_string(), button_number(&pad, code), matches!(ev.event, EventType::ButtonPressed(..))));
+                        if let Some(n) = button_number(&pad, code) {
+                            out.push((pad.name().to_string(), n, matches!(ev.event, EventType::ButtonPressed(..))));
+                        }
                     }
                     _ => {}
                 }
@@ -955,17 +957,21 @@ fn force_axis_reversed(cfg: Option<&DeviceCfg>, axis: Option<usize>) -> bool {
 /// evdev key code on Linux (BTN_JOYSTICK.. and BTN_TRIGGER_HAPPY.. for a wheel's or
 /// joystick's buttons, BTN_GAMEPAD.. for a pad's), the button index on Windows. It used to be
 /// the place among the buttons pressed so far - the first button ever pressed was "button 1"
-/// whichever it was.
-pub(crate) fn button_number(pad: &gilrs::Gamepad, code: gilrs::ev::Code) -> usize {
+/// whichever it was. None on Windows for a code that is no button (gilrs turns the analog
+/// triggers, axis codes, into button events too: they are pedals, not numbered buttons).
+pub(crate) fn button_number(pad: &gilrs::Gamepad, code: gilrs::ev::Code) -> Option<usize> {
     #[cfg(target_os = "linux")]
     if let Some(n) = declared_button_index(pad.name(), code.into_u32()) {
-        return n;
+        return Some(n);
     }
-    code_button(code.into_u32()).unwrap_or_else(|| {
+    if cfg!(windows) {
+        return code_button(code.into_u32());
+    }
+    Some(code_button(code.into_u32()).unwrap_or_else(|| {
         let mut codes: Vec<u32> = pad.state().buttons().map(|(c, _)| c.into_u32()).collect();
         codes.sort_unstable();
         codes.iter().position(|c| *c == code.into_u32()).unwrap_or(usize::MAX)
-    })
+    }))
 }
 
 #[cfg(target_os = "linux")]
@@ -1036,6 +1042,11 @@ fn code_button(code: u32) -> Option<usize> {
             _ => None,
         }
     } else if cfg!(windows) {
+        // gilrs' D-pad (Button codes u32::MAX-3.. up, right, down, left) is the pad's hat,
+        // numbered as DirectInput's first hat
+        if code >= u32::MAX - 3 {
+            return Some(HAT_BUTTONS + (code - (u32::MAX - 3)) as usize);
+        }
         (hi == 0).then_some(lo)
     } else {
         None
@@ -1280,6 +1291,14 @@ mod button_tests {
         if cfg!(target_os = "linux") {
             assert_eq!(super::code_button(0x1_0120), Some(0));
             assert_eq!(super::code_button(0x1_02c0), Some(16));
+        }
+        if cfg!(windows) {
+            assert_eq!(super::code_button(3), Some(3));
+            // an analog trigger (WGI axis code) is no numbered button
+            assert_eq!(super::code_button(0x1_0004), None);
+            // the D-pad is the first hat, not dropped
+            assert_eq!(super::code_button(u32::MAX - 3), Some(super::HAT_BUTTONS));
+            assert_eq!(super::code_button(u32::MAX), Some(super::HAT_BUTTONS + 3));
         }
     }
 

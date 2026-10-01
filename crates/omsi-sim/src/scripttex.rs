@@ -21,6 +21,9 @@ pub struct ScriptTexture {
     pub mipmaps: bool,
     /// Current draw colour as set by `STSetColor` (r, g, b, a).
     pub color: [u8; 4],
+    /// The size the `[scripttexture]` entry declares, which `STNewTex` comes back to
+    /// (`STLoadTex` makes the texture the size of its file).
+    declared: (u32, u32),
 }
 
 impl ScriptTexture {
@@ -35,7 +38,22 @@ impl ScriptTexture {
             pending: None,
             mipmaps: false,
             color: [255, 255, 255, 255],
+            declared: (w, h),
         }
+    }
+
+    /// `STNewTex`: a new, empty texture of the declared size (TComplMapObjInst.v06 case 0
+    /// releases it and calls D3DXCreateTexture with the `[scripttexture]` entry's size).
+    pub fn renew(&mut self) {
+        let (w, h) = self.declared;
+        if (w, h) != (self.width, self.height) {
+            self.width = w;
+            self.height = h;
+            self.rgba = vec![0; (w * h * 4) as usize];
+            // (an image released at the old size must not go up at the new one)
+            self.pending = None;
+        }
+        self.clear();
     }
 
     pub fn clear(&mut self) {
@@ -134,15 +152,47 @@ impl ScriptTexture {
         }
     }
 
-    /// Copy an image into the texture (top-left aligned).
+    /// `STLoadTex`: the texture becomes the file's picture. Omsi.exe (TComplMapObjInst.v06,
+    /// 0x7bbb08) releases it and calls D3DXCreateTextureFromFileExA with width and height
+    /// D3DX_DEFAULT and a full mip chain: the file's own size rounded up to a power of two,
+    /// the picture stretched to fill it, so the mesh's UVs always cover the whole bitmap
+    /// (a 256x64 bitmap into a 256x32 entry is not cut to its top half).
     pub fn load(&mut self, w: u32, h: u32, rgba: &[u8]) {
-        for y in 0..h.min(self.height) {
-            for x in 0..w.min(self.width) {
-                let si = ((y * w + x) * 4) as usize;
-                self.put(x as i32, y as i32, [rgba[si], rgba[si + 1], rgba[si + 2], rgba[si + 3]]);
+        if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
+            return;
+        }
+        let (tw, th) = (w.next_power_of_two(), h.next_power_of_two());
+        self.width = tw;
+        self.height = th;
+        self.rgba = if (tw, th) == (w, h) { rgba[..(w * h * 4) as usize].to_vec() } else { resample(w, h, rgba, tw, th) };
+        self.mipmaps = true;
+        // the file replaces whatever was released at the old size
+        self.pending = None;
+        self.dirty = true;
+    }
+}
+
+/// Stretch an RGBA picture to another size, bilinearly (texel centres onto texel centres).
+fn resample(w: u32, h: u32, src: &[u8], tw: u32, th: u32) -> Vec<u8> {
+    let mut out = vec![0u8; (tw * th * 4) as usize];
+    let axis = |t: u32, n: u32, size: u32| -> (usize, usize, f32) {
+        let f = ((t as f32 + 0.5) * n as f32 / size as f32 - 0.5).clamp(0.0, (n - 1) as f32);
+        let i = f.floor() as usize;
+        (i, (i + 1).min(n as usize - 1), f - i as f32)
+    };
+    for y in 0..th {
+        let (y0, y1, fy) = axis(y, h, th);
+        for x in 0..tw {
+            let (x0, x1, fx) = axis(x, w, tw);
+            let px = |xx: usize, yy: usize, c: usize| src[(yy * w as usize + xx) * 4 + c] as f32;
+            for c in 0..4 {
+                let top = px(x0, y0, c) * (1.0 - fx) + px(x1, y0, c) * fx;
+                let bot = px(x0, y1, c) * (1.0 - fx) + px(x1, y1, c) * fx;
+                out[((y * tw + x) * 4) as usize + c] = (top * (1.0 - fy) + bot * fy).round() as u8;
             }
         }
     }
+    out
 }
 
 /// Registered fonts of a host: index = `GetFontIndex` result.
@@ -154,6 +204,26 @@ pub struct FontTable {
 #[cfg(test)]
 mod tests {
     use super::ScriptTexture;
+
+    #[test]
+    fn a_loaded_bitmap_fills_the_texture_at_its_own_power_of_two_size() {
+        let mut t = ScriptTexture::new(4, 2);
+        // 3x1, white red blue: 4x1, stretched across
+        let src = [255, 255, 255, 255, 255, 0, 0, 255, 0, 0, 255, 255];
+        t.load(3, 1, &src);
+        assert_eq!((t.width, t.height), (4, 1));
+        assert!(t.mipmaps);
+        assert_eq!(t.get(0, 0), [255, 255, 255, 255]);
+        assert_eq!(t.get(3, 0), [0, 0, 255, 255]);
+        // a power-of-two bitmap is taken as it is
+        let px: Vec<u8> = (0..8 * 2 * 4).map(|i| i as u8).collect();
+        t.load(8, 2, &px);
+        assert_eq!((t.width, t.height, t.rgba.as_slice()), (8, 2, px.as_slice()));
+        // STNewTex: back to the declared size, empty
+        t.renew();
+        assert_eq!((t.width, t.height), (4, 2));
+        assert!(t.rgba.iter().all(|b| *b == 0));
+    }
 
     #[test]
     fn locked_edits_wait_for_unlock_and_latest_release_wins() {

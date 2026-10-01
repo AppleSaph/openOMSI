@@ -387,7 +387,7 @@ impl Host for VehicleHost {
             "stnewtex" => {
                 let i = arg_idx(stacks.pop());
                 if let Some(t) = self.script_textures.get_mut(i) {
-                    t.clear();
+                    t.renew();
                 }
             }
             "stlock" => {
@@ -503,7 +503,6 @@ impl Host for VehicleHost {
                 match st_load(&full) {
                     Ok(img) => {
                         if let Some(t) = self.script_textures.get_mut(i) {
-                            t.clear();
                             t.load(img.width, img.height, &img.rgba);
                         }
                     }

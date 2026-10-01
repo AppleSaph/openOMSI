@@ -173,7 +173,7 @@ fn outside_at(world: Option<&crate::scene::World>, v: &omsi_sim::VehicleInstance
     if let Some(o) = own.as_ref() {
         p = push_out(p, o, RADIUS + 0.15);
     }
-    let z = world.and_then(|w| w.walk_height(p.x, p.y)).unwrap_or(v.position.z);
+    let z = world.and_then(|w| w.walk_height_near(p.x, p.y, v.position.z)).unwrap_or(v.position.z);
     // room: no wall, no other vehicle
     let blocked = |q: DVec2| -> bool {
         let walls = world
@@ -261,7 +261,7 @@ impl App {
             let xy = v.position.truncate() + fwd * (half.1 - 1.8) + right * (half.0 + 0.6);
             DVec3::new(xy.x, xy.y, v.position.z)
         });
-        let pos = match self.world.as_ref().and_then(|w| w.walk_height(pos.x, pos.y)) {
+        let pos = match self.world.as_ref().and_then(|w| w.walk_height_near(pos.x, pos.y, v.position.z)) {
             Some(z) if (z - pos.z).abs() < 2.0 => DVec3::new(pos.x, pos.y, z),
             _ => pos,
         };
@@ -355,7 +355,7 @@ impl App {
             self.humans.as_ref().and_then(|h| h.cabin_doors(bus).into_iter().map(|d| d.1).filter(|d| (*d - pos).truncate().length() < DOOR_OUT_REACH).min_by(|a, b| (*a - pos).length().total_cmp(&(*b - pos).length())))
         };
         if let Some(d) = spot {
-            let z = self.world.as_ref().and_then(|w| w.walk_height(d.x, d.y)).unwrap_or(d.z);
+            let z = self.world.as_ref().and_then(|w| w.walk_height_near(d.x, d.y, d.z)).unwrap_or(d.z);
             let f = self.on_foot.as_mut().unwrap();
             // (walked out, not put down outside)
             f.transit = Some(Transit::walk(f.pos, DVec3::new(d.x, d.y, z), None));
@@ -390,7 +390,7 @@ impl App {
                 let xy = v.position.truncate() + fwd * (half.1 - 1.8) - right * (half.0 + 0.8);
                 DVec3::new(xy.x, xy.y, v.position.z)
             });
-            let z = self.world.as_ref().and_then(|w| w.walk_height(p.x, p.y)).unwrap_or(p.z);
+            let z = self.world.as_ref().and_then(|w| w.walk_height_near(p.x, p.y, p.z)).unwrap_or(p.z);
             (DVec3::new(p.x, p.y, z), v.heading)
         };
         if let Some(f) = self.on_foot.take() {
@@ -582,7 +582,7 @@ impl App {
             let at = h.avatar_body(AVATAR_KEY).map(|b| b.0).unwrap_or(f.pos);
             let door = h.bus_doors(bus).into_iter().min_by(|a, b| (*a - at).length().total_cmp(&(*b - at).length()));
             let Some(door) = door else { return };
-            let z = self.world.as_ref().and_then(|w| w.walk_height(door.x, door.y)).unwrap_or(door.z);
+            let z = self.world.as_ref().and_then(|w| w.walk_height_near(door.x, door.y, door.z)).unwrap_or(door.z);
             // out of the door, facing away from the bus
             let away = h.bus_center(bus).map(|c| door.truncate() - c.truncate()).unwrap_or(DVec2::Y);
             let face = away.x.atan2(away.y).to_degrees();
@@ -874,7 +874,7 @@ impl App {
                         *open && (inside.truncate() - l.truncate()).length() < 1.0 && step.x * side > 0.0005
                     });
                     if let Some((_, outside, _, _)) = out {
-                        let z = self.world.as_ref().and_then(|w| w.walk_height(outside.x, outside.y)).unwrap_or(outside.z);
+                        let z = self.world.as_ref().and_then(|w| w.walk_height_near(outside.x, outside.y, outside.z)).unwrap_or(outside.z);
                         // down the step onto the pavement, walked (it was a jump of a metre)
                         f.transit = Some(Transit::walk(w, DVec3::new(outside.x, outside.y, z), None));
                     }
@@ -919,7 +919,7 @@ impl App {
                         next = push_out(next, o, RADIUS);
                     }
                 }
-                match w.walk_height(next.x, next.y) {
+                match w.walk_height_near(next.x, next.y, z + f.lift) {
                     Some(g) if g - (z + f.lift) > 0.45 => {
                         // too high a step: stay (and lose the speed into it)
                         next = f.pos.truncate();

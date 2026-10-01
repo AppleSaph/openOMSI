@@ -20,7 +20,7 @@ pub(crate) fn default_camera(world: &World) -> Camera {
             pitch,
             roll: 0.0,
             fov_deg: 60.0,
-            near: 0.5,
+            near: 0.1,
             far: 6000.0,
         };
         // the editor camera orbits the point at `dist`; step back along the view direction
@@ -34,7 +34,7 @@ pub(crate) fn default_camera(world: &World) -> Camera {
             pitch: -20.0,
             roll: 0.0,
             fov_deg: 60.0,
-            near: 0.5,
+            near: 0.1,
             far: 6000.0,
         }
     }
@@ -219,7 +219,7 @@ pub(crate) fn follow_camera(traffic: Option<&traffic::Traffic>, id: u64) -> Opti
                 pitch: f[4] as f32,
                 roll: 0.0,
                 fov_deg: 60.0,
-                near: 0.2,
+                near: 0.1,
                 far: 6000.0,
             });
         }
@@ -231,7 +231,7 @@ pub(crate) fn follow_camera(traffic: Option<&traffic::Traffic>, id: u64) -> Opti
                 pitch: f[4] as f32,
                 roll: 0.0,
                 fov_deg: 60.0,
-                near: 0.2,
+                near: 0.1,
                 far: 6000.0,
             });
         }
@@ -242,7 +242,7 @@ pub(crate) fn follow_camera(traffic: Option<&traffic::Traffic>, id: u64) -> Opti
         pitch: -80.0,
         roll: 0.0,
         fov_deg: 60.0,
-        near: 0.5,
+        near: 0.1,
         far: 6000.0,
     })
 }

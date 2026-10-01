@@ -4,6 +4,40 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/turbo-devv/openOMSI/releases) page.
 
+## 0.1.737 - 2026-10-01
+
+### Sound
+- A triggered sound keeps its loudest volume while it plays, as in OMSI: door sounds are no
+  longer cut off when the door stops moving (#473, #611, #542).
+
+### Passengers
+- A passenger's stop request fires `int_haltewunsch` as in OMSI, not the cab's stop button
+  triggers, which played the driver's switch and brake sounds on some buses (#569).
+
+### Traffic
+- The map's path rules `bus` and `trucks` open a path to AI buses and trucks by their
+  `ai_veh_type`, as in OMSI: trucks no longer avoid exactly the roads marked for them, and
+  bus roads are no longer closed to cars (#612).
+
+### Graphics
+- Every camera clips at 0.1 m as in OMSI: a wide field of view no longer cuts into the cab
+  (#587).
+- A light's sprite keeps its own colours, tinted by the light's colour (#601).
+- `STLoadTex`/`STNewTex` size a script texture as D3DX does (the bitmap's power of two,
+  stretched), and a resized one no longer keeps the old picture's memory (#607).
+- A weather chosen from the menu comes at once, as in OMSI, and the clouds drift on smoothly
+  while a weather blends in (#609).
+
+### Controls
+- Gamepad triggers on Windows are no longer read as buttons, and the D-pad works (#602).
+
+### On foot
+- The ground is the floor at the walker's level, not a stop's roof over it (#600).
+
+### Launcher
+- No "missing pack" for a part the game finds from the vehicle's own folders (#582).
+- The pause notice appears once and is translated (#616).
+
 ## 0.1.721 - 2026-10-01
 
 Pull requests from the community: #455, #560, #563, #566, #570, #580, #583, #585, #588,

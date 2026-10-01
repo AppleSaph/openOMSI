@@ -1888,7 +1888,7 @@ pub struct Humans {
     pub paid: Option<(f32, f32)>,
     pub change_due: Option<f32>,
     pub money: Option<crate::money::Money>,
-    /// A rider pressed the stop button for the next stop (the app fires `door_haltewunsch`).
+    /// A rider pressed the stop button for the next stop (the app fires the vehicle trigger `int_haltewunsch`).
     pub stop_request: bool,
     /// Tickets sold at the cash desk this session and what they were worth.
     pub tickets_sold: u32,

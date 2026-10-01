@@ -532,6 +532,7 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         plugins: None,
         career: Default::default(),
         wetness: 0.0,
+        cloud_drift: [0.0; 2],
         menu_edit: None,
         menu_drag: None,
         menu_kbd: true,

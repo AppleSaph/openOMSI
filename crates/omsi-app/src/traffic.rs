@@ -1551,9 +1551,15 @@ impl Traffic {
                 }
             })
             .collect();
+        // (and only the vehicles the lane is open to: Grundorf's trucks where it says
+        // `trucks`, Omsi.exe 0x71d714)
+        let barred: Vec<*const VehicleType> = match lane.filter(|_| kind == LaneKind::Street).and_then(|i| self.net.lanes.get(i)) {
+            Some(l) => self.types.iter().filter(|t| !l.allows(t.0.def.ai_veh_type)).map(|t| Arc::as_ptr(&t.0)).collect(),
+            None => Vec::new(),
+        };
         let weight = |t: &(Arc<VehicleType>, f32, LaneKind, usize)| -> f32 {
             let gw = group_weight.get(t.3).copied().unwrap_or(0.0);
-            if gw <= 0.0 {
+            if gw <= 0.0 || barred.contains(&Arc::as_ptr(&t.0)) {
                 0.0
             } else {
                 t.1 / gw * dens.get(t.3).copied().unwrap_or(0.0)
@@ -2272,7 +2278,7 @@ impl Traffic {
                         .copied()
                         .filter(|&n| {
                             let nl = &self.net.lanes[n];
-                            nl.kind == d.kind && !nl.no_cars && self.types.iter().find(|t| Arc::ptr_eq(&t.0, &d.ty))
+                            nl.kind == d.kind && nl.allows(d.ty.def.ai_veh_type) && self.types.iter().find(|t| Arc::ptr_eq(&t.0, &d.ty))
                                 .map(|t| match self.group_uvg[t.3] {
                                     Some(pool) => nl.pool_density(&self.uvg_defaults, pool),
                                     None => nl.density,
@@ -2493,6 +2499,7 @@ impl Traffic {
             });
         }
         let mut state = AiState::new(lane, s, seed);
+        state.veh_type = if bus.is_some() { -1 } else { ty.def.ai_veh_type };
         if bus.is_none() {
             state.traffic_pool = self.types.iter().find(|t| Arc::ptr_eq(&t.0, &ty))
                 .and_then(|t| self.group_uvg[t.3])
@@ -3776,14 +3783,14 @@ impl Traffic {
     /// Whether car `i` may change onto `lane`: open to cars, open to its own traffic group
     /// (`[rule]` densities per group: a path open to bicycles only counted as open to
     /// everybody, and the trucks of Vlietlanden changed onto the cycle paths beside the
-    /// road, #327) and to trucks if it is one.
+    /// road, #327) and to its `[ai_veh_type]` (`Lane::allows`).
     fn open_to(&self, i: usize, lane: usize) -> bool {
         let Some(l) = self.net.lanes.get(lane) else { return false };
         if l.no_cars || l.density <= 0.0 {
             return false;
         }
         let car = &self.cars[i];
-        if l.no_trucks && car.vehicle.ty.def.mass > 6.0 {
+        if !l.allows(car.state.veh_type) {
             return false;
         }
         match car.state.traffic_pool.as_ref() {

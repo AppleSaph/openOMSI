@@ -1147,11 +1147,10 @@ impl ApplicationHandler for App {
                             h.take_change_tray();
                         }
                         if std::mem::take(&mut h.stop_request) {
-                            p.vehicle.trigger("door_haltewunsch");
-                            // (a press is let go again: the script keeps its button pressed
-                            // until `_off`, and the stop request never ended - the automatic
-                            // rear door opened again whenever it was shut)
-                            p.vehicle.trigger("door_haltewunsch_off");
+                            // a passenger's request is the vehicle trigger Omsi.exe fires
+                            // (0x62e42c), not the cab's stop button `door_haltewunsch`,
+                            // whose switch and brake sounds some buses play
+                            p.vehicle.trigger("int_haltewunsch");
                         }
                         h.write_pax_vars(&mut p.vehicle);
                         p.vehicle.host.humans_on_path_link = h.path_link_counts();
@@ -1726,7 +1725,7 @@ impl ApplicationHandler for App {
                     // in the interface font, top left.
                     let mut lines: Vec<String> = Vec::new();
                     if self.paused {
-                        lines.push("Paused · P to go on".into());
+                        lines.push(ui::PAUSE_NOTICE.into());
                     }
                     // why the bus is not moving, whenever the throttle is pressed and nothing
                     // happens: the things a driver checks first
@@ -1919,8 +1918,7 @@ impl ApplicationHandler for App {
                         weather_lighting(
                             &daylight,
                             w,
-                            // (on over midnight, for the clouds' drift)
-                            self.clock.time + self.clock.day_of_year as f64 * 86400.0,
+                            self.cloud_drift,
                             self.wetness,
                             self.settings.shadows,
                         )

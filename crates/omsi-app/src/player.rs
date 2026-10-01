@@ -1663,7 +1663,7 @@ impl Player {
     pub(crate) fn driver_world(&self, turned: &omsi_vehicle::Camera) -> Camera {
         let (eye, yaw, pitch, roll) = self.vehicle.camera_world_full(turned);
         let eye = eye + self.vehicle.body_rotation().transform_vector3(self.head + self.seat).as_dvec3();
-        Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: turned.fov, near: 0.25, far: 6000.0 }
+        Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: turned.fov, near: 0.1, far: 6000.0 }
     }
 
     /// Where a camera in the world (the walker's eyes) is in the bus's frame.
@@ -1769,7 +1769,7 @@ impl Player {
             let k = def.cameras_reflexion.iter().position(|x| std::ptr::eq(x, c)).unwrap_or(0);
             let aimed = crate::camera_util::mirror_view(&self.vehicle, c, crate::camera_util::driver_eye(self), self.mirror_offsets.get(k).copied().unwrap_or([0.0; 2]));
             let (eye, yaw, pitch, roll) = self.vehicle.camera_world_full(&aimed);
-            return Camera { position: eye, yaw, pitch, roll, fov_deg: if c.fov > 1.0 { c.fov } else { 50.0 }, near: 0.3, far: 450.0 };
+            return Camera { position: eye, yaw, pitch, roll, fov_deg: if c.fov > 1.0 { c.fov } else { 50.0 }, near: 0.1, far: 450.0 };
         }
         let cam = match view {
             "driver" => {
@@ -1777,7 +1777,7 @@ impl Player {
                 if let Some((t, c)) = self.trailer_driver_camera() {
                     let turned = omsi_vehicle::Camera { yaw: c.yaw + look.0, pitch: (c.pitch + look.1).clamp(-89.0, 89.0), ..c.clone() };
                     let (eye, yaw, pitch, roll) = t.camera_world_full(&turned);
-                    return Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: c.fov, near: 0.25, far: 6000.0 };
+                    return Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: c.fov, near: 0.1, far: 6000.0 };
                 }
                 let n = def.cameras_driver.len().max(1);
                 def.cameras_driver
@@ -1804,7 +1804,7 @@ impl Player {
                             k -= t.ty.def.cameras_pax.len();
                         }
                         if let Some(((eye, yaw, pitch, roll), fov)) = found {
-                            return Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: fov, near: 0.25, far: 6000.0 };
+                            return Camera { position: eye, yaw, pitch: pitch.clamp(-89.0, 89.0), roll, fov_deg: fov, near: 0.1, far: 6000.0 };
                         }
                         def.cameras_pax.first()
                     }
@@ -1822,16 +1822,15 @@ impl Player {
                 let turned = omsi_vehicle::Camera { yaw: c.yaw + look.0 + if view == "driver" { self.steer_look } else { 0.0 }, pitch: (c.pitch + look.1).clamp(-89.0, 89.0), ..c.clone() };
                 let (eye, yaw, pitch, roll) = self.vehicle.camera_world_full(&turned);
                 let eye = if view == "driver" { eye + self.vehicle.body_rotation().transform_vector3(self.head + self.seat).as_dvec3() } else { eye };
-                // near 0.25 rather than 0.1: the depth buffer has to reach 6 km, and the
-                // nearer the near plane the coarser it gets out there - the flicker between
-                // the road and the ground at a distance is that precision running out
+                // near 0.1 as in Omsi.exe (every view, 0x6f6aa7); with the reversed float
+                // depth buffer it costs no precision out at 6 km
                 Camera {
                     position: eye,
                     yaw,
                     pitch: pitch.clamp(-89.0, 89.0),
                     roll,
                     fov_deg: c.fov,
-                    near: 0.25,
+                    near: 0.1,
                     far: 6000.0,
                 }
             }
@@ -1850,7 +1849,7 @@ impl Player {
                     pitch: (-15.0 + look.1).clamp(-85.0, 85.0),
                     roll: 0.0,
                     fov_deg: fallback.fov_deg,
-                    near: 0.3,
+                    near: 0.1,
                     far: 6000.0,
                 };
                 cam.position =

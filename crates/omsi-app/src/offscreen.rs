@@ -450,7 +450,7 @@ pub(crate) fn run_offscreen(
                     let lighting = weather_lighting(
                         &daylight,
                         &weather,
-                        run_clock.time,
+                        cloud_drift_at(&weather, run_clock.time),
                         0.0,
                         settings.shadows,
                     );
@@ -902,8 +902,7 @@ pub(crate) fn run_offscreen(
             }
             if std::mem::take(&mut h.stop_request) {
                 if let Some(p) = player.as_mut() {
-                    p.vehicle.trigger("door_haltewunsch");
-                    p.vehicle.trigger("door_haltewunsch_off");
+                    p.vehicle.trigger("int_haltewunsch");
                 }
             }
         }
@@ -1037,7 +1036,7 @@ pub(crate) fn run_offscreen(
                 let mut lighting = weather_lighting(
                     &daylight,
                     &weather,
-                    snap_clock.time,
+                    cloud_drift_at(&weather, snap_clock.time),
                     if rate > 0.0 {
                         (0.4 + rate).min(1.0)
                     } else {
@@ -2242,7 +2241,7 @@ pub(crate) fn run_offscreen(
     {
         wetness = v;
     }
-    let mut lighting = weather_lighting(&daylight, &weather, clock.time, wetness, settings.shadows);
+    let mut lighting = weather_lighting(&daylight, &weather, cloud_drift_at(&weather, clock.time), wetness, settings.shadows);
     // the player's vehicle has moved into `player_ref` by now (after --drive): without
     // this the offscreen picture had no cab box, unlike the window
     lighting.inside = player_ref.as_ref().or(player.as_ref()).and_then(|p| {

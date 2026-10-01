@@ -743,7 +743,10 @@ fn missing_packs_of(model: &Path) -> Vec<String> {
             continue;
         }
         let p = omsi_cfg::resolve_path(dir, l);
-        if omsi_cfg::vfs::is_file(&p) {
+        // (the game also finds a part from the model's parent folders - `<vehicle>/model`
+        // and the vehicle folder for a cfg in `model/Configuration Files`: mesh_path)
+        let found = |d: &Path| omsi_cfg::vfs::is_file(&omsi_cfg::resolve_path(d, l));
+        if omsi_cfg::vfs::is_file(&p) || dir.ancestors().skip(1).take(2).any(found) {
             continue;
         }
         if let Some(pack) = omsi_cfg::missing_vehicle_pack(&p) {
@@ -2342,6 +2345,23 @@ pub fn cli(cmd: &str, arg: &str) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_part_found_from_the_vehicle_folder_is_no_missing_pack() {
+        let root = std::env::temp_dir().join(format!("openomsi-packs-{}", std::process::id()));
+        let obj = root.join("Sceneryobjects/X");
+        let cfgs = root.join("Vehicles/B/model/Configuration Files");
+        std::fs::create_dir_all(&obj).unwrap();
+        std::fs::create_dir_all(&cfgs).unwrap();
+        std::fs::write(obj.join("a.o3d"), b"x").unwrap();
+        omsi_cfg::add_content_root(root.clone());
+        let model = cfgs.join("m.cfg");
+        std::fs::write(&model, "[mesh]\r\n..\\..\\..\\Sceneryobjects\\X\\a.o3d\r\n..\\..\\..\\Other\\b.o3d\r\n").unwrap();
+        let packs = super::missing_packs_of(&model);
+        omsi_cfg::remove_content_root(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(packs, vec!["Other".to_string()]);
+    }
+
     #[test]
     fn the_games_options_survive_a_save() {
         // what the pause menu's Options change, read back as they were set

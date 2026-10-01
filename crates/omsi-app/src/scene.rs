@@ -11711,11 +11711,10 @@ fn spline_lanes(
         let no_cars = s.rules.iter().any(|r| {
             r.path_index == pi as i32 && r.kind.eq_ignore_ascii_case("no_cars") && !r.kill
         });
-        let bus_only = s
-            .rules
-            .iter()
-            .any(|r| r.path_index == pi as i32 && r.kind.eq_ignore_ascii_case("bus") && !r.kill);
-        let no_trucks = rule_of("trucks").map(|v| v <= 0.0).unwrap_or(false);
+        // (`bus` and `trucks` are switches that open the path to those AI vehicles, see
+        // `Lane::allows`; `bus` does not close it to cars)
+        let rule_bus = rule_of("bus").is_some();
+        let rule_trucks = rule_of("trucks").is_some();
         let priority = rule_of("priority");
         let mut push = |pts: Vec<DVec3>, reversed: bool| {
             let mut l = LaneBuilder::polyline(pts, kind, p.width);
@@ -11727,8 +11726,9 @@ fn spline_lanes(
             }
             l.density = density;
             l.group_density = group_density.clone();
-            l.no_cars = no_cars || bus_only;
-            l.no_trucks = no_trucks;
+            l.no_cars = no_cars;
+            l.rule_bus = rule_bus;
+            l.rule_trucks = rule_trucks;
             l.source = 1;
             l.key = Some(LaneKey {
                 tile,
@@ -11826,10 +11826,11 @@ fn object_lanes(
         let (density, group_density) = path_densities(rules, pi);
         let no_cars = rules.iter().any(|r| {
             r.path_index == pi as i32
-                && (r.kind.eq_ignore_ascii_case("no_cars") || r.kind.eq_ignore_ascii_case("bus"))
+                && r.kind.eq_ignore_ascii_case("no_cars")
                 && !r.kill
         });
-        let no_trucks = rule_of("trucks").map(|v| v <= 0.0).unwrap_or(false);
+        let rule_bus = rule_of("bus").is_some();
+        let rule_trucks = rule_of("trucks").is_some();
         // who goes first where this path meets another (`Network::must_yield`)
         let priority = rule_of("priority");
         let mut push = |reverse: bool| {
@@ -11844,7 +11845,8 @@ fn object_lanes(
             l.density = density;
             l.group_density = group_density.clone();
             l.no_cars = no_cars;
-            l.no_trucks = no_trucks;
+            l.rule_bus = rule_bus;
+            l.rule_trucks = rule_trucks;
             l.turn = turn;
             if let Some(v) = priority {
                 l.priority = v;

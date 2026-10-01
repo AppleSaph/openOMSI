@@ -241,6 +241,9 @@ pub(crate) struct App {
     pub(crate) career: career::Career,
     /// How wet the roads are (0..1), built up by rain and dried by the sun.
     pub(crate) wetness: f32,
+    /// How far the cloud cover has drifted with the wind (fractions of its tiling), summed
+    /// up frame by frame so that a change of wind does not throw the sky around.
+    pub(crate) cloud_drift: [f32; 2],
     /// A change of weather coming in (see `weather_cycle`).
     pub(crate) weather_blend: Option<crate::weather_cycle::Blend>,
     /// The weather cycle, when the weather chosen is `cycle`.
