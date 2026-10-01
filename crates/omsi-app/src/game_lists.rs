@@ -778,6 +778,7 @@ fn toggle_now(app: &App, id: &str) -> Option<bool> {
         "coll_vehicles" => s.collision_vehicles,
         "mouse" => app.mouse_drive,
         "fps" => s.show_fps,
+        "get_up" => s.get_up,
         "camcoll" => s.camera_collision,
         "steer_look" => s.steer_look,
         "hands_in_cab" => s.hands_in_cab,
@@ -839,6 +840,10 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
             app.mouse_steer = (app.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
             app.mouse_pedals = app.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
             None
+        }
+        "get_up" => {
+            app.settings.get_up = on;
+            Some(("get_up", bit))
         }
         "fps" => {
             app.settings.show_fps = on;
@@ -940,6 +945,7 @@ fn options_pages(app: &App) -> Vec<Page> {
     let cm = |v: f32| format!("{:+.0} cm", v * 100.0);
     let game: Vec<(String, String)> = vec![
         switch_row(app, "navigator", "Navigator", "Route and next stops on the navigation screen."),
+        switch_row(app, "get_up", "Ability to get up (Ctrl+Shift+G)", "Leave the seat and walk about."),
         switch_row(app, "coll_objects", "Collisions with objects", "The vehicle stops at buildings, poles and other scenery."),
         switch_row(app, "coll_vehicles", "Collisions with vehicles", "Vehicles can run into each other."),
         switch_row(app, "timetable_win", "Timetable window", "The stops of the current trip, on the right (needs an active route)."),
@@ -985,7 +991,7 @@ fn options_pages(app: &App) -> Vec<Page> {
         .into_iter()
         .flatten()
         .collect();
-    vec![("Game", game), ("Graphics and sound", picture), ("Camera", camera), ("Controls", controls)]
+    vec![("Gameplay", game), ("Graphics and sound", picture), ("Camera", camera), ("Controls", controls)]
 }
 
 fn vehicle_pages(app: &App) -> Vec<Page> {
