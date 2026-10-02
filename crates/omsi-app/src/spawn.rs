@@ -437,6 +437,8 @@ pub(crate) fn spawn_player(
         steer_look: 0.0,
         seat: Vec3::ZERO,
         mirror_offsets: crate::settings::mirror_offsets(&vt.def.path),
+        mirror_shifts: crate::settings::mirror_shifts(&vt.def.path),
+        mirror_fovs: crate::settings::mirror_fovs(&vt.def.path),
         mirrors_dirty: false,
         take_change: false,
         toggled_up: Default::default(),

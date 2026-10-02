@@ -1435,6 +1435,53 @@ impl ApplicationHandler for App {
                     let step = 60.0 * dt;
                     // Ctrl+Alt+arrows in the cab: the mirror nearest to where the driver looks
                     // turns (kept per bus in mirrors.cfg when the keys are let go)
+                    // the mirror editor: an arrow held over a panel aims that panel's mirror
+                    // (kept per bus like Ctrl+Alt+arrows below)
+                    if let (Some(size), Some(a)) = (self.mirror_hud_size(), self.mirror_hud.turning()) {
+                        if let (Some(i), Some(p)) = (self.mirror_hud.cam_under(self.cursor, size), self.player.as_mut()) {
+                            let n = p.vehicle.ty.def.cameras_reflexion.len();
+                            if p.mirror_offsets.len() < n {
+                                p.mirror_offsets.resize(n, [0.0; 2]);
+                            }
+                            if p.mirror_shifts.len() < n {
+                                p.mirror_shifts.resize(n, [0.0; 3]);
+                            }
+                            // Alt+arrows and Page Up/Down shift the mirror (0.2 m a second, at most
+                            // 0.6 m across and up, a metre along), the plain arrows aim it
+                            if p.mirror_fovs.len() < n {
+                                p.mirror_fovs.resize(n, 0.0);
+                            }
+                            let alt = self.keys.contains(&KeyCode::AltLeft) || self.keys.contains(&KeyCode::AltRight);
+                            let along = (a[4] as i32 - a[5] as i32) as f32;
+                            let zoom = (a[7] as i32 - a[6] as i32) as f32;
+                            if zoom != 0.0 {
+                                // - and + narrow and widen the mirror's field of view (20° a second)
+                                if let Some(f) = p.mirror_fovs.get_mut(i) {
+                                    *f = (*f + 20.0 * dt * zoom).clamp(-60.0, 60.0);
+                                    p.mirrors_dirty = true;
+                                    let base = p.vehicle.ty.def.cameras_reflexion.get(i).map(|c| if c.fov > 1.0 { c.fov } else { 50.0 }).unwrap_or(50.0);
+                                    self.service_msg = Some((format!("Mirror {}: field of view {:.0}° (the bus's {:.0}°)", i + 1, (base + *f).clamp(8.0, 110.0), base), 2.0));
+                                }
+                            } else if alt || along != 0.0 {
+                                let metres = 0.2 * dt;
+                                if let Some(s) = p.mirror_shifts.get_mut(i) {
+                                    if alt {
+                                        s[0] = (s[0] + metres * (a[1] as i32 - a[0] as i32) as f32).clamp(-0.6, 0.6);
+                                        s[2] = (s[2] + metres * (a[2] as i32 - a[3] as i32) as f32).clamp(-0.6, 0.6);
+                                    }
+                                    s[1] = (s[1] + metres * along).clamp(-1.0, 1.0);
+                                    p.mirrors_dirty = true;
+                                    self.service_msg = Some((format!("Mirror {} shifted {:+.2} m across, {:+.2} m forward, {:+.2} m up", i + 1, s[0], s[1], s[2]), 2.0));
+                                }
+                            } else if let Some(o) = p.mirror_offsets.get_mut(i) {
+                                let rate = 12.0 * dt;
+                                o[0] = (o[0] + rate * (a[1] as i32 - a[0] as i32) as f32).clamp(-45.0, 45.0);
+                                o[1] = (o[1] + rate * (a[2] as i32 - a[3] as i32) as f32).clamp(-30.0, 30.0);
+                                p.mirrors_dirty = true;
+                                self.service_msg = Some((format!("Mirror {}: {:+.1}° across, {:+.1}° up", i + 1, o[0], o[1]), 2.0));
+                            }
+                        }
+                    }
                     let ctrl_alt = (self.keys.contains(&KeyCode::ControlLeft) || self.keys.contains(&KeyCode::ControlRight)) && (self.keys.contains(&KeyCode::AltLeft) || self.keys.contains(&KeyCode::AltRight));
                     let arrows = [KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::ArrowUp, KeyCode::ArrowDown].map(|k| self.keys.contains(&k));
                     if let (true, Some(p), Some(cam)) = (ctrl_alt && self.view == "driver" && arrows.iter().any(|a| *a), self.player.as_mut(), self.camera.as_ref()) {
@@ -1457,7 +1504,7 @@ impl ApplicationHandler for App {
                         }
                     } else if let Some(p) = self.player.as_mut().filter(|p| p.mirrors_dirty) {
                         p.mirrors_dirty = false;
-                        crate::settings::save_mirror_offsets(&p.vehicle.ty.def.path, &p.mirror_offsets);
+                        crate::settings::save_mirror_state(&p.vehicle.ty.def.path, &p.mirror_offsets, &p.mirror_shifts, &p.mirror_fovs);
                     }
                     // a controller's look buttons (Settings → Controllers: view_look_*)
                     self.look.0 += step * 1.5 * (self.pad_look[1] as i32 - self.pad_look[0] as i32) as f32;
@@ -2265,6 +2312,10 @@ impl ApplicationHandler for App {
                         // Procity) at 25 fps each was redrawn three times a second, and the
                         // street jerked past in them - up to two a frame then (each costs a
                         // few milliseconds of the frame).
+                        if let (Some(p), Some(w)) = (self.player.as_ref(), self.world.as_ref()) {
+                            self.mirror_hud.set_aspects(w.mirror_aspect.lock().clone());
+                            self.mirror_hud.sync(p, self.settings.mirror_hud);
+                        }
                         if self.settings.mirror_size == 0 {
                             self.mirror_budget = 0.0;
                             self.mirrors_seen = 0;
@@ -2306,7 +2357,7 @@ impl ApplicationHandler for App {
                             // its frustum can leave a mirror visible in VR uninitialised
                             // (black). Refresh all bus mirrors in VR, still taking turns
                             // within the configured budget; keep desktop visibility culling.
-                            let mirror_view = if vr_active {
+                            let mirror_view = if vr_active || (self.mirror_hud.active() && self.in_cab) {
                                 None
                             } else {
                                 Some((*cam, s.config.width as f32 / s.config.height.max(1) as f32))
@@ -2389,6 +2440,16 @@ impl ApplicationHandler for App {
                                     log::error!("OpenXR rendering stopped: {e:#}");
                                     self.vr = None;
                                 }
+                            }
+                        }
+                        if self.in_cab {
+                            if let Some(w) = self.world.as_ref() {
+                                self.mirror_hud.ensure_frame(r, scene);
+                                self.mirror_hud.push(scene, w, s.config.width as f32, s.config.height as f32, self.cursor);
+                            }
+                            // (the editor's keys, on screen as long as it is on)
+                            if self.mirror_hud.editing() && self.service_msg.is_none() {
+                                self.service_msg = Some((crate::mirror_hud::HINT.into(), 2.0));
                             }
                         }
                         if !mirrored {
@@ -2658,9 +2719,24 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    /// The window's size in pixels, while the mirror panels can be worked (in the cab, no menu).
+    pub(crate) fn mirror_hud_size(&self) -> Option<(f32, f32)> {
+        if !self.in_cab || self.game_menu.is_some() || !self.mirror_hud.editing() {
+            return None;
+        }
+        self.surface.as_ref().map(|s| (s.config.width as f32, s.config.height as f32))
+    }
+
     /// The mouse wheel (or a pinch of two fingers): `amount` notches, up positive.
     pub(crate) fn wheel(&mut self, amount: f32) {
         if self.vr_nav_edit.is_some() { self.vr_nav_scroll(amount); return; }
+        // over a mirror panel the wheel resizes it (Shift: wider or narrower)
+        if let Some(size) = self.mirror_hud_size() {
+            let shift = self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+            if self.mirror_hud.wheel(amount, shift, self.cursor, size) {
+                return;
+            }
+        }
         // the object editor: the wheel turns (Shift: lifts) the object
         if self.game_menu.is_none() && self.editor_wheel(amount) {
             return;
@@ -2731,6 +2807,12 @@ impl App {
     /// The left mouse button (or a finger's tap) where the cursor is.
     pub(crate) fn left_button(&mut self, event_loop: &ActiveEventLoop, pressed: bool) {
         if let Some(edit) = self.vr_nav_edit.as_mut() { edit.moving = pressed; return; }
+        // a mirror panel is dragged with the left button (a release always ends a drag)
+        if let Some(size) = self.mirror_hud_size().or_else(|| (!pressed).then(|| self.surface.as_ref().map(|s| (s.config.width as f32, s.config.height as f32))).flatten()) {
+            if self.mirror_hud.press(pressed, self.cursor, size) {
+                return;
+            }
+        }
         let state = if pressed { ElementState::Pressed } else { ElementState::Released };
         // placing a vehicle: a click sets it down
         if self.placing.is_some() && self.game_menu.is_none() {

@@ -392,6 +392,31 @@ original map is never written; delete the copy to have the original back. Only a
 `[object]` records can be edited: splines, the ground, spline rows, new objects and the
 timetable are not part of it.
 
+## Mirror panels
+
+Copies of the bus's mirrors can be laid over the picture, so that the street behind is in
+view without looking at the glass. In the cab **Ctrl+M** shows or hides them (the first time a
+panel appears for each bus); **Ctrl+Shift+M** starts and ends their editor. The panels are only
+pictures until the editor is on, so the mouse and the keys work as always. In the editor each
+panel has a yellow frame, and:
+
+* the left button drags a panel, the wheel over it resizes it and **Shift+wheel** makes it wider
+  or narrower;
+* the arrows turn the mirror of the panel under the cursor (as Ctrl+Alt+arrows turns the one
+  the driver looks at), **Alt+arrows** shift it across and up and **Page Up/Down** forward and
+  back, **-** and **+** narrow and widen its field of view; **R** puts that mirror back as the
+  bus has it and **Shift+R** every mirror (turns, shifts and fields of view are kept per bus in
+  `mirrors.cfg`);
+* **Insert** adds a panel (the main side mirrors first, then the others the bus has), **Delete**
+  takes the one under the cursor away and **C** shows another mirror in it;
+* **Esc** (or Ctrl+Shift+M again) ends the editor and keeps the layout.
+
+A new panel has the shape of the mirror's glass in the model. The layout is kept per bus in
+`~/.openomsi/mirror_hud.cfg`. The setting `mirror_hud` (0 off, 1 the right mirror, 2 the left,
+3 both) gives a bus with no layout of its own its first panels. The panels need the mirrors
+themselves to be drawn (`mirror_size` not 0); they are redrawn at the rate `mirror_refresh`
+sets, also when the glass is not in the view.
+
 ## Debug and test switches
 
 Environment variables, all off unless set. The useful ones:
@@ -399,6 +424,7 @@ Environment variables, all off unless set. The useful ones:
 | Variable | What it does |
 | --- | --- |
 | `OMSI_PROFILE=1`, `OMSI_GPU_TIMERS`, `OMSI_DEBUG_DRAWS` | frame split and memory, per-pass GPU times, draw and changed-instance counts |
+| `OMSI_MIRROR_HUD=n` | offscreen: lay the mirror panels (`mirror_hud` 1..3) over the picture |
 | `OMSI_SEED=n` | repeat a session: the scripts' `random` is seeded per session (the log says which seed) |
 | `OMSI_INPUT="t=3 move x,y; t=3.2 press; t=4 key F3; …"` | drive the real window handlers (mouse, keys, `look`/`turn`) from a script |
 | `OMSI_CHURN=x,y` | offscreen check of tile streaming: load the tiles around that far point, unload the start area, unload the far tiles and load the start area again, so the picture is drawn from recycled GPU slots |

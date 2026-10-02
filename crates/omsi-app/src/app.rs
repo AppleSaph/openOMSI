@@ -75,6 +75,8 @@ pub(crate) struct App {
     /// With no real-time reflections: the bus whose mirrors are frozen (see
     /// `MIRROR_FREEZE_REDRAW`).
     pub(crate) frozen_mirrors: Option<FrozenMirrors>,
+    /// The mirror panels laid over the picture (see `mirror_hud`).
+    pub(crate) mirror_hud: crate::mirror_hud::MirrorHud,
     /// Cursor and view the hover was last worked out for (see the redraw).
     pub(crate) hover_key: Option<(i32, i32, i32, i32)>,
     pub(crate) view: String,

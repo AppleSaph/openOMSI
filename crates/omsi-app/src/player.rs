@@ -106,7 +106,11 @@ pub(crate) struct Player {
     pub(crate) seat: Vec3,
     /// The player's turn of each mirror (yaw, pitch degrees; Ctrl+Alt+arrows in the cab).
     pub(crate) mirror_offsets: Vec<[f32; 2]>,
-    /// A mirror was turned and is not saved yet.
+    /// The player's shift of each mirror (bus frame, m: across, along, up; the mirror editor).
+    pub(crate) mirror_shifts: Vec<[f32; 3]>,
+    /// Degrees added to each mirror camera's field of view (the mirror editor).
+    pub(crate) mirror_fovs: Vec<f32>,
+    /// A mirror was turned or shifted and is not saved yet.
     pub(crate) mirrors_dirty: bool,
     pub(crate) take_change: bool,
     /// Keys whose `_toggle` this bus does as `_up`/`_down` (see `action`): turned up last.
@@ -1976,7 +1980,7 @@ impl Player {
         // picture (a check of the mirrors against OMSI's own `reflexion<n>.bmp`)
         if let Some(c) = view.strip_prefix("mirror").and_then(|n| n.parse::<usize>().ok()).and_then(|n| def.cameras_reflexion.get(n)) {
             let k = def.cameras_reflexion.iter().position(|x| std::ptr::eq(x, c)).unwrap_or(0);
-            let aimed = crate::camera_util::mirror_view(&self.vehicle, c, crate::camera_util::driver_eye(self), self.mirror_offsets.get(k).copied().unwrap_or([0.0; 2]));
+            let aimed = crate::camera_util::mirror_view(&self.vehicle, &crate::camera_util::adjusted(c, self.mirror_shifts.get(k).copied().unwrap_or([0.0; 3]), self.mirror_fovs.get(k).copied().unwrap_or(0.0)), crate::camera_util::driver_eye(self), self.mirror_offsets.get(k).copied().unwrap_or([0.0; 2]));
             let (eye, yaw, pitch, roll) = self.vehicle.camera_world_full(&aimed);
             return Camera { position: eye, yaw, pitch, roll, fov_deg: if c.fov > 1.0 { c.fov } else { 50.0 }, near: 0.1, far: 450.0 };
         }
