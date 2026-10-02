@@ -217,7 +217,12 @@ impl Ui {
 
     /// Whether a scroll area took this frame's wheel (what is left scrolls the page).
     pub fn wheel_taken(&self) -> bool {
+        // (an open dropdown takes it where it lies, at the end of the frame: a finger
+        // sliding its list moved the phone's page behind it as well, #774)
+        let m = self.input.mouse;
         self.wheel_taken
+            || self.popup.as_ref().is_some_and(|p| popup_rect(p, self.size).contains(m))
+            || self.date_popup.as_ref().is_some_and(|p| date_rect(p, self.size).contains(m))
     }
 
     /// The painter of the current layer.
@@ -1300,5 +1305,35 @@ mod tests {
         assert_eq!(sel, 0);
         let p = ui.popup.as_ref().expect("the list is still open");
         assert!(p.drag.is_none() && p.picked.is_none());
+    }
+
+    /// A finger sliding an open dropdown's list scrolls the list, not the page behind it.
+    #[test]
+    fn an_open_dropdown_keeps_the_wheel_from_the_page() {
+        let options: Vec<String> = (0..50).map(|k| format!("{k}")).collect();
+        let mut ui = Ui::new();
+        let mut sel = 0;
+        let field = Rect::new(20.0, 20.0, 240.0, 30.0);
+        ui.input.mouse = field.center();
+        for press in [true, false] {
+            ui.begin(Vec2::new(400.0, 800.0), 1.0, 1.0 / 60.0);
+            (ui.input.pressed, ui.input.released) = (press, !press);
+            ui.select("n", field, &mut sel, &options);
+            ui.finish();
+        }
+        let r = popup_rect(ui.popup.as_ref().unwrap(), ui.size);
+        ui.begin(Vec2::new(400.0, 800.0), 1.0, 1.0 / 60.0);
+        ui.input.mouse = r.center();
+        ui.input.wheel.y = -2.0;
+        ui.select("n", field, &mut sel, &options);
+        assert!(ui.wheel_taken(), "the page would scroll under the list");
+        ui.finish();
+        assert!(ui.popup.as_ref().unwrap().scroll > 0.0);
+        // beside the list the page has it
+        ui.begin(Vec2::new(400.0, 800.0), 1.0, 1.0 / 60.0);
+        ui.input.mouse = Vec2::new(380.0, 780.0);
+        ui.input.wheel.y = -2.0;
+        ui.select("n", field, &mut sel, &options);
+        assert!(!ui.wheel_taken());
     }
 }
