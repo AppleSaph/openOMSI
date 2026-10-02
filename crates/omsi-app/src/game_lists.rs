@@ -1917,17 +1917,24 @@ fn pages_of(app: &App, kind: &ListKind) -> Option<(Vec<Page>, usize)> {
     Some((pages, tab))
 }
 
+type TitlesCache = Option<(ListKind, bool, std::time::Instant, (Vec<String>, usize))>;
+
+thread_local! {
+    static TITLES: std::cell::RefCell<TitlesCache> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn forget_page_titles() {
+    TITLES.with(|c| *c.borrow_mut() = None);
+}
+
 /// The titles of the pages of an open settings window and the one shown.
 ///
 /// Asked every frame while a window is open, and building the pages is the work of
 /// all their rows: the answer is kept for a moment.
 pub(crate) fn page_titles(app: &App, kind: &ListKind) -> Option<(Vec<String>, usize)> {
     let vr_nav_available = app.vr_active() && app.player.is_some();
-    thread_local! {
-        static TITLES: std::cell::RefCell<Option<(ListKind, bool, std::time::Instant, (Vec<String>, usize))>> = const { std::cell::RefCell::new(None) };
-    }
     if let Some(hit) = TITLES.with(|c| {
-        c.borrow().as_ref().filter(|(k, vr, t, _)| k == kind && *vr == vr_nav_available && t.elapsed().as_millis() < 300).map(|(_, _, _, r)| r.clone())
+        c.borrow().as_ref().filter(|(k, vr, t, _)| k == kind && *vr == vr_nav_available && t.elapsed().as_millis() < 5000).map(|(_, _, _, r)| r.clone())
     }) {
         return Some(hit);
     }

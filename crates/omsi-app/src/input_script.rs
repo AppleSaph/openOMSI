@@ -1469,6 +1469,7 @@ impl App {
 
     /// Show one of the menu's lists in the chooser (see `game_lists`).
     pub(crate) fn open_list(&mut self, kind: crate::game_lists::ListKind) {
+        crate::game_lists::forget_page_titles();
         self.dropdown = None;
         self.admin_list = Some(crate::game_lists::items(self, &kind));
         self.list_kind = Some(kind);

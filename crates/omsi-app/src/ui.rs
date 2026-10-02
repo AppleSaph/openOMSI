@@ -63,6 +63,10 @@ impl TextCache {
     /// Text width in pixels, without rendering it.
     pub fn width(&self, text: &str, px: f32) -> f32 {
         let text = &*omsi_ui::tr(text);
+        self.width_raw(text, px)
+    }
+
+    fn width_raw(&self, text: &str, px: f32) -> f32 {
         let mut w = 0.0;
         let mut prev: Option<(ab_glyph::GlyphId, *const FontVec)> = None;
         for c in text.chars() {
@@ -822,10 +826,16 @@ impl TextCache {
         let key = (format!("\u{0}rr{w}x{h}r{}", rad as u32), 0, rgba);
         self.cached(r, scene, key, (w, h), || {
             let mut data = vec![0u8; (w * h * 4) as usize];
+            let ri = rad as u32;
             for py in 0..h {
+                let band_y = py >= ri && py + ri < h;
                 for px in 0..w {
-                    let d = rr_dist(px as f32 + 0.5, py as f32 + 0.5, 0.0, 0.0, w as f32, h as f32, rad);
-                    let cover = (0.5 - d).clamp(0.0, 1.0);
+                    let cover = if band_y || (px >= ri && px + ri < w) {
+                        1.0
+                    } else {
+                        let d = rr_dist(px as f32 + 0.5, py as f32 + 0.5, 0.0, 0.0, w as f32, h as f32, rad);
+                        (0.5 - d).clamp(0.0, 1.0)
+                    };
                     let o = ((py * w + px) * 4) as usize;
                     data[o..o + 3].copy_from_slice(&rgba[..3]);
                     data[o + 3] = (rgba[3] as f32 * cover).round() as u8;
@@ -1823,11 +1833,22 @@ fn clip_to(tc: &TextCache, text: &str, px: f32, width: f32) -> String {
     if tc.width(text, px) <= width {
         return text.to_string();
     }
-    let mut t: String = text.to_string();
-    while !t.is_empty() && tc.width(&format!("{t}…"), px) > width {
-        t.pop();
+    let chars: Vec<char> = text.chars().collect();
+    let head = |n: usize| {
+        let mut t: String = chars[..n].iter().collect();
+        t.push('…');
+        t
+    };
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        if tc.width_raw(&head(mid), px) <= width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
     }
-    format!("{t}…")
+    head(lo)
 }
 
 /// `text` cut at the start to fit (the end of what is being typed stays visible).
