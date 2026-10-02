@@ -496,6 +496,7 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         discord: None,
         discord_t: 0.0,
         headtrack: None,
+        headtrack_failed: None,
         controllers: None,
         mouse_drive: false,
         mouse_steer: (0.0, 0.0),

@@ -23,8 +23,15 @@ pub struct HeadTracker {
 impl HeadTracker {
     /// Listen on `port` (on every interface: opentrack may run on another machine).
     pub fn start(port: u16) -> Option<HeadTracker> {
+        // (the port may be taken: opentrack's own "UDP over network" input listens on 4242
+        // too, which is how FreePIE hands it a TrackIR's pose. On Windows the freetrack
+        // mapping is still read then; elsewhere there is nothing to read.)
         let sock = match std::net::UdpSocket::bind(("0.0.0.0", port)) {
-            Ok(s) => s,
+            Ok(s) => Some(s),
+            Err(e) if cfg!(windows) => {
+                log::warn!("head tracking: cannot listen on UDP port {port} ({e}), reading opentrack's freetrack output only");
+                None
+            }
             Err(e) => {
                 log::warn!("head tracking: cannot listen on UDP port {port}: {e}");
                 return None;
@@ -32,7 +39,10 @@ impl HeadTracker {
         };
         // (on Windows the loop also polls the freetrack mapping between datagrams)
         let wait = if cfg!(windows) { 10 } else { 500 };
-        let _ = sock.set_read_timeout(Some(Duration::from_millis(wait)));
+        if let Some(sock) = &sock {
+            let _ = sock.set_read_timeout(Some(Duration::from_millis(wait)));
+        }
+        let listening = sock.is_some();
         let last: Arc<Mutex<Option<(HeadPose, Instant)>>> = Arc::default();
         let out = last.clone();
         std::thread::Builder::new()
@@ -49,7 +59,14 @@ impl HeadTracker {
                     if Arc::strong_count(&out) == 1 {
                         return;
                     }
-                    let Ok(n) = sock.recv(&mut buf) else {
+                    let got = match &sock {
+                        Some(sock) => sock.recv(&mut buf),
+                        None => {
+                            std::thread::sleep(Duration::from_millis(wait));
+                            Err(std::io::ErrorKind::WouldBlock.into())
+                        }
+                    };
+                    let Ok(n) = got else {
                         #[cfg(windows)]
                         if last_udp.is_none_or(|t| t.elapsed() >= Duration::from_millis(500)) {
                             if let Some(pose) = freetrack.poll() {
@@ -78,7 +95,9 @@ impl HeadTracker {
                 }
             })
             .ok()?;
-        log::info!("head tracking: listening for opentrack on UDP port {port}");
+        if listening {
+            log::info!("head tracking: listening for opentrack on UDP port {port}");
+        }
         Some(HeadTracker { last })
     }
 

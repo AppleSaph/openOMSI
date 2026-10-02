@@ -884,11 +884,12 @@ impl ApplicationHandler for App {
                             p.seat = glam::Vec3::from_array(self.settings.seat);
                             // head tracking: the head's turn on top of the look, its movement
                             // on top of the seat (opentrack: x right, y up, z back, in cm)
-                            if self.settings.head_tracking && self.headtrack.is_none() {
+                            // (a port that cannot be had is tried again now and then, the
+                            // setting stays on: turning it off here undid the switch in the
+                            // menu at once)
+                            if self.settings.head_tracking && self.headtrack.is_none() && self.headtrack_failed.is_none_or(|t| t.elapsed().as_secs_f32() > 5.0) {
                                 self.headtrack = crate::headtrack::HeadTracker::start(self.settings.head_tracking_port);
-                                if self.headtrack.is_none() {
-                                    self.settings.head_tracking = false;
-                                }
+                                self.headtrack_failed = self.headtrack.is_none().then(std::time::Instant::now);
                             }
                             let tracked = self.headtrack.as_ref().and_then(|h| h.pose()).filter(|_| self.settings.head_tracking && matches!(self.view.as_str(), "driver" | "pax"));
                             #[cfg(windows)]
