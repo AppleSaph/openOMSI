@@ -1830,19 +1830,13 @@ impl VehicleInstance {
         // spray off a wet road, dust off a dry one
         self.set_engine_var("DirtRate", speed * (1.5e-4 + 6.0e-3 * rain));
         // rain soaks the glass in a few seconds; without it the film dries in about a minute.
-        // Snow does not run down a pane and the cab is warm: the flakes that land on the
-        // glass melt and leave a light haze, nothing like the film a shower leaves, so the
-        // rate is steered towards that haze instead of driving the layer to full strength
-        // (`rain.osc` only ever adds `PrecipRate * Timegap` and clamps at 1 - it never asks
-        // what is falling, which is why the original shows raindrops in a snowstorm).
-        let rate = if self.host.precip_type as i32 == 2 {
-            let film = self.var("Rain_Window_Norm_Wetness").unwrap_or(0.0);
-            (SNOW_ON_GLASS * rain - film) * 0.5
-        } else if rain > 0.0 {
-            rain * 0.25
-        } else {
-            -0.02
-        };
+        // Snow builds the film up the same way: `rain.osc` only ever adds `PrecipRate *
+        // Timegap` and clamps at 1 - it never asks what is falling - so in the original the
+        // glass gets as covered in a snowfall as in a shower and the wipers clear it. (The
+        // film wears snow crystals then, see `rain::snow_on_glass`.) Held to a fifth for a
+        // "haze", the panes stayed clear in the thickest snowfall and the wipers had
+        // nothing to do (#883).
+        let rate = if rain > 0.0 { rain * 0.25 } else { -0.02 };
         self.set_engine_var("PrecipRate", rate);
         // the state of the road, for the tyre sounds and the wheel spray
         self.set_engine_var("StreetCond", self.host.street_cond);
@@ -2912,10 +2906,6 @@ const SHADOW_STEP_UP: f64 = 0.6;
 /// and a map may put a vehicle down a little over its road. Farther down is another level -
 /// a road under a bridge - and not the face this wheel stands on.
 const SHADOW_STEP_DOWN: f64 = 3.0;
-
-/// How strong the film on the glass gets in the thickest snowfall (`Rain_Window_*_Wetness`,
-/// 0 … 1): a haze of crystals, not a windscreen running with water.
-const SNOW_ON_GLASS: f32 = 0.22;
 
 fn is_shadow_mesh(ty: &VehicleType, i: usize) -> bool {
     ty.meshes
