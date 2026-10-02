@@ -1898,17 +1898,21 @@ impl App {
             match crate::game_lists::run(self, &kind, &action) {
                 Some(next) => {
                     let keep = next == kind;
+                    if !keep {
+                        self.menu_top = None;
+                    }
                     self.open_list(next);
                     if keep {
                         self.chooser = Some(k.min(self.admin_list.as_ref().map(|l| l.len().saturating_sub(1)).unwrap_or(0)));
                     }
                 }
                 None if action != "back" && matches!(kind, crate::game_lists::ListKind::Tours(..) | crate::game_lists::ListKind::Numbers | crate::game_lists::ListKind::Destinations | crate::game_lists::ListKind::RouteNumbers | crate::game_lists::ListKind::Hofs | crate::game_lists::ListKind::Spots) => self.close_game_menu(),
-                None => {}
+                None => self.menu_top = None,
             }
             return;
         }
         // a vehicle of the list: its livery and depot file are asked for first
+        self.menu_top = None;
         let Some((_, bus)) = self.vehicle_list.get(k).cloned() else { return };
         self.open_list(crate::game_lists::ListKind::PlaceLivery(bus));
     }
@@ -2288,7 +2292,8 @@ impl App {
 
     /// Do what line `k` of the game menu says.
     pub(crate) fn menu_choose(&mut self, event_loop: &ActiveEventLoop, k: usize) {
-        self.menu_top = None;
+        // (a click in an open list keeps the scroll where it is: no jump to the line)
+        self.menu_top = if self.chooser.is_some() { self.ui.as_ref().map(|u| u.menu_start as f32) } else { None };
         if self.chooser.is_some() {
             self.chooser_pick(k);
             return;
