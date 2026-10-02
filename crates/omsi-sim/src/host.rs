@@ -77,7 +77,6 @@ pub struct VehicleHost {
     pub font_lib: Option<Arc<Mutex<FontLibrary>>>,
     /// `[scripttexture]` images drawn by the `ST*` callbacks.
     pub script_textures: Vec<ScriptTexture>,
-    last_pixel: [u8; 4],
     /// Folder for `STLoadTex` paths (the vehicle directory).
     pub content_dir: std::path::PathBuf,
     /// Depot file (termini, bus stop strings, IBIS trips) behind the `Get*` callbacks.
@@ -463,17 +462,24 @@ impl Host for VehicleHost {
                 let y = arg_i32(stacks.pop());
                 let x = arg_i32(stacks.pop());
                 let i = arg_idx(stacks.pop());
-                self.last_pixel = self.script_textures.get(i).map(|t| t.get(x, y)).unwrap_or([0; 4]);
+                // `STReadPixel` makes the selected texture's current ST colour the
+                // pixel it read.  RHLib then asks `STGet*` of either that source texture
+                // or a different target texture: the latter must retain its own draw
+                // colour while the source keeps changing beneath the scaler.
+                if let Some(t) = self.script_textures.get_mut(i) {
+                    let color = t.get(x, y);
+                    t.color = color;
+                }
             }
             "stgetr" | "stgetg" | "stgetb" | "stgeta" => {
-                stacks.pop();
+                let i = arg_idx(stacks.pop());
                 let k = match lname.as_str() {
                     "stgetr" => 0,
                     "stgetg" => 1,
                     "stgetb" => 2,
                     _ => 3,
                 };
-                stacks.push(self.last_pixel[k] as f32);
+                stacks.push(self.script_textures.get(i).map(|t| t.color[k] as f32).unwrap_or(0.0));
             }
             "stcopycolor" => {
                 // colour of texture a → texture b
@@ -745,6 +751,32 @@ mod tests {
         // a half goes to the even number, as under Delphi's control word
         assert_eq!((arg_i32(0.5), arg_i32(1.5), arg_i32(2.5), arg_i32(-0.5)), (0, 2, 2, 0));
         assert_eq!(arg_idx(-1.0), usize::MAX);
+    }
+
+    #[test]
+    fn script_texture_colour_is_kept_per_texture() {
+        let p = compile(&CompileInput::default());
+        let mut state = State::new(&p);
+        let mut host = VehicleHost::new(SimClock::default());
+        host.script_textures.push(ScriptTexture::new(2, 1));
+        host.script_textures.push(ScriptTexture::new(2, 1));
+        host.script_textures[0].put(1, 0, [12, 34, 56, 78]);
+        host.script_textures[1].color = [1, 2, 3, 255];
+        let mut stacks = Stacks::default();
+
+        // RHLib reads a source pixel, then asks its target texture whether its
+        // previously selected drawing colour is transparent.
+        stacks.push(0.0);
+        stacks.push(1.0);
+        stacks.push(0.0);
+        host.callback("STReadPixel", 0, &mut stacks, &mut state);
+
+        stacks.push(0.0);
+        host.callback("STGetA", 0, &mut stacks, &mut state);
+        assert_eq!(stacks.pop(), 78.0);
+        stacks.push(1.0);
+        host.callback("STGetA", 0, &mut stacks, &mut state);
+        assert_eq!(stacks.pop(), 255.0);
     }
 
     #[test]
