@@ -400,6 +400,24 @@ impl SoundSet {
         Some(v)
     }
 
+    /// The triggers (lower case) whose entries read script variables in a volume curve:
+    /// what [`SoundSet::update_fired`] wants the values of at the moment they fire.
+    pub fn curve_triggers(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for s in &self.sounds {
+            if !s.def.vol_curves.iter().any(|vc| vc.variable.trim().parse::<i32>().is_err()) {
+                continue;
+            }
+            for t in &s.def.triggers {
+                let t = t.trim().to_ascii_lowercase();
+                if !out.contains(&t) {
+                    out.push(t);
+                }
+            }
+        }
+        out
+    }
+
     /// Per-frame update. `triggers` are the sound triggers fired by the scripts this frame.
     pub fn update(
         &mut self,
@@ -407,6 +425,22 @@ impl SoundSet {
         var: &dyn Fn(&str) -> Option<f32>,
         object_to_world: &Mat4,
         triggers: &[String],
+    ) {
+        self.update_fired(engine, var, object_to_world, triggers, &|_, _| None);
+    }
+
+    /// [`SoundSet::update`] with `at_fire(trigger, variable)`: a variable as it stood when
+    /// the trigger fired (None: as it is now). Omsi.exe starts a trigger's sounds in the
+    /// middle of the script (0x74f2e8), so the volume they start with is that of the moment:
+    /// the SD200's door hits read `doorSpeed_<n>`, which the door script reverses right
+    /// after firing them - read at the frame's end they were silent (#676).
+    pub fn update_fired(
+        &mut self,
+        engine: &AudioEngine,
+        var: &dyn Fn(&str) -> Option<f32>,
+        object_to_world: &Mat4,
+        triggers: &[String],
+        at_fire: &dyn Fn(&str, &str) -> Option<f32>,
     ) {
         if !engine.enabled {
             return;
@@ -456,11 +490,16 @@ impl SoundSet {
                 }
                 _ => 1.0,
             };
-            let mut vol = Self::volume(&s.def, var, view, active, facing);
-            let fired = triggered
-                && triggers
-                    .iter()
-                    .any(|t| s.def.triggers.iter().any(|d| d.eq_ignore_ascii_case(t)));
+            let fired_by = if triggered {
+                triggers.iter().find(|t| s.def.triggers.iter().any(|d| d.trim().eq_ignore_ascii_case(t)))
+            } else {
+                None
+            };
+            let fired = fired_by.is_some();
+            let mut vol = match fired_by {
+                Some(t) => Self::volume(&s.def, &|n| at_fire(t, n).or_else(|| var(n)), view, active, facing),
+                None => Self::volume(&s.def, var, view, active, facing),
+            };
             if triggered {
                 vol = Self::peak_hold(&mut s.peak, vol, fired);
             }
@@ -644,6 +683,27 @@ mod tests {
         assert_eq!(SoundSet::volume(&cab, &none, 1, 0.0, 1.0), None, "a cab sound stays in");
         set_outside_open(None);
         assert_eq!(SoundSet::volume(&engine, &none, 2, 0.0, 1.0), None);
+    }
+
+    /// The SD200's door hit: `[volcurve] doorSpeed_0` from 1 at -1 down to 0 at -0.5,
+    /// fired while the door still closes at -1 m/s; by the frame's end the script has turned
+    /// the speed round. The volume is the one of the moment it fired (#676).
+    #[test]
+    fn a_triggered_sound_reads_its_curve_when_it_fires() {
+        let hit = SoundEntry {
+            volume: 1.0,
+            triggers: vec!["ev_doorhitclose_0".into()],
+            vol_curves: vec![omsi_vehicle::VolCurve { variable: "doorSpeed_0".into(), points: vec![(-1.0, 1.0), (-0.5, 0.0)] }],
+            ..Default::default()
+        };
+        let now = |n: &str| (n == "doorSpeed_0").then_some(0.8);
+        let at_fire = |t: &str, n: &str| (t == "ev_doorhitclose_0" && n == "doorSpeed_0").then_some(-1.0);
+        set_outside_open(None);
+        assert_eq!(SoundSet::volume(&hit, &now, 2, 0.0, 1.0), Some(0.0), "read at the frame's end: silent");
+        let fired = |n: &str| at_fire("ev_doorhitclose_0", n).or_else(|| now(n));
+        assert_eq!(SoundSet::volume(&hit, &fired, 2, 0.0, 1.0), Some(1.0));
+        let set = SoundSet { sounds: vec![RuntimeSound { def: hit, clip: None, voice: None, held: false, active_since: None, peak: 0.0 }], master: 1.0, dir: Default::default(), exterior: false, inside: true, ai: false, listener_vehicle: true, muffled: false, parts: Vec::new() };
+        assert_eq!(set.curve_triggers(), vec!["ev_doorhitclose_0".to_string()]);
     }
 
     #[test]

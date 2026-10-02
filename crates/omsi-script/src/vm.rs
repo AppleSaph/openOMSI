@@ -96,6 +96,12 @@ pub trait Host {
     /// `(M.V.name)`. Arguments are on the stacks; results are pushed by the callback.
     fn callback(&mut self, name: &str, id: NameId, stacks: &mut Stacks, state: &mut State);
     fn sound_trigger(&mut self, name: &str, id: NameId);
+    /// `(T.L.name)` with the variables as they stand at that point of the script: Omsi.exe
+    /// starts the sounds of a trigger right there (0x74f2e8 runs their update at once), so
+    /// their volume curves read the values of that moment, not of the frame's end.
+    fn sound_trigger_vars(&mut self, name: &str, id: NameId, _vars: &[f32]) {
+        self.sound_trigger(name, id)
+    }
     /// `(T.F.name)`: trigger `name` with a sound file chosen by the script.
     fn sound_trigger_file(&mut self, _name: &str, _file: &str) {}
     fn message(&mut self, text: &str) {
@@ -314,7 +320,7 @@ fn exec_op(s: &mut Stacks, op: &Op, p: &Program, state: &mut State, host: &mut d
         }
         Op::Macro(_) | Op::Random | Op::JumpIfZero(_) | Op::Jump(_) => unreachable!("handled by run_block"),
         Op::Callback(n) => host.callback(p.name(*n), *n, s, state),
-        Op::SoundTrigger(n) => host.sound_trigger(p.name(*n), *n),
+        Op::SoundTrigger(n) => host.sound_trigger_vars(p.name(*n), *n, &state.vars),
         Op::SoundTriggerFile(n) => {
             let file = s.pop_str();
             host.sound_trigger_file(p.name(*n), &file);

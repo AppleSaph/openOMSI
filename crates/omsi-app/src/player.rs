@@ -1292,6 +1292,7 @@ impl Player {
             }
         }
         let fired: Vec<String> = std::mem::take(&mut self.vehicle.host.fired_triggers);
+        let fired_vars: Vec<(String, Vec<f32>)> = std::mem::take(&mut self.vehicle.host.fired_trigger_vars);
         let fired_files: Vec<(String, String)> =
             std::mem::take(&mut self.vehicle.host.fired_file_triggers);
         for (t, f) in &fired_files {
@@ -1308,7 +1309,12 @@ impl Player {
             // how open the bus is to the outside (doors, driver's window) for every outside
             // sound heard in it - this bus's own and the traffic's
             omsi_audio::soundset::set_outside_open(if inside { v.var("Snd_OutsideVol") } else { None });
-            ss.update(a, &|n| v.var(n), &xf, &fired);
+            // (the last time a trigger fired this frame: its sounds start with that moment)
+            let at_fire = |t: &str, n: &str| -> Option<f32> {
+                let vals = &fired_vars.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(t))?.1;
+                v.var_slot(n).and_then(|i| vals.get(i).copied())
+            };
+            ss.update_fired(a, &|n| v.var(n), &xf, &fired, &at_fire);
             ss.update_parts(
                 a,
                 &|n| v.var(n),
@@ -1379,6 +1385,9 @@ impl Player {
                             Err(e) => log::warn!("{e}"),
                         }
                     }
+                    // (the variables its triggered sounds' volume curves read are kept as
+                    // they stand when the trigger fires, see `SoundSet::update_fired`)
+                    self.vehicle.host.snapshot_triggers = ss.curve_triggers().into_iter().collect();
                     self.sounds = Some(ss);
                 }
                 Err(e) => log::warn!("{e}"),
