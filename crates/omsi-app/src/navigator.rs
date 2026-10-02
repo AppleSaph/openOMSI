@@ -224,6 +224,15 @@ pub struct Navigator {
     speed_avg: f32,
     pub opacity: f32,
     pub corner: String,
+    /// Where the navigator was dragged to (#940): its top-left corner as a share of the
+    /// room the window leaves it across and down (`navigator_corner = at x,y`); None: the
+    /// corner.
+    pub at: Option<[f32; 2]>,
+    /// A press on the navigator: where it was (cursor and the panel's top-left) and whether
+    /// it has moved far enough to be a drag rather than a click.
+    panel_drag: Option<([f32; 2], [f32; 2], bool)>,
+    /// The room the window leaves the navigator (width, height) when it was last placed.
+    panel_room: [f32; 2],
     /// The city map (a click on the navigator or Shift+M) and where the navigator is on the
     /// screen.
     pub city: CityMap,
@@ -324,6 +333,13 @@ fn ease(dt: f32, tau: f32) -> f64 {
     (1.0 - (-dt / tau.max(1e-3)).exp()) as f64
 }
 
+/// A `navigator_corner` of the form `at x,y` (where the navigator was dragged to, #940).
+pub(crate) fn placed_at(corner: &str) -> Option<[f32; 2]> {
+    let (x, y) = corner.trim().strip_prefix("at")?.trim().split_once(',')?;
+    let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
+    (x.is_finite() && y.is_finite()).then(|| [x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)])
+}
+
 /// The GPS is a separate render texture composed after the scene's post AA.
 fn map_samples(format: wgpu::TextureFormat) -> u32 {
     if format.guaranteed_format_features(wgpu::Features::empty()).flags.sample_count_supported(4) { 4 } else { 1 }
@@ -340,6 +356,9 @@ impl Navigator {
             speed_avg: 8.0,
             opacity: opacity.clamp(0.2, 1.0),
             corner: corner.to_string(),
+            at: placed_at(corner),
+            panel_drag: None,
+            panel_room: [0.0; 2],
             city: CityMap::default(),
             panel_rect: [0.0; 4],
             gpu: None,
@@ -870,6 +889,13 @@ impl Navigator {
         // ("top-center": a phone's, between its on-screen buttons)
         let x0 = if self.corner.contains("center") || touch { ((sw - pw) * 0.5).round() } else if right { sw - margin - pw } else { margin };
         let y0 = if top { margin } else { sh - margin - ph };
+        // (dragged by the mouse somewhere else: there, kept inside the window)
+        let room = [(sw - pw).max(0.0), (sh - ph).max(0.0)];
+        self.panel_room = room;
+        let (x0, y0) = match self.at.filter(|_| !touch) {
+            Some(a) => ((a[0].clamp(0.0, 1.0) * room[0]).round(), (a[1].clamp(0.0, 1.0) * room[1]).round()),
+            None => (x0, y0),
+        };
 
         if self.gpu.is_none() {
             self.gpu = Some(Gpu::new(&renderer.device, renderer.format(), map_samples(renderer.format()), self.atlas.size));
@@ -2055,6 +2081,41 @@ impl Navigator {
         self.enabled && x >= r[0] && y >= r[1] && x < r[2] && y < r[3]
     }
 
+    /// The mouse button went down on the small navigator: a click opens the city map, a
+    /// drag moves the navigator (see [`Navigator::panel_move`]).
+    pub fn panel_press(&mut self, x: f32, y: f32) {
+        self.panel_drag = Some(([x, y], [self.panel_rect[0], self.panel_rect[1]], false));
+    }
+
+    /// The cursor moved with the button held on the navigator: past a few pixels it follows
+    /// the cursor. True while it is being dragged.
+    pub fn panel_move(&mut self, x: f32, y: f32) -> bool {
+        let Some((from, rect, moved)) = self.panel_drag.as_mut() else { return false };
+        let (dx, dy) = (x - from[0], y - from[1]);
+        if !*moved && dx.hypot(dy) < 6.0 {
+            return false;
+        }
+        *moved = true;
+        let room = self.panel_room;
+        let share = |p: f32, r: f32| if r > 0.0 { (p / r).clamp(0.0, 1.0) } else { 0.0 };
+        self.at = Some([share(rect[0] + dx, room[0]), share(rect[1] + dy, room[1])]);
+        true
+    }
+
+    /// The button came up after a press on the navigator: Some(true) when it was dragged
+    /// (the place is then the setting's, [`Navigator::placement`]), Some(false) for a click.
+    pub fn panel_release(&mut self) -> Option<bool> {
+        self.panel_drag.take().map(|d| d.2)
+    }
+
+    /// The setting `navigator_corner` for where the navigator is now.
+    pub fn placement(&self) -> String {
+        match self.at {
+            Some(a) => format!("at {:.3},{:.3}", a[0], a[1]),
+            None => self.corner.clone(),
+        }
+    }
+
     fn map_hit(&self, x: f32, y: f32) -> bool {
         let r = self.city.rect;
         x >= r[0] && y >= r[1] && x < r[2] && y < r[3]
@@ -2392,6 +2453,31 @@ impl Navigator {
 
 #[cfg(test)]
 mod tests {
+    /// A press and a small wobble is a click (the city map), a longer move drags the
+    /// navigator, and the place reads back from the setting it is saved as (#940).
+    #[test]
+    fn the_navigator_is_dragged_by_the_mouse() {
+        let mut n = Navigator::new(true, 0.85, "bottom-left");
+        assert!(n.at.is_none());
+        n.panel_rect = [10.0, 600.0, 370.0, 890.0];
+        n.panel_room = [1240.0, 610.0];
+        n.panel_press(100.0, 700.0);
+        assert!(!n.panel_move(103.0, 702.0));
+        assert_eq!(n.panel_release(), Some(false));
+        n.panel_press(100.0, 700.0);
+        assert!(n.panel_move(100.0 + 610.0, 700.0 - 295.0));
+        assert_eq!(n.panel_release(), Some(true));
+        let at = n.at.unwrap();
+        assert!((at[0] - 0.5).abs() < 1e-3 && (at[1] - 0.5).abs() < 1e-3, "{at:?}");
+        let back = placed_at(&n.placement()).unwrap();
+        assert!((back[0] - 0.5).abs() < 1e-3 && (back[1] - 0.5).abs() < 1e-3);
+        // (dragged past the window's edge: held inside it)
+        n.panel_press(100.0, 700.0);
+        n.panel_move(5000.0, -5000.0);
+        assert_eq!(n.at, Some([1.0, 0.0]));
+        assert_eq!(placed_at("bottom-right"), None);
+    }
+
     use super::*;
     use omsi_sim::traffic::Lane;
 

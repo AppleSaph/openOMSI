@@ -852,6 +852,12 @@ fn general_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, c
         let on = cur == name;
         ui.p().rounded(cell, 3.0, if on { ACCENT } else { Color::WHITE.alpha(if h { 0.2 } else { 0.08 }) });
     }
+    // (dragged somewhere else in the game, #940: that place, until a corner is chosen)
+    if let Some(a) = crate::navigator::placed_at(&cur) {
+        let (cw, ch) = (screen.w * 0.5 - 10.0, screen.h * 0.5 - 10.0);
+        let cell = Rect::new(screen.x + 5.0 + a[0] * (screen.w - 10.0 - cw), screen.y + 5.0 + a[1] * (screen.h - 10.0 - ch), cw, ch);
+        ui.p().rounded(cell, 3.0, ACCENT);
+    }
     c.y += 74.0;
     let left = c.used();
     // updates from the GitHub releases (see `crate::updater`)

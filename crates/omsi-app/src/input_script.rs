@@ -941,6 +941,12 @@ impl App {
     fn move_cursor(&mut self, x: f32, y: f32) -> bool {
         let last = self.cursor;
         self.cursor = (x, y);
+        // the navigator held by the mouse follows it
+        if let Some(n) = self.navigator.as_mut() {
+            if n.panel_move(x, y) {
+                return true;
+            }
+        }
         // (the mouse has taken over from the keyboard: only what is under it is lit)
         if self.game_menu.is_some() && (x, y) != last {
             self.menu_kbd = false;
@@ -1068,9 +1074,25 @@ impl App {
                 }
                 return;
             }
+            // (a click opens the city map, a drag moves the navigator: #940)
             if pressed && !vr_active && n.over_panel(x, y) {
-                n.toggle_map();
+                n.panel_press(x, y);
                 return;
+            }
+            if !pressed {
+                match n.panel_release() {
+                    Some(false) => {
+                        n.toggle_map();
+                        return;
+                    }
+                    Some(true) => {
+                        let at = n.placement();
+                        self.settings.navigator_corner = at.clone();
+                        crate::game_lists::remember_setting("navigator_corner", &at);
+                        return;
+                    }
+                    None => {}
+                }
             }
         }
         // a click on the chat opens its input box (and is the chat's, not the cockpit's)
