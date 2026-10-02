@@ -1114,7 +1114,11 @@ impl App {
                     self.dragging = false;
                     return;
                 }
-                p.release();
+                if self.dragging && self.buttons_held.1 {
+                    p.release_keeping();
+                } else {
+                    p.release();
+                }
                 self.dragging = false;
             }
         }

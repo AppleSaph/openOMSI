@@ -1608,6 +1608,17 @@ impl Player {
         self.vehicle.trigger(&format!("{ev}_off"));
     }
 
+    /// The left button let go while the right one is held: Omsi.exe sends no `_off`, so a
+    /// momentary switch stays where the hand left it (a pedal held down for the steering
+    /// column's adjustment, #769) until it is clicked and let go again.
+    pub(crate) fn release_keeping(&mut self) {
+        if let Some(i) = self.pressed_mesh.take() {
+            let def = &self.vehicle.ty.model.meshes[self.vehicle.ty.meshes[i].def_index];
+            log::info!("mouse event {:?}: let go with the right button held, the switch stays", def.mouse_event);
+        }
+        self.pressed_trailer_mesh = None;
+    }
+
     pub(crate) fn release(&mut self) {
         if let Some(i) = self.pressed_mesh.take() {
             let ty = self.vehicle.ty.clone();
