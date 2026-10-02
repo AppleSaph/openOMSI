@@ -88,9 +88,20 @@ impl KeyboardCfg {
             self.vehicles.push(KeyBinding { action: "IBIS_vor".into(), scan_code: 16, modifier: 0 });
         }
         // the LAN chat's keys, which the player can move like any other (#130): V shows
-        // and hides the chat (scan code 47, bound to nothing in OMSI's file), '/' (53)
-        // opens the line to write in
-        for (action, scan_code) in [("chat_toggle", 47), ("chat_open", 53)] {
+        // and hides the chat (scan code 47, bound to nothing in OMSI's file), and the line
+        // to write in opens on '/' (53) - unless the file gives that key to something else:
+        // OMSI's own gives it to the manual gearbox's `kw_s_minus` (a German keyboard's '-',
+        // with `kw_s_plus` on 'Ü' next to it), so the chat took the gear down away in a LAN
+        // game. Then it is the key left of 1 ('`', '^'; 41), or '\' / '#' (43).
+        let taken = |k: &KeyboardCfg, sc: i32| k.game.iter().chain(k.vehicles.iter()).any(|b| b.scan_code == sc && b.chord() == 0 && !b.action.to_ascii_lowercase().starts_with("chat_"));
+        let open_key = [53, 41, 43].into_iter().find(|&sc| !taken(&self, sc)).unwrap_or(53);
+        // (a file written while the default was '/' whatever the gearbox had: moved off it)
+        if let Some(b) = self.game.iter_mut().find(|b| b.action.eq_ignore_ascii_case("chat_open")) {
+            if b.scan_code == 53 && b.chord() == 0 && open_key != 53 {
+                b.scan_code = open_key;
+            }
+        }
+        for (action, scan_code) in [("chat_toggle", 47), ("chat_open", open_key)] {
             if !self.game.iter().any(|b| b.action.eq_ignore_ascii_case(action)) {
                 self.game.push(KeyBinding { action: action.into(), scan_code, modifier: 0 });
             }
@@ -231,6 +242,22 @@ mod tests {
         assert_eq!(key(&cfg, "chat_open"), vec![(53, 0)]);
         let moved = KeyboardCfg { game: vec![KeyBinding { action: "chat_open".into(), scan_code: 20, modifier: KEY_CTRL }], ..Default::default() }.with_game_defaults();
         assert_eq!(key(&moved, "chat_open"), vec![(20, KEY_CTRL)]);
+    }
+
+    #[test]
+    fn the_chat_leaves_the_manual_gearbox_its_gear_down_key() {
+        // OMSI's stock file: '/' (53) is kw_s_minus, so the chat line opens on the key left of 1
+        let gear = KeyBinding { action: "kw_s_minus".into(), scan_code: 53, modifier: 0 };
+        let key = |c: &KeyboardCfg, a: &str| c.game.iter().filter(|b| b.action == a).map(|b| (b.scan_code, b.modifier)).collect::<Vec<_>>();
+        let cfg = KeyboardCfg { vehicles: vec![gear.clone()], ..Default::default() }.with_game_defaults();
+        assert_eq!(key(&cfg, "chat_open"), vec![(41, 0)]);
+        assert!(cfg.vehicles.contains(&gear));
+        // a file saved while the chat was on '/' as well: moved off it, once
+        let old = KeyboardCfg { game: vec![KeyBinding { action: "chat_open".into(), scan_code: 53, modifier: 0 }], vehicles: vec![gear.clone()] }.with_game_defaults().with_game_defaults();
+        assert_eq!(key(&old, "chat_open"), vec![(41, 0)]);
+        // '/' moved to Shift+'/' by the player stays there
+        let shifted = KeyboardCfg { game: vec![KeyBinding { action: "chat_open".into(), scan_code: 53, modifier: KEY_SHIFT }], vehicles: vec![gear] }.with_game_defaults();
+        assert_eq!(key(&shifted, "chat_open"), vec![(53, KEY_SHIFT)]);
     }
 
     #[test]

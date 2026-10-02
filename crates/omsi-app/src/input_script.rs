@@ -115,7 +115,7 @@ impl App {
         }
         if let PhysicalKey::Code(code) = event_key {
             let pressed = pressed;
-            // LAN chat: its keys (`chat_open`, '/', and `chat_toggle`, V, in keyboard.cfg's
+            // LAN chat: its keys (`chat_open`, '/' or '`', and `chat_toggle`, V, in keyboard.cfg's
             // [game]: the player can move them, #130) open the line and show or hide the
             // chat, and while the line is open the keys are its own
             if let Some(l) = self.lan.as_mut() {
