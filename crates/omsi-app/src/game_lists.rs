@@ -1313,6 +1313,10 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
         }
         "momentary_gears" => {
             app.settings.momentary_gears = on;
+            // (the bus being driven read it when it was taken over)
+            if let Some(p) = app.player.as_mut() {
+                p.momentary_gears = on;
+            }
             Some(("momentary_gears", bit))
         }
         "auto_shift" => {
