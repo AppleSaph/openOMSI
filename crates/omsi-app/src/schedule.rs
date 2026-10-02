@@ -189,6 +189,34 @@ impl TripTimes {
 /// The stations a trip calls at: its `[station_typ2]` objects, or the objects of the older
 /// `[station]` records the trains, the ferry and the U-Bahn of Spandau still use (their first
 /// line is the object id).
+/// The station targets of [`Schedule::stop_targets`] from the trips' stops and termini.
+/// A stop is never a target of itself or of another stop of the same name (the platforms
+/// of one station, the first and last stop of a circular line): somebody waiting there who
+/// drew it got in, found the bus at their stop and got straight off again, over and over,
+/// every one of them adding another pedestrian (#795).
+fn station_targets(trips: impl Iterator<Item = (Vec<i64>, String)>, name_of: impl Fn(i64) -> String) -> HashMap<i64, Vec<(String, HashSet<String>)>> {
+    let mut named: HashMap<i64, Vec<(String, HashSet<String>)>> = HashMap::new();
+    for (stations, terminus) in trips {
+        for (k, from) in stations.iter().enumerate() {
+            let here = name_of(*from);
+            let targets = named.entry(*from).or_default();
+            for to in &stations[k + 1..] {
+                let to = name_of(*to);
+                if to == here {
+                    continue;
+                }
+                match targets.iter_mut().find(|t| t.0 == to) {
+                    Some(t) => {
+                        t.1.insert(terminus.clone());
+                    }
+                    None => targets.push((to, HashSet::from_iter([terminus.clone()]))),
+                }
+            }
+        }
+    }
+    named
+}
+
 fn trip_stations(trip: &omsi_timetable::Trip) -> Vec<i64> {
     if !trip.stations.is_empty() {
         return trip.stations.clone();
@@ -1672,24 +1700,7 @@ impl Schedule {
                 .map(|b| b.name.trim().to_string())
                 .unwrap_or_else(|| id.to_string())
         };
-        let mut named: HashMap<i64, Vec<(String, HashSet<String>)>> = HashMap::new();
-        for trip in &self.data.trips {
-            let stations = trip_stations(trip);
-            let terminus = trip.terminus.trim().to_string();
-            for (k, from) in stations.iter().enumerate() {
-                let targets = named.entry(*from).or_default();
-                for to in &stations[k + 1..] {
-                    let to = name_of(*to);
-                    match targets.iter_mut().find(|t| t.0 == to) {
-                        Some(t) => {
-                            t.1.insert(terminus.clone());
-                        }
-                        None => targets.push((to, HashSet::from_iter([terminus.clone()]))),
-                    }
-                }
-            }
-        }
-        named
+        station_targets(self.data.trips.iter().map(|t| (trip_stations(t), t.terminus.trim().to_string())), name_of)
     }
 
     pub fn pending(&self) -> usize {
@@ -4491,6 +4502,23 @@ mod tests {
 
     /// The row OMSI's AI bus is given: the first whose ident is the destination, whatever
     /// the codes' order; of equally loose matches the first as well.
+    #[test]
+    fn a_stop_is_no_target_of_itself() {
+        // a circular line: from A round to A; B has two platforms of one name
+        let names = |id: i64| match id {
+            1 => "A".to_string(),
+            2 | 3 => "B".to_string(),
+            _ => "C".to_string(),
+        };
+        let t = station_targets([(vec![1, 2, 4, 3, 1], "A".to_string())].into_iter(), names);
+        let of = |id: i64| t[&id].iter().map(|x| x.0.as_str()).collect::<Vec<_>>();
+        assert_eq!(of(1), ["B", "C"]);
+        assert_eq!(of(2), ["C", "A"]);
+        assert_eq!(of(4), ["B", "A"]);
+        assert_eq!(of(3), ["A"]);
+        assert!(t[&1].iter().all(|x| x.1.contains("A")));
+    }
+
     #[test]
     fn a_terminus_is_the_first_row_of_its_name() {
         let t = |code: i32, id: &str, s: &[&str]| omsi_vehicle::hof::Terminus { code, texture_id: id.into(), terminus_stop: Some(id.into()), all_exit: false, strings: s.iter().map(|x| x.to_string()).collect() };
