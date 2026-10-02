@@ -1039,7 +1039,7 @@ impl App {
         if self.cursor_looks() {
             let scale = self.window.as_ref().map(|w| w.scale_factor() as f32).unwrap_or(1.0).max(0.1);
             let fov = self.camera.as_ref().map(|c| c.fov_deg).unwrap_or(60.0);
-            let k = look_deg_per_px(fov);
+            let k = look_deg_per_px(fov) * self.settings.look_sens;
             self.look_by((x - last.0) / scale * k, (y - last.1) / scale * k);
         }
         // Dragging a switch reads the movement in screen pixels - take it from the

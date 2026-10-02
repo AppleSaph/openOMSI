@@ -2598,7 +2598,8 @@ impl ApplicationHandler for App {
                         self.look.0 = y;
                         self.look.1 = p;
                     } else {
-                        self.look_by(delta.0 as f32 * 0.15, delta.1 as f32 * 0.15);
+                        let k = 0.15 * self.settings.look_sens;
+                        self.look_by(delta.0 as f32 * k, delta.1 as f32 * k);
                     }
                 }
             } else if self.mouse_drive && self.game_menu.is_none() {
