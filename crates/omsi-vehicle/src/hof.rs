@@ -50,6 +50,37 @@ impl Hof {
         Ok(Self::parse(&f))
     }
 
+    /// Only the `[name]` of a depot file ("" when it has none), kept for the session: the
+    /// searches by name below read every depot file of every vehicle folder, and parsing
+    /// each whole (termini, stops, the IVU trips) made a big installation's start take
+    /// minutes.
+    pub fn read_name(path: &Path) -> Option<String> {
+        type Names = std::collections::HashMap<PathBuf, Option<String>>;
+        static CACHE: std::sync::OnceLock<std::sync::Mutex<(u64, Names)>> = std::sync::OnceLock::new();
+        let cache = CACHE.get_or_init(Default::default);
+        let generation = omsi_cfg::content_generation();
+        {
+            let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+            if c.0 != generation {
+                *c = (generation, Names::new());
+            }
+            if let Some(n) = c.1.get(path) {
+                return n.clone();
+            }
+        }
+        let name = CfgFile::read(path).ok().map(|f| {
+            let mut r = f.reader().with_rule(omsi_cfg::KeywordRule::TrimEnd);
+            while let Some(k) = r.next_keyword() {
+                if k == "name" {
+                    return r.str().to_string();
+                }
+            }
+            String::new()
+        });
+        cache.lock().unwrap_or_else(|e| e.into_inner()).1.insert(path.to_path_buf(), name.clone());
+        name
+    }
+
     pub fn parse(f: &CfgFile) -> Hof {
         let mut h = Hof { path: f.path.clone(), string_count_terminus: 0, string_count_busstop: 0, ..Default::default() };
         // `stringcount_terminus` / `stringcount_busstop` are bare (unbracketed) directives.
@@ -177,7 +208,10 @@ pub fn depot_in(dir: &Path, name: &str) -> Option<Hof> {
             return Some(h);
         }
     }
-    files.iter().filter_map(|f| Hof::load(f).ok()).find(|h| h.name.trim().eq_ignore_ascii_case(name))
+    files
+        .iter()
+        .filter(|f| Hof::read_name(f).is_some_and(|n| n.trim().eq_ignore_ascii_case(name)))
+        .find_map(|f| Hof::load(f).ok())
 }
 
 /// The depot file called `name` in any vehicle folder of any content root (`Vehicles/*/`).
@@ -189,10 +223,29 @@ pub fn depot_in(dir: &Path, name: &str) -> Option<Hof> {
 /// map's .hof into such a folder; this finds the copy that is already installed with
 /// another bus.
 pub fn depot_anywhere(name: &str) -> Option<Hof> {
+    // (asked for every type of AI bus without the map's depot: the file found is kept for
+    // the session, and a big installation's thousands of folders are gone through once)
+    type Found = std::collections::HashMap<String, Option<PathBuf>>;
+    static FOUND: std::sync::OnceLock<std::sync::Mutex<(u64, Found)>> = std::sync::OnceLock::new();
+    let found = FOUND.get_or_init(Default::default);
+    let key = name.trim().to_ascii_lowercase();
+    let generation = omsi_cfg::content_generation();
+    let known = {
+        let mut f = found.lock().unwrap_or_else(|e| e.into_inner());
+        if f.0 != generation {
+            *f = (generation, Found::new());
+        }
+        f.1.get(&key).cloned()
+    };
+    if let Some(path) = known {
+        return path.and_then(|p| Hof::load(&p).ok());
+    }
     // every vehicle folder once over all roots (depot_in looks at each root's copy)
     let mut dirs: Vec<PathBuf> = omsi_cfg::read_dir_merged("Vehicles").into_iter().filter(|d| omsi_cfg::vfs::is_dir(d)).collect();
     dirs.sort_by_key(|d| d.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase());
-    dirs.iter().find_map(|d| depot_in(d, name))
+    let h = dirs.iter().find_map(|d| depot_in(d, name));
+    found.lock().unwrap_or_else(|e| e.into_inner()).1.insert(key, h.as_ref().map(|h| h.path.clone()));
+    h
 }
 
 #[cfg(test)]

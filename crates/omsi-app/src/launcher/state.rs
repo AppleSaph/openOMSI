@@ -12,6 +12,12 @@ use std::time::Instant;
 /// Results of background work.
 pub enum Msg {
     Content(Result<(Vec<core::MapInfo>, Vec<core::VehicleInfo>, Vec<core::WeatherInfo>), String>),
+    /// The first reading of the content: the maps and weathers (quick to read), before the
+    /// buses.
+    ContentEarly { maps: Vec<core::MapInfo>, weathers: Vec<core::WeatherInfo> },
+    /// The first reading of the content: the buses of the next few folders, how many
+    /// folders are read and how many there are.
+    VehiclesRead { batch: Vec<core::VehicleInfo>, done: usize, total: usize },
     Lines { map: String, date: String, lines: Result<Vec<core::LineInfo>, String> },
     Poll(Result<core::Poll, String>),
     Profile(Result<core::Profile, String>),
@@ -169,6 +175,10 @@ pub struct State {
     pub lines: Vec<core::LineInfo>,
     pub lines_for: (String, String),
     pub loading_content: bool,
+    /// The lists are filled while they are read (the first reading: nothing to show yet).
+    pub content_first: bool,
+    /// The content changed while it was being read: read it again when that is done.
+    pub reload_content: bool,
     pub loading_lines: bool,
     pub choice: Choice,
     pub choice_dirty: f32,
@@ -237,6 +247,8 @@ impl State {
             lines: Vec::new(),
             lines_for: (String::new(), String::new()),
             loading_content: false,
+            content_first: false,
+            reload_content: false,
             loading_lines: false,
             choice,
             choice_dirty: 0.0,
@@ -322,11 +334,44 @@ impl State {
 
     pub fn load_content(&mut self) {
         self.loading_content = true;
+        // the first reading shows what it has read as it goes: a big installation's buses
+        // (thousands of folders) took minutes, with nothing on the page all that time
+        self.content_first = self.maps.is_empty() && self.vehicles.is_empty();
         self.set_status("Reading the OMSI folder…", false);
-        self.spawn(|| {
-            let r = (|| -> anyhow::Result<_> { Ok((core::list_maps()?, core::list_vehicles()?, core::list_weather()?)) })();
+        let tx = self.tx.clone();
+        self.spawn(move || {
+            let r = (|| -> anyhow::Result<_> {
+                let maps = core::list_maps()?;
+                let weathers = core::list_weather()?;
+                let _ = tx.send(Msg::ContentEarly { maps: maps.clone(), weathers: weathers.clone() });
+                let vehicles = core::list_vehicles_progress(|batch, done, total| {
+                    let _ = tx.send(Msg::VehiclesRead { batch: batch.to_vec(), done, total });
+                })?;
+                Ok((maps, vehicles, weathers))
+            })();
             Msg::Content(r.map_err(|e| format!("{e:#}")))
         });
+    }
+
+    /// A reading of the lists ended: the next poll's stamp is the new reference, and a change
+    /// that came while reading is read now.
+    fn content_done(&mut self) {
+        self.stamp = None;
+        if std::mem::take(&mut self.reload_content) {
+            self.load_content();
+        }
+    }
+
+    /// The map chosen last time where it still exists, else the one OMSI 2 had last, else
+    /// the first.
+    fn pick_map(&mut self) {
+        if !self.maps.iter().any(|m| m.file == self.choice.map) {
+            let last = core::omsi_options(std::path::Path::new(&self.config.root)).and_then(|o| o.last_map);
+            if let Some(m) = last.and_then(|l| self.maps.iter().find(|m| m.file.eq_ignore_ascii_case(&l))).or(self.maps.first()) {
+                self.choice.map = m.file.clone();
+                self.choice.entry = -1;
+            }
+        }
     }
 
     pub fn load_lines(&mut self) {
@@ -677,6 +722,26 @@ impl State {
                 }
                 self.server_info.insert(address, (Instant::now(), info));
             }
+            Msg::ContentEarly { maps, weathers } => {
+                if !self.content_first {
+                    return;
+                }
+                crate::mt::protect(maps.iter().flat_map(|m| [m.name.as_str(), m.friendly.as_str()]));
+                crate::mt::protect(weathers.iter().map(|w| w.name.as_str()));
+                self.maps = maps;
+                self.weathers = weathers;
+                self.pick_map();
+                self.load_lines();
+                self.set_status(format!("{} maps - reading the buses…", self.maps.len()), false);
+            }
+            Msg::VehiclesRead { batch, done, total } => {
+                if !self.content_first {
+                    return;
+                }
+                crate::mt::protect(batch.iter().flat_map(|v| [v.name.as_str(), v.manufacturer.as_str(), v.type_name.as_str()]).chain(batch.iter().flat_map(|v| v.paints.iter().map(|p| p.as_str()))));
+                self.vehicles.extend(batch);
+                self.set_status(format!("{} maps, {} buses - reading the vehicle folders: {done} of {total}", self.maps.len(), self.vehicles.len()), false);
+            }
             Msg::Content(Ok((maps, vehicles, weathers))) => {
                 // (names of things, not the interface: never machine-translated)
                 crate::mt::protect(maps.iter().flat_map(|m| [m.name.as_str(), m.friendly.as_str()]));
@@ -703,20 +768,19 @@ impl State {
                         self.choice.hof = self.default_hof();
                     }
                 }
-                if !self.maps.iter().any(|m| m.file == self.choice.map) {
-                    // the map OMSI 2 had last, else the first
-                    let last = core::omsi_options(std::path::Path::new(&self.config.root)).and_then(|o| o.last_map);
-                    if let Some(m) = last.and_then(|l| self.maps.iter().find(|m| m.file.eq_ignore_ascii_case(&l))).or(self.maps.first()) {
-                        self.choice.map = m.file.clone();
-                        self.choice.entry = -1;
-                    }
+                self.pick_map();
+                // (the first reading asked for the lines with the maps already)
+                if !std::mem::take(&mut self.content_first) || self.lines_for != (self.choice.map.clone(), self.choice.date.clone()) {
+                    self.load_lines();
                 }
-                self.load_lines();
                 self.load_args();
                 self.load_ibis();
+                self.content_done();
             }
             Msg::Content(Err(e)) => {
                 self.loading_content = false;
+                self.content_first = false;
+                self.content_done();
                 if omsi_cfg::missing_original_essentials(std::path::Path::new(&self.config.root)).is_empty() {
                     self.set_status(format!("{e}\nSet the OMSI 2 folder under Setup."), true);
                 } else {
@@ -801,10 +865,18 @@ impl State {
                                 self.stopping.remove(&i.pid);
                             }
                         }
+                        // (while the lists are read the stamp moves by itself - the cache gains
+                        // the folders each bus depends on - and every poll started the whole
+                        // reading over on top of the one going: a big installation never
+                        // finished. A change then is taken up when the reading is done.)
                         let changed = self.stamp.as_ref().map(|s| *s != p.stamp).unwrap_or(false);
-                        self.stamp = Some(p.stamp);
+                        self.stamp = if self.loading_content { None } else { Some(p.stamp) };
                         if changed || installed {
-                            self.load_content();
+                            if self.loading_content {
+                                self.reload_content = true;
+                            } else {
+                                self.load_content();
+                            }
                             self.load_mods();
                         }
                         for pid in self.open_logs.clone() {

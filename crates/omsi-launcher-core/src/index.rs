@@ -119,15 +119,15 @@ fn with_store<R>(f: impl FnOnce(&mut Store) -> R) -> R {
 /// The value for `key`, from the cache when `stamp` (and the dependencies recorded with
 /// it) are unchanged, else made anew by `make`, which also names its dependencies.
 pub fn cached<T: Serialize + DeserializeOwned>(key: &str, stamp: u64, make: impl FnOnce() -> (T, Vec<PathBuf>)) -> T {
-    let hit = with_store(|s| {
-        let e = s.entries.get(key)?;
-        if combine(stamp, deps_stamp(&e.deps)) != e.stamp {
-            return None;
+    // (the files looked at and the value read outside the lock: the lists are read by
+    // several threads at once)
+    let entry = with_store(|s| s.entries.get(key).map(|e| (e.stamp, e.deps.clone(), e.value.clone())));
+    if let Some((full, deps, value)) = entry {
+        if combine(stamp, deps_stamp(&deps)) == full {
+            if let Ok(v) = serde_json::from_value::<T>(value) {
+                return v;
+            }
         }
-        serde_json::from_value::<T>(e.value.clone()).ok()
-    });
-    if let Some(v) = hit {
-        return v;
     }
     let (value, deps) = make();
     let json = serde_json::to_value(&value).unwrap_or(serde_json::Value::Null);

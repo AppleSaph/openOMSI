@@ -379,6 +379,7 @@ fn merged_entries(rel: &str) -> Vec<PathBuf> {
 /// all its copies, the content folder's first (a mod may add files to a stock folder).
 fn merged_folders(rel: &str) -> Vec<(String, Vec<PathBuf>)> {
     let mut out: Vec<(String, Vec<PathBuf>)> = Vec::new();
+    let mut at: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for base in bases() {
         let dir = base.join(rel);
         let Some(list) = omsi_cfg::vfs::list_dir(&dir) else { continue };
@@ -389,9 +390,13 @@ fn merged_folders(rel: &str) -> Vec<(String, Vec<PathBuf>)> {
             if name.starts_with('.') {
                 continue;
             }
-            match out.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(&name)) {
-                Some((_, dirs)) => dirs.push(p),
-                None => out.push((name, vec![p])),
+            // (by an index: thousands of folders compared each with all before took long)
+            match at.get(&name.to_ascii_lowercase()) {
+                Some(&i) => out[i].1.push(p),
+                None => {
+                    at.insert(name.to_ascii_lowercase(), out.len());
+                    out.push((name, vec![p]));
+                }
             }
         }
     }
@@ -814,25 +819,54 @@ fn log_line(line: &str) {
 }
 
 pub fn list_vehicles() -> Result<Vec<VehicleInfo>> {
+    list_vehicles_progress(|_, _, _| {})
+}
+
+/// The buses, as `list_vehicles`, with `progress` told after every few folders what they
+/// held, how many folders are done and how many there are: a big installation's first
+/// reading (thousands of vehicle folders, nothing in the cache yet) takes minutes, and the
+/// page showed nothing at all until the last folder was read.
+pub fn list_vehicles_progress(progress: impl Fn(&[VehicleInfo], usize, usize)) -> Result<Vec<VehicleInfo>> {
+    use rayon::prelude::*;
     root()?;
     let lang = content_language();
-    let mut out = Vec::new();
-    let mut keys = Vec::new();
-    for (folder, dirs) in merged_folders("Vehicles") {
+    let folders = merged_folders("Vehicles");
+    let keys: Vec<String> = folders.iter().map(|(_, dirs)| format!("bus4|{lang}|{}", dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>().join("|"))).collect();
+    let read = |(folder, dirs): &(String, Vec<PathBuf>), key: &String| -> Vec<VehicleInfo> {
         // the stamp covers every copy of the folder and their direct entries (Model/,
         // Texture/ ...); the paint folders the entry read are its dependencies
         let mut stamped: Vec<PathBuf> = dirs.clone();
-        for d in &dirs {
+        for d in dirs {
             if let Some(list) = omsi_cfg::vfs::list_dir(d) {
                 let mut subs: Vec<PathBuf> = list.into_iter().filter(|(_, is_dir)| *is_dir).map(|(n, _)| d.join(n)).collect();
                 subs.sort();
                 stamped.extend(subs);
             }
         }
-        let key = format!("bus4|{lang}|{}", dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>().join("|"));
-        keys.push(key.clone());
-        let list: Vec<VehicleInfo> = index::cached(&key, index::folder_stamp(&stamped), || read_vehicle_folder(&folder, &dirs, lang));
-        out.extend(list);
+        index::cached(key, index::folder_stamp(&stamped), || read_vehicle_folder(folder, dirs, lang))
+    };
+    // folders side by side (the files of one wait for the disk while another's are parsed),
+    // a handful of threads so that a hard disk is not sent seeking all over
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8)).build().ok();
+    let mut out = Vec::new();
+    let total = folders.len();
+    let mut done = 0;
+    let mut saved = std::time::Instant::now();
+    for (chunk, chunk_keys) in folders.chunks(32).zip(keys.chunks(32)) {
+        let lists: Vec<Vec<VehicleInfo>> = match &pool {
+            Some(pool) => pool.install(|| chunk.par_iter().zip(chunk_keys.par_iter()).map(|(f, k)| read(f, k)).collect()),
+            None => chunk.iter().zip(chunk_keys.iter()).map(|(f, k)| read(f, k)).collect(),
+        };
+        let batch: Vec<VehicleInfo> = lists.into_iter().flatten().collect();
+        done += chunk.len();
+        // what was read is kept every few seconds: a first reading left half-way (the
+        // launcher closed) starts from there the next time
+        if saved.elapsed().as_secs() >= 10 {
+            index::save("bus4|", None);
+            saved = std::time::Instant::now();
+        }
+        progress(&batch, done, total);
+        out.extend(batch);
     }
     index::save("bus4|", Some(&keys));
     if out.is_empty() {
@@ -888,8 +922,9 @@ fn read_vehicle_folder(folder: &str, dirs: &[PathBuf], lang: &str) -> (Vec<Vehic
     let hof_dir = |f: &PathBuf| rel_of.get(f).map(|r| r.rsplit_once('/').map(|(d, _)| d.to_ascii_lowercase()).unwrap_or_default()).unwrap_or_default();
     let mut hofs_in: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for f in files.iter().filter(|f| f.extension().map(|e| e.eq_ignore_ascii_case("hof")).unwrap_or(false)) {
-        if let Ok(h) = omsi_vehicle::Hof::load(f) {
-            hofs_in.entry(hof_dir(f)).or_default().push(h.name.trim().to_string());
+        // (the name alone: UK depot files carry megabytes of trips)
+        if let Some(name) = omsi_vehicle::Hof::read_name(f) {
+            hofs_in.entry(hof_dir(f)).or_default().push(name.trim().to_string());
         }
     }
     // OMSI offers what has a [friendlyname]: never the rear section of an articulated bus
