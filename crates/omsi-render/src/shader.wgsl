@@ -1548,6 +1548,15 @@ fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
             let nm = srgb_encode(sample_nightmap(vec2<f32>(in.uv.x, 1.0 - in.uv.y)).rgb);
             v = min(v + nm * camera.sun_color.w * clamp(in.params2.y, 0.0, 1.0), vec3<f32>(1.0));
         }
+        if (lm_only) {
+            // a road, a plate or a [LightMapMapping] object: the same tile light map, the
+            // same way as the ground beside it (Omsi.exe lights both from it alone - its
+            // `[maplight]`s only bake the map, 0x7903e0). Added after the texture in linear
+            // light instead, the pools that lay bright on the verges hardly showed on the
+            // asphalt between them: the street lamps lit everything but the road (#847).
+            let lm = srgb_encode(light_map_at(in.world));
+            v = min(v + lm * camera.sun_color.w, vec3<f32>(1.0));
+        }
         lit = srgb_decode(srgb_encode(albedo) * v);
     } else if (light_mapped) {
         // [matl_lightmap], as Omsi.exe's texture stages have it (0x7fe4d3..0x7fe604): the
@@ -1571,13 +1580,6 @@ fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     }
     if ((!light_mapped && !classic) || material.params.y > 0.5) {
         lit = lit + tex.rgb * material.emissive.rgb;
-    }
-    // the tile light map, as on the terrain: the lamps' pools on the roads and the plates,
-    // lighting the surface (not painted over it: added as it was, the pool lay on the road
-    // as a white patch); only where it is their light at night - elsewhere the map's lamps
-    // light them as they light the squares and pavements beside them
-    if (lm_only) {
-        lit = lit + albedo * material.color.rgb * light_map_at(in.world) * camera.sun_color.w;
     }
     // [interiorlight]: the saloon lamps on the meshes and passengers they illuminate (in
     // a light-mapped material's vertex light already, above)
