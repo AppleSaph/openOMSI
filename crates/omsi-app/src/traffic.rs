@@ -550,6 +550,10 @@ pub struct Traffic {
     root: std::path::PathBuf,
     /// Car-frames spent waiting for a red light (statistics).
     pub held_at_red: usize,
+    /// Who wants a timetable bus to stop (`Humans::stop_wishes`): the buses somebody
+    /// aboard wants to get off, the stops where somebody waits. None without passengers:
+    /// every bus then serves every stop.
+    stop_wishes: Option<(hashbrown::HashSet<u64>, hashbrown::HashSet<i64>)>,
     /// Seconds the player's vehicle has been standing.
     player_still: f32,
     /// Time of day (seconds since midnight); light cycles and timetables run on it.
@@ -560,6 +564,8 @@ pub struct Traffic {
     pub weekday: i32,
     /// Street lights on → AI vehicles switch their lights on.
     pub night: bool,
+    /// The light of the day, for the cars' `Envir_Brightness` (see `sync`).
+    pub daylight: Option<omsi_sim::Daylight>,
     next_id: u64,
     /// The last car that started an overtake and when (for chase-camera debugging).
     pub last_overtaker: Option<(u64, f32)>,
@@ -1199,11 +1205,13 @@ impl Traffic {
             sound_cfgs: HashMap::new(),
             root: root.to_path_buf(),
             held_at_red: 0,
+            stop_wishes: None,
             player_still: 0.0,
             day_time: 0.0,
             time_scale: 1.0,
             weekday: 0,
             night: false,
+            daylight: None,
             next_id: 1,
             last_overtaker: None,
             first_turner: None,
@@ -3024,6 +3032,13 @@ impl Traffic {
                 let gap = os - s - o.rear - me.front;
                 gap > 2.0 + (me.speed - o.speed).max(0.0) * 1.5
             } else {
+                // behind and standing for this car already (it keeps behind it): it lets it
+                // in. Counted as in the way, the bus waiting at the end of its lane to move
+                // over and the car stopped behind it for that bus waited on each other for
+                // good, and the street behind with them (Spandau's Klosterstrasse).
+                if o.speed < 0.3 && self.cars[j].lead_info.is_some_and(|(id, _)| id == self.cars[i].id) {
+                    return true;
+                }
                 // behind: the other driver keeps a time gap and brakes gently
                 let gap = s - os - me.rear - o.front;
                 gap > 2.0
@@ -5465,7 +5480,11 @@ impl Traffic {
             {
                 let car = &mut self.cars[i];
                 if let Some(service) = car.bus.as_mut() {
+                    let wanted = self.stop_wishes.as_ref().map(|(alighting, waiting)| {
+                        alighting.contains(&car.id) || service.stops.front().is_some_and(|s| waiting.contains(&s.id))
+                    });
                     let ctx = crate::bus_service::Ctx {
+                        wanted,
                         net: &self.net,
                         way: &way,
                         day_time: self.day_time,
@@ -6438,6 +6457,11 @@ impl Traffic {
 
     /// Keep a scheduled bus at its stop for at least `secs` more with the doors open:
     /// passengers are still queueing at a door or stepping in.
+    /// The passengers' wishes for the timetable buses' next stops (see `stop_wishes`).
+    pub fn set_stop_wishes(&mut self, alighting: hashbrown::HashSet<u64>, waiting: hashbrown::HashSet<i64>) {
+        self.stop_wishes = Some((alighting, waiting));
+    }
+
     pub fn hold_boarding(&mut self, id: u64, secs: f32) {
         if let Some(c) = self.cars.iter_mut().find(|c| c.id == id) {
             if let Some(b) = c.bus.as_mut() {
@@ -6683,12 +6707,30 @@ impl Traffic {
                 let v = value(lamp, &lamp.coronas[k].1);
                 lamp.lit[k] = v;
             }
-            for (inst, cond) in &lamp.instances {
+            for (k, (inst, cond)) in lamp.instances.iter().enumerate() {
                 let visible = match cond {
                     Some((var, want)) => (value(lamp, var) - want).abs() < 0.5,
                     None => true,
                 };
-                renderer.set_params(scene, *inst, &[], visible, &[]);
+                // lenses switched by their material instead (`[alphascale]` and
+                // `[matl_lightmap]` on the lamp's variables, #826)
+                match lamp.slots.get(k).filter(|s| !s.is_empty()) {
+                    Some(slots) => {
+                        let known = |v: &str| -> Option<f32> {
+                            let scripted = lamp.script.as_ref().and_then(|script| {
+                                let s = script.lock();
+                                if s.program.frame.is_empty() { None } else { s.var(v) }
+                            });
+                            scripted
+                                .or_else(|| v.trim().parse::<f32>().ok())
+                                .or_else(|| crate::scene::standard_traffic_lamp(v, r, y, g, request))
+                        };
+                        let (alpha, light) = slots.values(&known);
+                        renderer.set_params(scene, *inst, &alpha, visible, &[]);
+                        renderer.set_slot_light(scene, *inst, &light);
+                    }
+                    None => renderer.set_params(scene, *inst, &[], visible, &[]),
+                }
             }
         }
         // A far car's script textures (its destination sign) stay as they are drawn: OMSI
@@ -6698,6 +6740,15 @@ impl Traffic {
         // the GPU at most every half second, a slice of the cars per frame.
         let tick = (self.time as f64 * 2.0) as u64;
         let mut budget = SCRIPT_UPLOAD_BUDGET;
+        // `Envir_Brightness`, which Omsi.exe sets for every road vehicle as for the
+        // player's: the stock buses fade their windows by it at night (left at the engine's
+        // default of 1, an AI bus under the street lamps kept its daytime brown glass)
+        if let Some(d) = self.daylight {
+            for c in self.cars.iter_mut().filter(|c| c.vehicle.ai_visuals) {
+                let b = d.envir_brightness(world.light_map_light_at(c.vehicle.position));
+                c.vehicle.set_var("Envir_Brightness", b);
+            }
+        }
         for c in &mut self.cars {
             // out of sight (`tick` decided): hidden once, then left alone until it comes
             // into view again - its many per-mesh updates were a third of this stage

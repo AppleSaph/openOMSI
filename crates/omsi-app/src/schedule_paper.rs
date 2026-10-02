@@ -43,7 +43,7 @@ pub(crate) fn update_vehicle(
     let (title, rows) = paper_content(&duty.line, &duty.tour, &duty.trips, duty.trip_index, (arr, dep));
     let lines = paper_lines(&title, &rows);
     let signature = content_signature(&lines);
-    let path = cache_dir()?.join(format!("schedule-v6-{signature:016x}.png"));
+    let path = cache_dir()?.join(format!("schedule-v7-{signature:016x}.png"));
     let filename = path.to_string_lossy().into_owned();
 
     if vehicle.str_var("file_schedule") == filename {
@@ -127,8 +127,11 @@ fn typewriter_font(lines: &[String]) -> Option<FontAtlas> {
     let units = font.units_per_em().unwrap_or(2048.0);
     let px = PxScale::from(FONT_EM * font.height_unscaled() / units);
     let scaled = font.as_scaled(px);
-    // a line is the font's height (Courier New: 24 pixels at 16 pt), the baseline at its ascent
-    let line_height = (scaled.ascent() - scaled.descent()).round().max(1.0) as u32;
+    // a line is the font's height as GDI makes it, the ascent and the descent each rounded
+    // to whole pixels (Courier New bold at 16 pt: 17.5 + 6.3 = 17 + 6 = 23 pixels), the
+    // baseline at the ascent. The sum rounded made it 24, and the rows ran down past the
+    // paper's lines, one pixel more with every row (#629)
+    let line_height = gdi_line_height(scaled.ascent(), scaled.descent());
     let cell_width = scaled.h_advance(scaled.glyph_id('M')).round().max(1.0) as u32;
     let mut characters: Vec<char> = (32u8..=126).map(char::from).collect();
     for line in lines {
@@ -177,6 +180,12 @@ fn typewriter_font(lines: &[String]) -> Option<FontAtlas> {
         vec![0; alpha.len()],
         alpha,
     ))
+}
+
+/// GDI's `tmHeight` from a font's ascent and (negative) descent in pixels: each is rounded
+/// by itself.
+fn gdi_line_height(ascent: f32, descent: f32) -> u32 {
+    (ascent.round() + (-descent).round()).max(1.0) as u32
 }
 
 /// `TT_Arr` and `TT_Dep` of the game's language (`Languages/<LANG>_basic.olf`), as
@@ -399,6 +408,13 @@ mod tests {
             pixels.clone(),
             pixels,
         )
+    }
+
+    #[test]
+    fn a_line_is_as_high_as_gdi_makes_it() {
+        // Courier New bold at 16 pt (an em of 21 px): ascent 1705, descent 615 of 2048
+        let k = 21.0 / 2048.0;
+        assert_eq!(gdi_line_height(1705.0 * k, -615.0 * k), 23);
     }
 
     #[test]

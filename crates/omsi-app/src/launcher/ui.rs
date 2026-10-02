@@ -1021,15 +1021,25 @@ impl Ui {
         }
         let mut layers = Vec::new();
         let mut verts = Vec::new();
-        let mut ranges = Vec::new();
+        let mut ranges: Vec<(std::ops::Range<u32>, usize)> = Vec::new();
+        // (the GPU side draws 256 layers at most and drops the rest: a list of 242 trips
+        // made a layer for every field of every row, hidden or not, and the rail, the
+        // buttons under it and the status bar were never drawn, #666. A layer whose clip
+        // shows nothing is left out, one that clips as the layer before it joins it.)
+        let same = |a: &Layer, b: &Layer| a.clip == b.clip && a.radius == b.radius && a.viewport == b.viewport && a.opacity == b.opacity && a.px_scale == b.px_scale && a.view_proj == b.view_proj;
         for (l, p, tex) in self.layers.drain(..) {
-            if p.verts.is_empty() {
+            if p.verts.is_empty() || l.clip[2] <= l.clip[0] || l.clip[3] <= l.clip[1] {
                 continue;
             }
             let a = verts.len() as u32;
             verts.extend(p.verts);
-            layers.push(l);
-            ranges.push((a..verts.len() as u32, tex));
+            match (layers.last(), ranges.last_mut()) {
+                (Some(last), Some((range, last_tex))) if *last_tex == tex && same(last, &l) && range.end == a => range.end = verts.len() as u32,
+                _ => {
+                    layers.push(l);
+                    ranges.push((a..verts.len() as u32, tex));
+                }
+            }
         }
         // the input of this frame is used up
         self.discard_input();
@@ -1312,6 +1322,30 @@ mod tests {
         assert!(!xs.is_empty());
         let middle = (xs.iter().cloned().fold(f32::MAX, f32::min) + xs.iter().cloned().fold(f32::MIN, f32::max)) * 0.5;
         assert!((middle - r.center().x).abs() <= 0.5, "the icon is at {middle}, the button's middle at {}", r.center().x);
+    }
+
+    /// A long list of fields in a scroll area (a tour of 242 trips) stays well under the
+    /// 256 layers the GPU draws, so what comes after it - the rail - is drawn (#666).
+    #[test]
+    fn a_long_list_of_fields_leaves_layers_for_the_rest_of_the_page() {
+        let mut ui = Ui::new();
+        ui.begin(Vec2::new(1400.0, 900.0), 1.0, 1.0 / 60.0);
+        let mut texts: Vec<String> = (0..242).map(|k| format!("{}:{:02}", 4 + k / 60, k % 60)).collect();
+        let options = vec!["a".to_string(), "b".to_string()];
+        ui.scroll_area("trips", Rect::new(300.0, 100.0, 900.0, 600.0), &mut |ui, v| {
+            for (i, t) in texts.iter_mut().enumerate() {
+                let y = v.y + i as f32 * 42.0;
+                ui.text_input(&format!("dep-{i}"), Rect::new(v.x, y, 110.0, 36.0), t, "h:mm", None);
+                let mut k = 0;
+                ui.select(&format!("trip-{i}"), Rect::new(v.x + 120.0, y, 200.0, 36.0), &mut k, &options);
+            }
+            242.0 * 42.0
+        });
+        // the rail, last
+        ui.p().rect(Rect::new(0.0, 0.0, 240.0, 900.0), Color::WHITE);
+        let (layers, _, ranges) = ui.finish();
+        assert_eq!(layers.len(), ranges.len());
+        assert!(layers.len() < 128, "{} layers", layers.len());
     }
 
     /// What was clicked and typed while the launcher drew nothing (a game ran) is gone:

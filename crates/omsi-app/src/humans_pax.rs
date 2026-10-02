@@ -743,11 +743,17 @@ impl Humans {
         // the path point walked to is the target
         let mut target = p0.target;
         let mut target_bus = p0.target_bus;
+        // (kept as the target, +0x5bd: waiting short of the point, state 6, goes on facing
+        // it - with the target of before kept instead, a seat or the stop's gather point in
+        // another frame, the people waiting at a shut exit were lifted 40 m up in the bus
+        // and stood stacked there for good, #709)
+        let mut walked_to: Option<DVec3> = None;
         if p0.st == 5 {
             if let (Some(pt), Some(bn)) = (p0.pt, bn_in) {
                 if let Some(q) = bn.cabin.graph.points.get(pt) {
                     target = q.as_dvec3();
                     target_bus = true;
+                    walked_to = Some(target);
                 }
             }
         }
@@ -856,6 +862,10 @@ impl Humans {
             } else {
                 p.jam = 0.0;
             }
+        }
+        if let Some(t) = walked_to {
+            p.target = t;
+            p.target_bus = true;
         }
         p.st = st;
         p.pt = pt;
@@ -1513,22 +1523,31 @@ impl Humans {
                 }
                 return;
             }
-            if p.timer < 0.0 && p.st != 5 {
-                // standing a second: perhaps another door opened (0x62d6b1). Once a second:
-                // with the timer left run out, the way was found afresh every frame from the
-                // nearest point, and whoever had left a point was pulled back to it - the
-                // people coming down from the upper deck never got off the stairs.
+            if p.timer < 0.0 {
+                // the bus stands: the nearest exit that is open now (0x62d6b1 passes the
+                // exits' open states, +0x6e0: a shut door is skipped, none open gives the
+                // first). Without them the nearest door was taken again, open or shut, and
+                // people walked on to a shut front door with the others open (#493).
+                // Once a second: with the timer left run out, the way was found afresh every
+                // frame from the nearest point, and whoever had left a point was pulled back
+                // to it - the people coming down from the upper deck never got off the stairs.
                 self.pax_mut(i).unwrap().timer = 1.0;
                 let exits = bn.cabin.exit_points();
                 let all = bn.cabin.all_points();
+                let open: Vec<bool> = (0..exits.len()).map(|k| bn.exit_open.get(k.min(7)).copied().unwrap_or(false)).collect();
                 let pp = self.pax_mut(i).unwrap();
                 let here = pp.pos.as_vec3();
-                pp.pt = bn.cabin.omsi_nearest(here, &all, false, false, None, None);
-                let open: Vec<bool> = (0..exits.len()).map(|k| bn.exit_open.get(k.min(7)).copied().unwrap_or(false)).collect();
-                let _ = open;
-                pp.pt_target = bn.cabin.omsi_nearest(here, &exits, false, false, None, None);
+                let target = bn.cabin.omsi_nearest(here, &exits, false, false, None, Some(&open));
+                if pp.st == 5 {
+                    // walking: on from the point walked to, towards the new door (Omsi.exe
+                    // changes only the target and the door)
+                    pp.pt_target = target;
+                } else if target != pp.pt_target || pp.st != 7 {
+                    pp.pt = bn.cabin.omsi_nearest(here, &all, false, false, None, None);
+                    pp.pt_target = target;
+                    pp.st = 5;
+                }
                 pp.door = pp.pt_target.and_then(|t| exits.iter().position(|e| *e == Some(t)));
-                pp.st = 5;
             }
             if bn.id == BusId::Player {
                 self.stop_request = true;
@@ -1550,7 +1569,7 @@ impl Humans {
         pp.pos = w;
         pp.yaw = h.to_radians();
         if debug_pax() {
-            log::info!("t={:.1} pax {} gets off at stop {:?}", self.time, self.people[i].label(), stop);
+            log::info!("t={:.1} pax {} gets off at stop {:?} by exit {:?}", self.time, self.people[i].label(), stop, p.door);
         }
         self.walk_street(i, w, h, stop, world, remove);
     }

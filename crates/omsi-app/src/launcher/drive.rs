@@ -1028,9 +1028,20 @@ fn summary(l: &mut Launcher, side: Rect) {
         start(l);
     }
     // where the last game on this map was left (`laststn.osn`): a second way in
+    // (with save slots of the map, #341: which one, beside the button)
     if l.state.joined_server.is_none() && l.state.has_last_situation() {
+        let saves: Vec<String> = l.state.saved_situations().iter().map(|s| s.name.clone()).collect();
         let cont = Rect::new(btn.x, btn.y - 44.0, pw, 38.0);
-        if l.ui.button("continue", cont, "Continue where you left off", Some("history"), ButtonKind::Normal) {
+        if saves.len() > 1 {
+            let sw = (pw * 0.5).round();
+            let mut pick = l.state.save_pick.min(saves.len() - 1);
+            if l.ui.select("continue-which", Rect::new(cont.x, cont.y, sw, cont.h), &mut pick, &saves) {
+                l.state.save_pick = pick;
+            }
+            if l.ui.button("continue", Rect::new(cont.x + sw + 8.0, cont.y, pw - sw - 8.0, cont.h), "Continue", Some("history"), ButtonKind::Normal) {
+                l.state.launch_last_situation();
+            }
+        } else if l.ui.button("continue", cont, "Continue where you left off", Some("history"), ButtonKind::Normal) {
             l.state.launch_last_situation();
         }
     }

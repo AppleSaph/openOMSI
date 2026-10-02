@@ -87,6 +87,14 @@ impl KeyboardCfg {
         if !q_taken && !self.vehicles.iter().any(|b| b.action.eq_ignore_ascii_case("IBIS_vor")) {
             self.vehicles.push(KeyBinding { action: "IBIS_vor".into(), scan_code: 16, modifier: 0 });
         }
+        // the LAN chat's keys, which the player can move like any other (#130): V shows
+        // and hides the chat (scan code 47, bound to nothing in OMSI's file), '/' (53)
+        // opens the line to write in
+        for (action, scan_code) in [("chat_toggle", 47), ("chat_open", 53)] {
+            if !self.game.iter().any(|b| b.action.eq_ignore_ascii_case(action)) {
+                self.game.push(KeyBinding { action: action.into(), scan_code, modifier: 0 });
+            }
+        }
         for action in ["blinker_left_toggle", "blinker_right_toggle"] {
             if !self.vehicles.iter().any(|b| b.action.eq_ignore_ascii_case(action)) {
                 self.vehicles.push(KeyBinding { action: action.into(), scan_code: 0, modifier: 0 });
@@ -213,6 +221,16 @@ mod tests {
         assert!(cfg.vehicles.contains(&custom));
         let right = cfg.vehicles.iter().find(|b| b.action == "blinker_right_toggle").unwrap();
         assert_eq!((right.scan_code, right.modifier), (0, 0));
+    }
+
+    #[test]
+    fn the_chat_keys_are_in_the_list_and_a_moved_one_stays_moved() {
+        let cfg = KeyboardCfg::default().with_game_defaults();
+        let key = |c: &KeyboardCfg, a: &str| c.game.iter().filter(|b| b.action == a).map(|b| (b.scan_code, b.modifier)).collect::<Vec<_>>();
+        assert_eq!(key(&cfg, "chat_toggle"), vec![(47, 0)]);
+        assert_eq!(key(&cfg, "chat_open"), vec![(53, 0)]);
+        let moved = KeyboardCfg { game: vec![KeyBinding { action: "chat_open".into(), scan_code: 20, modifier: KEY_CTRL }], ..Default::default() }.with_game_defaults();
+        assert_eq!(key(&moved, "chat_open"), vec![(20, KEY_CTRL)]);
     }
 
     #[test]

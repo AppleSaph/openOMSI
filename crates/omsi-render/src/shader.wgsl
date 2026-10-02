@@ -152,9 +152,13 @@ fn weather_outside_n(world: vec3<f32>, n: vec3<f32>, terrain: bool, surface: f32
     }
     // a vehicle's part (lib.rs `Instance::roof`): under its roof it is dry, whichever
     // vehicle it is - the one the camera is in, another player's, a timetable bus
+    // (what faces up only: taken for every face below the roof, the whole outer skin of
+    // every car and bus below the roof's edge was cab - lit by the dim cab light in the
+    // enhanced picture, dry in the rain - with a hard seam round the body 0.3 m under the
+    // roof where the sky's light began, #805)
     if (surface < -500.0) {
         let roof = -surface - 5000.0;
-        if (world.z < roof - 0.3) {
+        if (world.z < roof - 0.3 && n.z > 0.5) {
             return 0.0;
         }
     }
