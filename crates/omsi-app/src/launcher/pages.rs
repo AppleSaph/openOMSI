@@ -937,6 +937,8 @@ fn known_action(a: &str) -> Option<String> {
         ("vr_toggle_navigator", "VR: Toggle navigator"),
         ("vr_position_navigator", "VR: Position navigator"),
         ("exit", "Quit"),
+        ("chat_open", "Multiplayer: write in the chat"),
+        ("chat_toggle", "Multiplayer: show / hide the chat"),
         ("sim_pause", "Pause"),
         ("screenshot", "Screenshot"),
         ("quicksave", "Quicksave"),

@@ -115,21 +115,24 @@ impl App {
         }
         if let PhysicalKey::Code(code) = event_key {
             let pressed = pressed;
-            // LAN chat: V opens the line, and while it is open the keys are its own
+            // LAN chat: its keys (`chat_open`, '/', and `chat_toggle`, V, in keyboard.cfg's
+            // [game]: the player can move them, #130) open the line and show or hide the
+            // chat, and while the line is open the keys are its own
             if let Some(l) = self.lan.as_mut() {
-                let modifiers = [
-                    KeyCode::ShiftLeft,
-                    KeyCode::ShiftRight,
-                    KeyCode::ControlLeft,
-                    KeyCode::ControlRight,
-                    KeyCode::AltLeft,
-                    KeyCode::AltRight,
-                    KeyCode::SuperLeft,
-                    KeyCode::SuperRight,
-                ]
-                    .iter()
-                    .any(|k| self.keys.contains(k));
-                if lan::chat_key(l, &mut self.remotes, code, pressed, repeat, modifiers) {
+                let held = |a: KeyCode, b: KeyCode| self.keys.contains(&a) || self.keys.contains(&b);
+                let chord = omsi_content::input::chord(
+                    held(KeyCode::ShiftLeft, KeyCode::ShiftRight),
+                    held(KeyCode::ControlLeft, KeyCode::ControlRight),
+                    held(KeyCode::AltLeft, KeyCode::AltRight),
+                );
+                let bound = if held(KeyCode::SuperLeft, KeyCode::SuperRight) {
+                    None
+                } else {
+                    keys::dik_code(code).and_then(|scan| self.game_keys.iter()
+                        .find(|b| b.scan_code == scan && b.matches(chord) && b.action.to_ascii_lowercase().starts_with("chat_"))
+                        .map(|b| b.action.clone()))
+                };
+                if lan::chat_key(l, &mut self.remotes, code, pressed, repeat, bound.as_deref()) {
                     return;
                 }
             }

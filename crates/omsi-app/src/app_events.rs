@@ -102,9 +102,12 @@ impl ApplicationHandler for App {
                 // '/' opens the chat's input box wherever the keyboard has it (the key
                 // itself is then swallowed by the chat) - but not Numpad ÷, OMSI's stock
                 // front door key (keyboard.cfg `bus_doorfront0 181`)
+                // (only while `chat_open` is on its own key: one the player moved it to is
+                // the only one, #130)
                 if event.state == ElementState::Pressed
                     && event.text.as_deref() == Some("/")
                     && event.physical_key != PhysicalKey::Code(KeyCode::NumpadDivide)
+                    && self.game_keys.iter().any(|b| b.action.eq_ignore_ascii_case("chat_open") && b.scan_code == 53 && b.chord() == 0)
                     && self.lan.is_some()
                     && !lan::chat_open(&self.remotes)
                 {
