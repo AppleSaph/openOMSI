@@ -1478,13 +1478,16 @@ pub struct TrafficLightController {
     /// A stop point the clock has just been let past without moving (it is not asked again
     /// at the same instant).
     passed: Option<usize>,
+    /// A short backwards jump has replayed its stretch once. Do not take it again before
+    /// the clock has moved past its source time.
+    rewound: Option<usize>,
     started: bool,
 }
 
 impl TrafficLightController {
     pub fn new(lights: Vec<Vec<(i32, f32)>>, cycle: f32) -> TrafficLightController {
         let n = lights.len();
-        TrafficLightController { lights, cycle, offset: 0.0, approach: vec![None; n], stops: Vec::new(), time: 0.0, request: vec![false; n], held: false, passed: None, started: false }
+        TrafficLightController { lights, cycle, offset: 0.0, approach: vec![None; n], stops: Vec::new(), time: 0.0, request: vec![false; n], held: false, passed: None, rewound: None, started: false }
     }
 
     /// From the `[traffic_light]` program of a crossing object: (per light: name, phases
@@ -1530,10 +1533,22 @@ impl TrafficLightController {
         let cycle = self.cycle_len();
         let mut left = dt.max(0.0) as f64;
         self.held = false;
+        let clear_rewind = |this: &mut Self, move_by: f64| {
+            let Some(k) = this.rewound else { return };
+            let source = this.stops[k].time as f64;
+            if ((this.time - source).abs() < 1e-6 && move_by > 1e-6)
+                || (this.time < source && this.time + move_by > source + 1e-6)
+            {
+                this.rewound = None;
+            }
+        };
         // a handful of points per frame at most (a jump may land just before another one)
         for _ in 0..16 {
             let mut best: Option<(usize, f64)> = None;
             for (k, p) in self.stops.iter().enumerate() {
+                if self.rewound == Some(k) {
+                    continue;
+                }
                 let d = (p.time as f64 - self.time).rem_euclid(cycle);
                 let d = if d > cycle - 1e-6 { 0.0 } else { d };
                 if d < 1e-6 && self.passed == Some(k) {
@@ -1545,6 +1560,7 @@ impl TrafficLightController {
             }
             let Some((k, d)) = best else {
                 if left > 0.0 {
+                    clear_rewind(self, left);
                     self.passed = None;
                 }
                 self.time = (self.time + left).rem_euclid(cycle);
@@ -1553,6 +1569,7 @@ impl TrafficLightController {
             if d > 1e-6 {
                 self.passed = None;
             }
+            clear_rewind(self, d);
             self.time = (self.time + d).rem_euclid(cycle);
             left -= d;
             let p = self.stops[k];
@@ -1564,6 +1581,9 @@ impl TrafficLightController {
             }
             match p.jump_to {
                 Some(to) => {
+                    // A jump a couple of seconds back extends the current phase. It is not
+                    // a loop: after replaying that small stretch, continue through it.
+                    self.rewound = (to > 1e-6 && to < p.time - 1e-6).then_some(k);
                     self.time = (to as f64).rem_euclid(cycle);
                     self.passed = None;
                     if left <= 0.0 {
@@ -2732,6 +2752,24 @@ mod tests {
         c.advance(3.0);
         assert!((c.time - 53.0).abs() < 1e-3);
         assert_eq!(c.state(0), 3, "the bus gets its phase");
+    }
+
+    #[test]
+    fn a_backwards_jump_replays_its_phase_once() {
+        // win-wit.sco and similar crossings use a small rewind to extend a green. Taking
+        // that jump again on every pass locked the whole program in that stretch.
+        let mut c = TrafficLightController::from_program(
+            vec![(vec![(0, 2.0), (3, 2.0), (6, 4.0), (9, 2.0), (0, 0.0)], None)],
+            Some(12.0),
+            &[],
+            &[[0.0, 8.0, 0.0, 4.0]],
+        );
+        c.time = 7.9;
+        c.request[0] = true;
+        for _ in 0..50 {
+            c.advance(0.1);
+        }
+        assert_eq!(c.state(0), 9, "the clock left the replayed green");
     }
 
     #[test]
