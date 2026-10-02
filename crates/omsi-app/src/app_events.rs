@@ -1865,10 +1865,15 @@ impl ApplicationHandler for App {
                             _ => nav.clear_route(),
                         }
                         let (outside_temp, inside_temp) = vehicle_temperatures(p);
+                        // (on foot the map follows the walker, not the bus left standing)
+                        let (at, heading) = match self.on_foot.as_ref() {
+                            Some(f) => (f.pos, f.heading),
+                            None => (p.vehicle.position, p.vehicle.heading),
+                        };
                         let frame = navigator::NavFrame {
                             traffic: self.traffic.as_ref(),
-                            bus: p.vehicle.position,
-                            heading: p.vehicle.heading,
+                            bus: at,
+                            heading,
                             speed_kmh: p.vehicle.physics.velocity_kmh(),
                             outside_temp,
                             inside_temp,

@@ -431,26 +431,8 @@ impl App {
                         {
                             // Shift+N: navigator → navigator with the schedule → off (N alone is
                             // the gearbox's neutral)
-                            if self.vr_active() {
-                                if !self.vr_nav_profile().enabled {
-                                    self.vr_nav_adjust("enabled", 1.0);
-                                } else if self.navigator.as_ref().is_some_and(|n| n.schedule) {
-                                    if let Some(n) = self.navigator.as_mut() { n.schedule = false; }
-                                    self.vr_nav_adjust("enabled", 1.0);
-                                } else if let Some(n) = self.navigator.as_mut() {
-                                    n.schedule = true;
-                                }
+                            if self.cycle_navigator() {
                                 return;
-                            }
-                            if let Some(n) = self.navigator.as_mut() {
-                                match (n.enabled, n.schedule) {
-                                    (true, false) => n.schedule = true,
-                                    (true, true) => {
-                                        n.enabled = false;
-                                        n.schedule = false;
-                                    }
-                                    _ => n.enabled = true,
-                                }
                             }
                         }
                     KeyCode::F11 => {
@@ -655,6 +637,33 @@ impl App {
         if let Some(p) = self.player.as_mut() {
             p.vehicle.host.clock = self.clock.clone();
         }
+    }
+
+    /// Shift+N: the navigator, the navigator with the schedule, off. True in VR (where the
+    /// key is used up).
+    pub(crate) fn cycle_navigator(&mut self) -> bool {
+        if self.vr_active() {
+            if !self.vr_nav_profile().enabled {
+                self.vr_nav_adjust("enabled", 1.0);
+            } else if self.navigator.as_ref().is_some_and(|n| n.schedule) {
+                if let Some(n) = self.navigator.as_mut() { n.schedule = false; }
+                self.vr_nav_adjust("enabled", 1.0);
+            } else if let Some(n) = self.navigator.as_mut() {
+                n.schedule = true;
+            }
+            return true;
+        }
+        if let Some(n) = self.navigator.as_mut() {
+            match (n.enabled, n.schedule) {
+                (true, false) => n.schedule = true,
+                (true, true) => {
+                    n.enabled = false;
+                    n.schedule = false;
+                }
+                _ => n.enabled = true,
+            }
+        }
+        false
     }
 
     /// Whether a key the game gives `action` by itself (F1 the driver's view, O the mouse
