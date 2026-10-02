@@ -467,7 +467,7 @@ fn inbox_entries(content: &Path) -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| {
             let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
-            !(name.starts_with('.') || name.eq_ignore_ascii_case("installed") || name.eq_ignore_ascii_case(install::WAITING) || name.eq_ignore_ascii_case(install::PLUGINS_HELD) || name.eq_ignore_ascii_case("README.txt"))
+            !(name.starts_with('.') || name.eq_ignore_ascii_case("installed") || name.eq_ignore_ascii_case(install::WAITING) || name.eq_ignore_ascii_case(install::PLUGINS_HELD) || name.eq_ignore_ascii_case(install::UNINSTALLED) || name.eq_ignore_ascii_case("README.txt"))
                 && (p.is_dir() || p.extension().map(|x| ["zip", "7z", "rar"].iter().any(|ext| x.eq_ignore_ascii_case(ext))).unwrap_or(false))
         })
         .collect();
@@ -505,6 +505,14 @@ fn watch_inbox(content: &Path) -> Vec<String> {
         checked: std::time::Instant,
     }
     static SEEN: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, Seen>>> = std::sync::Mutex::new(None);
+    // a mod deleted from Mods/installed is taken out of the lists (#819)
+    let gone = install::uninstall_removed(content);
+    for g in &gone {
+        log_line(&format!("mods: {g} was deleted from Mods/installed - uninstalled, its folders are in Mods/{}/{g}", install::UNINSTALLED));
+    }
+    if !gone.is_empty() {
+        omsi_cfg::content_changed();
+    }
     let mut started = Vec::new();
     let mut guard = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     let seen = guard.get_or_insert_with(Default::default);
