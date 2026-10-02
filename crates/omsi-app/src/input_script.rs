@@ -1641,8 +1641,9 @@ impl App {
         self.refresh_list();
     }
 
-    /// A key while a route number is typed in the destination list (#836): letters and
-    /// digits ("5E", "N41"), Backspace, Enter sets it, Escape drops it.
+    /// A key while a route number is typed in the destination list (#836). Printable
+    /// text comes through `route_edit_text` so keyboard layouts and symbols are preserved;
+    /// physical key codes remain a fallback for platforms that do not provide text.
     fn route_edit_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Escape => self.menu_edit = None,
@@ -1664,6 +1665,23 @@ impl App {
                         t.push(c);
                     }
                 }
+            }
+        }
+        self.refresh_list();
+    }
+
+    /// Text entered in OMSI's free route-number field. It is intentionally not restricted
+    /// to letters and digits: add-on displays use values such as `-10` and other symbols.
+    pub(crate) fn route_edit_text(&mut self, text: &str) {
+        if !matches!(self.list_kind, Some(crate::game_lists::ListKind::RouteNumbers)) || self.menu_edit.is_none() {
+            return;
+        }
+        if let Some(t) = self.menu_edit.as_mut() {
+            for c in text.chars().filter(|c| !c.is_control()) {
+                if t.chars().count() >= 8 {
+                    break;
+                }
+                t.push(c);
             }
         }
         self.refresh_list();
@@ -3625,8 +3643,27 @@ impl App {
     }
 }
 
-/// The character a key types into a route number (digits and capital letters), if any.
+/// Printable fallback for a route number when the window backend supplies no text event.
+/// Normal typing uses the actual text event so Shift/layout-specific symbols are kept.
 fn route_char(code: KeyCode) -> Option<char> {
+    let symbol = match code {
+        KeyCode::Minus | KeyCode::NumpadSubtract => Some('-'),
+        KeyCode::Equal | KeyCode::NumpadAdd => Some('+'),
+        KeyCode::Slash | KeyCode::NumpadDivide => Some('/'),
+        KeyCode::NumpadMultiply => Some('*'),
+        KeyCode::Period | KeyCode::NumpadDecimal => Some('.'),
+        KeyCode::Comma => Some(','),
+        KeyCode::Semicolon => Some(';'),
+        KeyCode::Quote => Some('''),
+        KeyCode::BracketLeft => Some('['),
+        KeyCode::BracketRight => Some(']'),
+        KeyCode::Backslash => Some('\\'),
+        KeyCode::Backquote => Some('`'),
+        _ => None,
+    };
+    if symbol.is_some() {
+        return symbol;
+    }
     let name = format!("{code:?}");
     let c = name.strip_prefix("Digit").or_else(|| name.strip_prefix("Numpad")).or_else(|| name.strip_prefix("Key"))?;
     let mut chars = c.chars();
@@ -3714,12 +3751,15 @@ mod look_tests {
     }
 
     #[test]
-    fn a_route_number_takes_digits_and_letters() {
+    fn a_route_number_takes_digits_letters_and_symbols() {
         use winit::keyboard::KeyCode;
         assert_eq!(super::route_char(KeyCode::Digit5), Some('5'));
         assert_eq!(super::route_char(KeyCode::Numpad0), Some('0'));
         assert_eq!(super::route_char(KeyCode::KeyE), Some('E'));
-        assert_eq!(super::route_char(KeyCode::NumpadAdd), None);
+        assert_eq!(super::route_char(KeyCode::Minus), Some('-'));
+        assert_eq!(super::route_char(KeyCode::NumpadSubtract), Some('-'));
+        assert_eq!(super::route_char(KeyCode::NumpadAdd), Some('+'));
+        assert_eq!(super::route_char(KeyCode::Slash), Some('/'));
         assert_eq!(super::route_char(KeyCode::Space), None);
     }
 
