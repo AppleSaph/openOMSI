@@ -7082,9 +7082,10 @@ impl Renderer {
         cursor_overlay: Option<usize>,
         tooltip_overlay: Option<usize>,
         cursor_transforms: [Option<Mat4>; 2],
+        navigator: Option<(TextureId, [Mat4; 2])>,
     ) {
         let Some(menu) = scene.overlays.get(menu_range) else { return };
-        if menu.is_empty() && cursor_transforms.iter().all(Option::is_none) {
+        if menu.is_empty() && cursor_transforms.iter().all(Option::is_none) && navigator.is_none() {
             return;
         }
         let (w, h) = (desktop_size.0.max(1) as f32, desktop_size.1.max(1) as f32);
@@ -7110,6 +7111,12 @@ impl Renderer {
         };
         let mut prepared = [Vec::new(), Vec::new()];
         for eye in 0..2 {
+            if let Some((id, transforms)) = navigator.as_ref() {
+                let quad = [Vec4::new(-1.0, 1.0, 0.0, 1.0), Vec4::new(1.0, 1.0, 0.0, 1.0),
+                            Vec4::new(1.0, -1.0, 0.0, 1.0), Vec4::new(-1.0, -1.0, 0.0, 1.0)]
+                    .map(|p| transforms[eye] * p);
+                if let Some(item) = prepare(id, quad) { prepared[eye].push(item); }
+            }
             for (index, (id, rect)) in menu.iter().enumerate() {
                 // The first rectangle dims the view. Every other rectangle is
                 // projected from the same menu plane in world space.

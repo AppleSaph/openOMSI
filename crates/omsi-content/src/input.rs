@@ -102,6 +102,8 @@ impl KeyboardCfg {
             ("vr_recenter", 19, KEY_SHIFT | KEY_CTRL),
             ("vr_toggle_desktop_mirror", 65, 0),
             ("vr_toggle_mode", 66, 0),
+            ("vr_toggle_navigator", 49, KEY_SHIFT | KEY_CTRL),
+            ("vr_position_navigator", 50, KEY_SHIFT | KEY_CTRL),
         ] {
             if !self.game.iter().any(|b| b.action.eq_ignore_ascii_case(action)) {
                 self.game.push(KeyBinding { action: action.into(), scan_code, modifier });
@@ -235,6 +237,8 @@ mod tests {
         assert_eq!(cfg.game.iter().filter(|b| b.action == "vr_recenter").count(), 1);
         assert!(cfg.game.contains(&custom));
         assert!(cfg.game.iter().any(|b| b.action == "vr_toggle_mode" && b.scan_code == 66));
+        assert_eq!(cfg.game.iter().filter(|b| b.action == "vr_toggle_navigator").count(), 1);
+        assert!(cfg.game.iter().any(|b| b.action == "vr_toggle_navigator" && b.scan_code == 49 && b.modifier == (KEY_SHIFT | KEY_CTRL)));
     }
 
     #[test]
