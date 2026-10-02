@@ -53,7 +53,9 @@ fn route_numbers(app: &App) -> Vec<String> {
         for t in &hof.info_trips {
             let code = t.code.trim();
             let l = if !t.line.trim().is_empty() { t.line.trim().to_string() } else if code.len() > 2 && code.chars().all(|c| c.is_ascii_digit()) { code[..code.len() - 2].trim_start_matches('0').to_string() } else { String::new() };
-            let l = l.trim_matches(|c: char| !c.is_alphanumeric()).to_string();
+            // A route number is display text, not necessarily an alphanumeric IBIS code:
+            // Brazilian matrices use values such as "-10". Keep the HOF spelling intact.
+            let l = l.trim().to_string();
             if !l.is_empty() && !out.contains(&l) {
                 out.push(l);
             }
@@ -71,6 +73,34 @@ fn route_numbers(app: &App) -> Vec<String> {
     out
 }
 
+/// Whether a line can be represented by the numeric IBIS line/suffix variables openOMSI
+/// already knows how to encode. Everything else must stay as display text: turning "-10"
+/// or "EXP" into a number loses information.
+fn numeric_ibis_line(line: &str) -> bool {
+    let line = line.trim();
+    if line.is_empty() {
+        return false;
+    }
+    if line.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    let mut chars = line.chars();
+    if let Some(first) = chars.next() {
+        let rest: String = chars.collect();
+        if matches!(first.to_ascii_uppercase(), 'E' | 'S' | 'A' | 'D' | 'C' | 'B' | 'U' | 'M' | 'N' | 'X')
+            && !rest.is_empty()
+            && rest.chars().all(|c| c.is_ascii_digit())
+        {
+            return true;
+        }
+    }
+    let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let suffix = &line[digits.len()..];
+    !digits.is_empty()
+        && suffix.chars().count() == 1
+        && matches!(suffix.chars().next().unwrap().to_ascii_uppercase(), 'E' | 'U' | 'N' | 'S' | 'M')
+}
+
 /// The route number on the bus's IBIS and display, as picked or typed in the destination
 /// list (the destination stays: the one on the display now, else the first).
 pub(crate) fn set_route_by_hand(app: &mut App, line: &str) {
@@ -79,13 +109,28 @@ pub(crate) fn set_route_by_hand(app: &mut App, line: &str) {
         return;
     }
     if let Some(p) = app.player.as_mut() {
-        let hof = p.vehicle.host.hof.clone();
-        let code = p.vehicle.var("IBIS_TerminusCode").unwrap_or(-1.0) as i32;
-        let named = |t: &&omsi_vehicle::hof::Terminus| t.strings.first().is_some_and(|s| !s.trim().is_empty());
-        let term = hof.as_ref().and_then(|h| h.termini.iter().filter(named).find(|t| t.code == code).or_else(|| h.termini.iter().find(named)));
-        let name = term.and_then(|t| t.strings.first().cloned()).unwrap_or_default();
-        crate::schedule::set_player_destination_directly(&mut p.vehicle, hof.as_deref(), line, &name, &[]);
-        log::info!("route number set by hand: {line} (IBIS_LinieKurs {:?})", p.vehicle.var("IBIS_LinieKurs"));
+        if numeric_ibis_line(line) {
+            let hof = p.vehicle.host.hof.clone();
+            let code = p.vehicle.var("IBIS_TerminusCode").unwrap_or(-1.0) as i32;
+            let named = |t: &&omsi_vehicle::hof::Terminus| t.strings.first().is_some_and(|s| !s.trim().is_empty());
+            let term = hof.as_ref().and_then(|h| h.termini.iter().filter(named).find(|t| t.code == code).or_else(|| h.termini.iter().find(named)));
+            let name = term.and_then(|t| t.strings.first().cloned()).unwrap_or_default();
+            crate::schedule::set_player_destination_directly(&mut p.vehicle, hof.as_deref(), line, &name, &[]);
+        } else {
+            // OMSI's route-number field is also used as arbitrary display text. Do not
+            // force symbols/unknown letters through IBIS_LinieKurs: that would turn "-10"
+            // into line 0 (and matrix scripts would then blank or rewrite the rear sign).
+            for name in ["SetLineTo", "Matrix_Nr", "Linie"] {
+                if let Some(i) = p.vehicle.ty.program.str_var(name) {
+                    p.vehicle.state.str_vars[i as usize] = line.to_string();
+                }
+            }
+        }
+        log::info!(
+            "route number set by hand: {line} (IBIS_LinieKurs {:?}, Matrix_Nr {:?})",
+            p.vehicle.var("IBIS_LinieKurs"),
+            p.vehicle.str_var("Matrix_Nr")
+        );
         app.service_msg = Some((format!("Route {line}"), 3.0));
     }
 }
@@ -219,7 +264,15 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
         }
         ListKind::Destinations => {
             if let Some(p) = app.player.as_ref().filter(|p| p.vehicle.host.hof.is_some()) {
-                let now = p.vehicle.var("IBIS_LinieKurs").filter(|l| *l > 0.0).map(|l| format!("{}", l as i64)).unwrap_or_else(|| "-".into());
+                let shown = p.vehicle.str_var("Matrix_Nr").trim().to_string();
+                let set = p.vehicle.str_var("SetLineTo").trim().to_string();
+                let now = if !shown.is_empty() {
+                    shown
+                } else if !set.is_empty() {
+                    set
+                } else {
+                    p.vehicle.var("IBIS_LinieKurs").filter(|l| *l > 0.0).map(|l| format!("{}", l as i64)).unwrap_or_else(|| "-".into())
+                };
                 out.push((format!("{}: {now}...", tr("Route number")), "routes".into()));
             }
             if let Some(hof) = app.player.as_ref().and_then(|p| p.vehicle.host.hof.clone()) {
@@ -2337,5 +2390,15 @@ mod tests {
         let mut v = vec!["13N", "5", "137", "N30", "92"];
         v.sort_by(|a, b| super::natural(a, b));
         assert_eq!(v, vec!["5", "13N", "92", "137", "N30"]);
+    }
+
+    #[test]
+    fn symbols_are_not_forced_through_numeric_ibis_lines() {
+        assert!(super::numeric_ibis_line("10"));
+        assert!(super::numeric_ibis_line("10E"));
+        assert!(super::numeric_ibis_line("X10"));
+        assert!(!super::numeric_ibis_line("-10"));
+        assert!(!super::numeric_ibis_line("10-"));
+        assert!(!super::numeric_ibis_line("EXP"));
     }
 }

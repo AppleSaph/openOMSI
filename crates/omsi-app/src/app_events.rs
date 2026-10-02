@@ -111,6 +111,21 @@ impl ApplicationHandler for App {
                 if event.state == ElementState::Pressed && self.menu_edit_icao {
                     if let Some(text)=event.text.as_deref(){ self.icao_edit_text(text); }
                 }
+                // Route numbers are free display text in OMSI. Take the text produced by
+                // the keyboard layout (rather than only the physical key) so '-', shifted
+                // symbols and non-US layouts reach the destination display unchanged.
+                if event.state == ElementState::Pressed
+                    && self.menu_edit.is_some()
+                    && !self.menu_edit_icao
+                    && matches!(self.list_kind, Some(crate::game_lists::ListKind::RouteNumbers))
+                {
+                    if let Some(text) = event.text.as_deref() {
+                        if text.chars().any(|c| !c.is_control()) {
+                            self.route_edit_text(text);
+                            return;
+                        }
+                    }
+                }
                 // '/' opens the chat's input box wherever the keyboard has it (the key
                 // itself is then swallowed by the chat) - but not Numpad ÷, OMSI's stock
                 // front door key (keyboard.cfg `bus_doorfront0 181`)
