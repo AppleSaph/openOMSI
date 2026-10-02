@@ -3233,31 +3233,11 @@ impl App {
         // LiAZ MKPP - its `kw_s_plus` never fires, the script's condition is broken): the
         // next gate from the gear engaged, with the clutch down as the gates want it
         if p.vehicle.ty.program.trigger("kw_s_1").is_some() {
-            // the gear engaged is the variable the gates store (`antrieb_getr_gang` in the
-            // stock cars' antrieb.osc, `antrieb_getr_aktugang` in the LiAZ): read as the
-            // LiAZ's alone, every other lever was always in "0" and gear_up never got past
-            // first gear (#866)
-            let cur = gate_gear_var(&p.vehicle.ty.program)
-                .and_then(|v| p.vehicle.var(&v))
-                .or_else(|| p.vehicle.var("antrieb_getr_aktugang"))
-                .unwrap_or(0.0)
-                .round() as i32;
+            let Some(cur) = p.gate_gear() else { return false };
             let to = if up { cur + 1 } else { cur - 1 };
-            let name = match to {
-                0 => "kw_s_N".to_string(),
-                -1 => "kw_s_R".to_string(),
-                n => format!("kw_s_{n}"),
-            };
-            if to < -1 || p.vehicle.ty.program.trigger(&name).is_none() {
+            if !p.shift_gate_to(to) {
                 return false;
             }
-            // (as a driver does it: the clutch down, the gear in, the clutch let up over a
-            // second and a half as OMSI's clutch key lets it - let go at once, a bus pulling
-            // away stalled its engine)
-            p.vehicle.set_var("Clutch", 1.0);
-            p.axes.clutch = 1.0;
-            p.vehicle.trigger(&name);
-            p.vehicle.trigger(&format!("{name}_off"));
             self.service_msg = Some((format!("Gear {}", match to { 0 => "N".to_string(), -1 => "R".to_string(), n => n.to_string() }), 1.5));
             return true;
         }
@@ -3658,7 +3638,7 @@ fn route_char(code: KeyCode) -> Option<char> {
 /// LiAZ, whose gates only move the lever and leave the gear to its frame), else
 /// `antrieb_getr_gang` (the stock cars' antrieb.osc), else one named for the gear that both
 /// `kw_s_1` and `kw_s_2` set.
-fn gate_gear_var(program: &omsi_script::Program) -> Option<String> {
+pub(crate) fn gate_gear_var(program: &omsi_script::Program) -> Option<String> {
     for known in ["antrieb_getr_aktugang", "antrieb_getr_gang"] {
         if program.var(known).is_some() {
             return Some(known.to_string());

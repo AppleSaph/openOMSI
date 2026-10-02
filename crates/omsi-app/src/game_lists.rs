@@ -1081,6 +1081,7 @@ fn toggle_now(app: &App, id: &str) -> Option<bool> {
         "old_steering" => s.old_steering,
         "red_steer_spd" => s.red_steer_spd,
         "momentary_gears" => s.momentary_gears,
+        "auto_shift" => s.auto_shift,
         "ff_invert" => s.ff_invert,
         "machine_translation" => s.machine_translation,
         "ui_scale_window" => s.ui_scale_window,
@@ -1313,6 +1314,13 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
         "momentary_gears" => {
             app.settings.momentary_gears = on;
             Some(("momentary_gears", bit))
+        }
+        "auto_shift" => {
+            app.settings.auto_shift = on;
+            if let Some(p) = app.player.as_mut() {
+                p.auto_shift = on;
+            }
+            Some(("auto_shift", bit))
         }
         "ff_invert" => {
             app.settings.ff_invert = on;
@@ -1837,6 +1845,7 @@ fn options_pages(app: &App) -> Vec<Page> {
         switch_row(app, "brake_hold", "Keyboard brake stays on", "Keep the brake applied until the throttle is pressed"),
         switch_row(app, "auto_clutch", "Automatic clutch", "Automatically operate the clutch for you"),
         switch_row(app, "momentary_gears", "Hold manual gear buttons (release returns to neutral)", later),
+        switch_row(app, "auto_shift", "Automated manual gearbox", "Shift a manual gearbox's gears for you by the engine speed"),
     ]
         .into_iter()
         .flatten()
