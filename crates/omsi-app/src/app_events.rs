@@ -636,7 +636,7 @@ impl ApplicationHandler for App {
                 // passenger view)
                 let driving = self.player.as_ref().filter(|_| matches!(self.view.as_str(), "driver" | "outside" | "pax") && !self.paused);
                 let kmh = driving.map(|p| p.vehicle.physics.velocity_kmh()).unwrap_or(0.0);
-                let wheel_bump = driving.and_then(|p| p.vehicle.rigid.as_ref()).map(|r| crate::controllers::wheel_contact_bump(&mut ctl.settled, r, kmh, dt)).unwrap_or(0.0);
+                let wheel_bump = ctl.wheel_bump(driving.and_then(|p| p.vehicle.rigid.as_ref()), kmh, dt);
                 ctl.feedback(crate::controllers::FfInput {
                     on: driving.is_some(),
                     kmh,
