@@ -241,8 +241,12 @@ impl App {
                     let action = self.game_keys.iter().find(|b| b.scan_code == scan && b.matches(m)
                         && !b.action.starts_with("vr_")
                         && !(plain_arrow && b.action.starts_with("view_interiorcam_"))).map(|b| b.action.clone());
+                    // (a key bound in [game] and in [vehicles] does both, as in Omsi.exe: the
+                    // parking brake put on Space, the stock view_reset_all_directions key,
+                    // reset the view and never reached the bus - #745)
+                    let vehicle_too = self.player.as_ref().is_some_and(|p| p.bindings.iter().any(|b| b.scan_code == scan && b.matches(m)));
                     if let Some(a) = action {
-                        if self.game_action(&a) {
+                        if self.game_action(&a) && !vehicle_too {
                             return;
                         }
                     }
