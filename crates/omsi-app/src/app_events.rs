@@ -2696,7 +2696,7 @@ impl App {
                         .as_ref()
                         .map(|u| u.menu_start)
                         .unwrap_or(0);
-                    let ctl = self.ui.as_ref().and_then(|u| u.menu_ctl.get(k).copied().flatten());
+                    let ctl = self.ui.as_ref().and_then(|u| u.menu_ctl.get(row).copied().flatten());
 
                     // (a greyed-out line cannot be clicked)
                     if self.menu_item_off(k) {
