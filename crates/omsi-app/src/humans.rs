@@ -3408,6 +3408,26 @@ impl Humans {
         if omsi_cfg::env::var_os("OMSI_CHECK_WALLS").is_some() {
             self.check_walls();
         }
+        // OMSI_CHECK_GROUND=1: people on foot with a walkable surface over their heads'
+        // reach above them, every two seconds (people "in the ground")
+        if omsi_cfg::env::var_os("OMSI_CHECK_GROUND").is_some() && (self.time / 2.0).floor() != ((self.time - dt as f64) / 2.0).floor() {
+            for p in &self.people {
+                if !matches!(p.place, Place::Ground) || p.puppet.is_some() {
+                    continue;
+                }
+                // the floor under the feet: the highest face up to a step (0.5 m) over them
+                let floor = world.walk_height_near(p.position.x, p.position.y, p.position.z);
+                if let Some(f) = floor {
+                    if f - p.position.z > 0.05 {
+                        let detail = match &p.state {
+                            State::Pax(x) => format!(" st {} pax_state {} task {:?} pos.z {:.2}", x.st, x.pax_state, x.task, x.pos.z),
+                            _ => String::new(),
+                        };
+                        log::warn!("t={:.1} person {} ({}) {:.2} m under the floor at ({:.1}, {:.1}, {:.2}), top surface {:?}{detail}", self.time, p.id, p.state.name(), f - p.position.z, p.position.x, p.position.y, p.position.z, world.walk_height(p.position.x, p.position.y));
+                    }
+                }
+            }
+        }
         self.tick_stats.0 += 1;
         self.tick_stats.1 += ms;
         self.tick_stats.2 = self.tick_stats.2.max(ms);

@@ -839,6 +839,15 @@ impl Humans {
             head_des = yaw_of(d.truncate());
         }
         if st == 0 {
+            // standing: still on the ground under the feet, as Omsi.exe asks for it every
+            // tick in every state but turning (0x62b852 -> 0x7aec3c, not when seated); the
+            // waiting people stood at the height of their [passpos]'s object - a shelter
+            // on the terrain - 25-35 cm down in the platform
+            if p.inside.is_none() && p.pax_state != 2.0 {
+                if let Some(g) = world.walk_height_near(p.pos.x, p.pos.y, p.pos.z) {
+                    p.pos.z = g;
+                }
+            }
             return;
         }
         let mut dh = wrap(head_des - p.yaw);
