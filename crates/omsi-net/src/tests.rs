@@ -737,6 +737,61 @@ fn the_list_has_the_other_players_boxes() {
 }
 
 #[test]
+fn a_private_line_reaches_one_player_only() {
+    let mut host = LanSession::host(27912, "Server", world("m"), true).unwrap();
+    let port = host.local_addr().unwrap().port();
+    let mut a = LanSession::join(
+        &port.to_string(),
+        "Anton",
+        world("m"),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let mut b = LanSession::join(
+        &port.to_string(),
+        "Berta",
+        world("m"),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let poses = [pose(1.0), pose(2.0), pose(3.0)];
+    pump(&mut [&mut host, &mut a, &mut b], &poses, 80, |s| {
+        s[1].connected && s[2].connected
+    });
+    for s in [&mut host, &mut a, &mut b] {
+        s.take_events();
+    }
+    let anton = a.my_id;
+    assert!(host
+        .say_to(anton, "Admin (private)", "take tour 13/1 at 04:47")
+        .is_ok());
+    assert!(host.say_to(9999, "Admin (private)", "nobody").is_err());
+    assert!(a.say_to(host.my_id, "x", "a client cannot").is_err());
+    pump(&mut [&mut host, &mut a, &mut b], &poses, 40, |s| {
+        !s[1].events.is_empty()
+    });
+    let chat = |s: &mut LanSession| -> Vec<(String, String)> {
+        s.take_events()
+            .into_iter()
+            .filter_map(|e| {
+                if let LanEvent::Chat { name, text, .. } = e {
+                    Some((name, text))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+    assert_eq!(
+        chat(&mut a),
+        [("Admin (private)".to_string(), "take tour 13/1 at 04:47".to_string())]
+    );
+    // (a little longer for Berta: nothing comes)
+    pump(&mut [&mut host, &mut a, &mut b], &poses, 20, |_| false);
+    assert!(chat(&mut b).is_empty());
+}
+
+#[test]
 fn chat_reaches_everybody_and_floods_do_not() {
     let mut host = LanSession::host(27910, "Hanna", world("m"), true).unwrap();
     let port = host.local_addr().unwrap().port();

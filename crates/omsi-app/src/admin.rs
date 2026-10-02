@@ -489,6 +489,17 @@ pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &
                 "say" => {
                     let _ = lan.say(a);
                 }
+                // a word for one player only: `tell <id> <text>`, a chat line from "Admin
+                // (private)" that the others do not get
+                "tell" => {
+                    if let Some((who, msg)) = a.trim().split_once(' ') {
+                        if let Ok(id) = who.parse::<u32>() {
+                            if let Err(e) = lan.say_to(id, "Admin (private)", msg.trim()) {
+                                log::info!("server: tell {id}: {e}");
+                            }
+                        }
+                    }
+                }
                 "bringall" => {
                     if let Some((pos, h)) = positions(from) {
                         let ids: Vec<u32> = lan.peers().map(|p| p.pose.id).filter(|id| *id != from && *id != lan.my_id).collect();
