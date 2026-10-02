@@ -3523,6 +3523,15 @@ impl TrailerPart {
         // the trailer origin: coupling_front sits at c
         let rot = self.body_rotation();
         self.position = c - rot.transform_point3(self.coupling_front).as_dvec3();
+        // The wheels stand on the road under them, wherever the body above swings: the
+        // travel of each wheel is the gap between its hub on the body and the ground under
+        // it (Omsi.exe runs the section as a body on its own springs, each wheel's travel
+        // its own). Held at the static sag, the rear axle of an articulated bus was a rigid
+        // one - its wheels bounced and leant with the body over every bump and in every
+        // bend (#901).
+        if !ai && on_track.is_none() && dt > 0.0 && shows {
+            self.spring_wheels(main, rot);
+        }
         // The joint's angles (degrees) for its plates and bellows and for the scripts: alpha
         // about the vertical axis - the stock articulation.osc's jackknife protection brakes
         // at |alpha| > 47° - and beta about the transverse axis. (The horizontal angle went
@@ -3599,6 +3608,48 @@ impl TrailerPart {
         self.props_plan
             .apply(&main.state.vars, &mut self.mesh_props);
         let _ = self.axle_long;
+    }
+}
+
+impl TrailerPart {
+    /// `Axle_Suspension_*` of the part's sprung axles from the ground under each wheel, the
+    /// body standing at `self.position` turned by `rot` (see `update`).
+    fn spring_wheels(&self, main: &mut VehicleInstance, rot: Mat4) {
+        let probe = |x: f64, y: f64, top: f64| -> Option<f64> {
+            match (&main.contact, &main.ground) {
+                (Some(g), _) => g.probe(x, y, top).below,
+                (None, Some(g)) => g(x, y),
+                _ => None,
+            }
+        };
+        let mut travel: Vec<(usize, [Option<f32>; 2])> = Vec::new();
+        for (a, (offset, _, _)) in self.rest.iter().enumerate() {
+            let axle = self.first_axle + a;
+            if !self.ty.suspension_axles.contains(&axle) {
+                continue;
+            }
+            let Some(def) = self.ty.def.axles.get(a) else { continue };
+            let r = (def.wheel_diameter / 2.0).max(0.15);
+            let hub = r - offset;
+            let outer = (def.max_width / 2.0).max(0.3);
+            let across = if def.min_width > 0.0 && def.min_width < def.max_width { (def.max_width + def.min_width) / 4.0 } else { outer * 0.85 };
+            let mut sides = [None, None];
+            for (si, x) in [-across, across].into_iter().enumerate() {
+                let p = self.position + rot.transform_point3(Vec3::new(x, def.long, hub)).as_dvec3();
+                let Some(g) = probe(p.x, p.y, p.z + 1.0) else { continue };
+                // how far the wheel is pushed up into its arch (never below where it hangs
+                // unloaded, never past the bump stop)
+                sides[si] = Some(((g + r as f64 - p.z) as f32).clamp(0.0, crate::rigid::BUMP));
+            }
+            travel.push((axle, sides));
+        }
+        for (axle, sides) in travel {
+            for (side, c) in ["L", "R"].into_iter().zip(sides) {
+                if let (Some(c), Some(id)) = (c, main.ty.program.var(&format!("Axle_Suspension_{axle}_{side}"))) {
+                    main.state.vars[id as usize] = -c;
+                }
+            }
+        }
     }
 }
 
@@ -4246,6 +4297,37 @@ mod tests {
             v.update_visuals(0.02);
         }
         assert!(v.trailers[0].position.z > 9.0, "stayed under the deck at {}", v.trailers[0].position.z);
+    }
+
+    /// #901: the rear section's wheels take the road under them - a kerb-high step under
+    /// its left wheel pushes that wheel up into its arch and leaves the right one.
+    #[test]
+    fn rear_section_wheels_spring_on_their_own() {
+        let root = omsi_cfg::env::var_os("OMSI_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("../../../OMSI 2 Original"));
+        let bus = root.join("Vehicles/MAN_NL_NG/MAN_GN92_main.bus");
+        let trail = root.join("Vehicles/MAN_NL_NG/MAN_GN92_trail.bus");
+        if !bus.exists() || !trail.exists() {
+            eprintln!("skipped: no {}", bus.display());
+            return;
+        }
+        let ty = Arc::new(VehicleType::load(&root, &bus).expect("GN92"));
+        let mut v = VehicleInstance::new(ty, VehicleHost::new(crate::SimClock::default()));
+        v.attach_trailer_ex(Arc::new(VehicleType::load(&root, &trail).expect("GN92 trail")), false);
+        let t = &v.trailers[0];
+        let axle = t.first_axle;
+        assert!(t.ty.suspension_axles.contains(&axle), "the GN92's rear axle is drawn sprung");
+        // a step 6 cm high under the left wheels behind the joint
+        let ground = move |x: f64, y: f64, _top: f64| crate::rigid::GroundProbe { below: Some(if x < 0.0 && y < -4.0 { 0.06 } else { 0.0 }), above: None };
+        v.contact = Some(Arc::new(ground));
+        v.position = DVec3::new(0.0, 0.0, 0.0);
+        for _ in 0..50 {
+            v.update_visuals(0.02);
+        }
+        let l = -v.var(&format!("Axle_Suspension_{axle}_L")).unwrap();
+        let r = -v.var(&format!("Axle_Suspension_{axle}_R")).unwrap();
+        assert!(l - r > 0.04, "left wheel up {l:.3}, right {r:.3}");
     }
 
     /// A timetable duty and a random traffic car load their bus with `VehicleType::load_ai`,
