@@ -8316,6 +8316,13 @@ impl Renderer {
             list.extend(pre_list);
             prepass_batches = pre_batches;
         }
+        // OMSI_SKIP_PIPE=3,1: leave pipeline kinds out of the main pass (0 opaque, 1 alpha
+        // tested, 2 blended, 3 blended without depth writes, 4 surface depth) - with
+        // OMSI_GPU_TIMERS_RAW, what each kind costs the GPU
+        if let Ok(skip) = omsi_cfg::env::var("OMSI_SKIP_PIPE") {
+            let skip: Vec<u8> = skip.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            main_batches.retain(|b| !skip.contains(&(b.pipe / 4)));
+        }
         if debug_draws {
             log::info!("  main pass: {} opaque/alpha-tested and {} blended draws in {} batches; prepass {} batches; draw list {} entries", main_draws[0], main_draws[1], main_batches.len(), prepass_batches.len(), list.len());
         }
@@ -8345,17 +8352,24 @@ impl Renderer {
         }
         if self.profiling && with_overlays && self.draw_audit_at.elapsed().as_secs() >= 10 {
             self.draw_audit_at = std::time::Instant::now();
-            let mut assets: HashMap<&str, (usize, usize)> = HashMap::new();
+            // (batches, draws, triangles) per asset: what the CPU encodes and what the GPU
+            // goes through
+            let mut assets: HashMap<&str, (usize, usize, u64)> = HashMap::new();
             for b in &main_batches {
                 let source = scene.meshes[b.mesh as usize].source.as_deref().unwrap_or("procedural / vehicle");
                 let cost = assets.entry(source).or_default();
                 cost.0 += 1;
                 cost.1 += b.instances.len();
+                cost.2 += b.count as u64 / 3 * b.instances.len() as u64;
             }
             let mut assets: Vec<_> = assets.into_iter().collect();
             assets.sort_unstable_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(b.0)));
-            for (source, (batches, draws)) in assets.into_iter().take(12) {
-                log::info!("draw audit: {batches} batches, {draws} draws: {source}");
+            for (source, (batches, draws, tris)) in assets.iter().take(12) {
+                log::info!("draw audit: {batches} batches, {draws} draws, {tris} triangles: {source}");
+            }
+            assets.sort_unstable_by(|a, b| b.1.2.cmp(&a.1.2).then(a.0.cmp(b.0)));
+            for (source, (batches, draws, tris)) in assets.iter().take(12) {
+                log::info!("triangle audit: {tris} triangles in {draws} draws ({batches} batches): {source}");
             }
         }
         stage(self, "items", "mirror.items");
