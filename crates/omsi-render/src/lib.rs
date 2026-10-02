@@ -1177,7 +1177,7 @@ pub fn gl_backend() -> bool {
 /// Wait until the GPU has done `submission` (None: everything submitted so far).
 ///
 /// On OpenGL wgpu holds the one GL context for the whole of a wait, and every other thread
-/// that wants it meanwhile (a worker making a bus's textures, the poll thread) gives up after
+/// that wants it meanwhile (a worker making a bus's textures) gives up after
 /// a second with a panic - "Could not lock adapter context. This is most-likely a deadlock."
 /// (wgpu-hal's WGL lock; #843: a slow chip took longer than that for a frame). There the
 /// wait is made of short ones, and the context is free between them.
@@ -10382,7 +10382,12 @@ struct DevicePoller {
 
 impl DevicePoller {
     fn start(device: &wgpu::Device) -> Option<Self> {
-        if cfg!(target_arch = "wasm32") || omsi_cfg::env::var_os("OMSI_NO_POLL_THREAD").is_some() {
+        // Not on OpenGL: there every poll takes the one GL context, and whenever the thread
+        // drawing held it for more than a second (a big shader linked while the world
+        // loads, a slow chip's frame) this thread gave up with wgpu-hal's panic "Could not
+        // lock adapter context" (#898, after #843). It is not needed there: every submit
+        // of the frame runs the same upkeep (wgpu-core's `maintain` after `queue.submit`).
+        if cfg!(target_arch = "wasm32") || gl_backend() || omsi_cfg::env::var_os("OMSI_NO_POLL_THREAD").is_some() {
             return None;
         }
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -10390,9 +10395,7 @@ impl DevicePoller {
         let thread = std::thread::Builder::new()
             .name("omsi-gpu-poll".into())
             .spawn(move || {
-                // (on OpenGL every poll takes the GL context from the thread drawing, see
-                // `wait_gpu`: a few times a frame is plenty there)
-                let pause = std::time::Duration::from_millis(if gl_backend() { 5 } else { 1 });
+                let pause = std::time::Duration::from_millis(1);
                 while !flag.load(std::sync::atomic::Ordering::Relaxed) {
                     let _ = device.poll(wgpu::PollType::Poll);
                     std::thread::sleep(pause);
