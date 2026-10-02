@@ -1677,7 +1677,10 @@ fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     // snow: the ground, the roads and every upward-facing surface whiten under it
     // (not on a shadow blob: whitened, it lit the snow under the bus instead of shading it)
     // (not in vanilla: OMSI 2 shows snow only through the season's WinterSnow textures)
-    let snow = camera.ambient.w * outside * select(1.0, 0.0, in.params2.w > 1.5 || camera.sky_color.w > 0.5);
+    // (nor on a texture that is the season's snow picture: the map's own WinterSnow
+    // textures show the snow as OMSI 2 does, and whitened over, the snowy grass and the
+    // grey road went one flat white, the lane markings left standing in it, #879)
+    let snow = camera.ambient.w * outside * select(1.0, 0.0, in.params2.w > 1.5 || camera.sky_color.w > 0.5 || material.ambient.w > 0.5);
     if (snow > 0.0) {
         let up = clamp(n.z, 0.0, 1.0);
         let ground = select(0.0, 1.0, material.extra.x > 0.5 || material.params2.z > 0.0);

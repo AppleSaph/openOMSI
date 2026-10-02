@@ -378,7 +378,8 @@ struct MaterialUniform {
     /// x: a screen (`MaterialExtra::screen`); y: 1 `[matl_texadress_border]`, 2
     /// `[matl_texadress_mirroronce]`; z the border colour's rgb packed as r * 65536 + g * 256 + b (bytes), w its alpha.
     flags: [f32; 4],
-    /// rgb: the D3D material's ambient colour, which takes the ambient light (C)
+    /// rgb: the D3D material's ambient colour, which takes the ambient light (C); w: 1 for
+    /// a texture that is a season's snow picture (no snow laid over it)
     ambient: [f32; 4],
 }
 
@@ -1059,6 +1060,20 @@ pub struct Scene {
     bind_groups: HashMap<BindKey, (wgpu::BindGroup, wgpu::Buffer)>,
     /// The PBR maps of a diffuse texture (register them before making its materials).
     pub pbr_maps: HashMap<TextureId, PbrMaps>,
+    /// Textures that are a season's snow pictures (`WinterSnow` folders): a material drawn
+    /// with one shows its snow as the map made it, as OMSI 2 shows snow, and gets no snow
+    /// laid over it (register them before making their materials).
+    pub snow_textures: std::collections::HashSet<TextureId>,
+}
+
+/// `MaterialUniform::ambient`'s w: 1 for a material whose texture is a season's snow
+/// picture (`Scene::snow_textures`).
+fn snow_texture_flag(scene: &Scene, texture: Option<TextureId>) -> f32 {
+    if texture.is_some_and(|t| scene.snow_textures.contains(&t)) {
+        1.0
+    } else {
+        0.0
+    }
 }
 
 impl Scene {
@@ -4047,6 +4062,7 @@ impl Renderer {
             last_lights: Vec::new(),
             bind_groups: HashMap::new(),
             pbr_maps: HashMap::new(),
+            snow_textures: Default::default(),
         }
     }
 
@@ -4713,6 +4729,7 @@ impl Renderer {
             .and_then(|id| scene.pbr_maps.get(&id))
             .map(|maps| maps.flags)
             .unwrap_or([0.0; 4]);
+        uniform.ambient[3] = snow_texture_flag(scene, texture);
         let slot = |t: Option<TextureId>| {
             t.and_then(|t| scene.textures.get(t).map(|g| (t, g.gen)))
                 .unwrap_or((usize::MAX, 0))
@@ -5012,7 +5029,7 @@ impl Renderer {
             },
             ambient: {
                 let a = extra.ambient.unwrap_or([color[0], color[1], color[2]]);
-                [a[0], a[1], a[2], 0.0]
+                [a[0], a[1], a[2], snow_texture_flag(scene, texture)]
             },
         };
         let slot = |t: Option<TextureId>| {
@@ -10630,6 +10647,7 @@ impl Renderer {
 
     /// Release a texture (a material still using it keeps it alive until it is freed too).
     pub fn free_texture(&self, scene: &mut Scene, id: TextureId) {
+        scene.snow_textures.remove(&id);
         // (its PBR maps go with it: the slot is taken by another texture next)
         if let Some(m) = scene.pbr_maps.remove(&id) {
             for t in [m.normal, m.orm].into_iter().flatten() {

@@ -9699,9 +9699,20 @@ fn bump_key(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}#bump", path.display()))
 }
 
+/// Whether a texture file is a season's snow picture: it lies in a `WinterSnow` folder
+/// (`Texture\WinterSnow\gras.bmp`, any case), where the snow weather finds the map's
+/// snowy textures.
+fn is_snow_picture(path: &Path) -> bool {
+    path.components().any(|c| c.as_os_str().to_str().is_some_and(|s| s.eq_ignore_ascii_case("WinterSnow")))
+}
+
 /// A PBR set beside the diffuse texture `path` (`foo_n.png` and the rest, see
 /// `omsi_texture::pbr`), put up and tied to texture `id` for the materials made with it.
 pub(crate) fn attach_pbr(renderer: &Renderer, scene: &mut Scene, path: &Path, id: TextureId) {
+    // (and a season's snow picture is known as one: it gets no snow laid over it, #879)
+    if is_snow_picture(path) {
+        scene.snow_textures.insert(id);
+    }
     if omsi_cfg::env::var_os("OMSI_NO_PBR").is_some() {
         return;
     }
@@ -12296,6 +12307,15 @@ mod tests {
         // a light map without a variable is always on
         let plain = LampSlots { count: 1, alpha: vec![], light: vec![(0, String::new())] };
         assert_eq!(plain.values(&|_| Some(0.0)).1, vec![1.0]);
+    }
+
+    /// A season's snow textures are told by their folder, whatever its case (#879).
+    #[test]
+    fn snow_pictures_are_the_winter_snow_folders() {
+        assert!(is_snow_picture(Path::new("/omsi/Texture/WinterSnow/gras.bmp")));
+        assert!(is_snow_picture(Path::new("/omsi/Sceneryobjects/Buildings_RW1HH/texture/Wintersnow/wall.jpg")));
+        assert!(!is_snow_picture(Path::new("/omsi/Texture/Winter/gras.bmp")));
+        assert!(!is_snow_picture(Path::new("/omsi/Texture/WinterSnow_gras.bmp")));
     }
 
     #[test]

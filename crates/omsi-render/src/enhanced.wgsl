@@ -577,7 +577,9 @@ fn shade_enhanced(in: FsIn, puddle_weight: ptr<function, vec2<f32>>, capture: bo
     }
     // snow lies on what faces up
     // (not on a shadow blob: whitened, it lit the snow under the bus instead of shading it)
-    let snow = enh.weather.y * outside * select(1.0, 0.0, in.params2.w > 1.5);
+    // (nor on a texture that is the season's snow picture, which shows the map's own snow
+    // as OMSI 2 does: see the vanilla shader, #879)
+    let snow = enh.weather.y * outside * select(1.0, 0.0, in.params2.w > 1.5 || material.ambient.w > 0.5);
     if (snow > 0.0) {
         let up = clamp(n.z, 0.0, 1.0);
         let ground = select(0.0, 1.0, terrain || material.params2.z > 0.0);
