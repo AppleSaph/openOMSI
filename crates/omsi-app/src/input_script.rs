@@ -21,6 +21,7 @@ impl App {
     /// Save the personnel file and the session summary (once: every caller ends the game,
     /// and the frames the loop still runs before it stops count no more time).
     pub(crate) fn finish_session(&mut self) {
+        crate::game_lists::flush_settings(true);
         self.exiting = true;
         // (the tiles loaded on the way added to what the map lacks)
         if let Some(w) = self.world.clone() {
@@ -907,6 +908,25 @@ impl App {
     fn move_cursor(&mut self, x: f32, y: f32) -> bool {
         let last = self.cursor;
         self.cursor = (x, y);
+        // (the mouse has taken over from the keyboard: only what is under it is lit)
+        if self.game_menu.is_some() && (x, y) != last {
+            self.menu_kbd = false;
+        }
+        // a slider held with the mouse button follows the cursor (while the menu is open)
+        if self.menu_drag.is_some() && self.game_menu.is_none() {
+            self.menu_drag = None;
+        }
+        if let Some(k) = self.menu_drag {
+            let c = self.ui.as_ref().and_then(|u| k.checked_sub(u.menu_start).and_then(|i| u.menu_ctl.get(i).copied().flatten()));
+            match c {
+                Some(c) => {
+                    let fx = ((x - c[0]) / (c[2] - c[0]).max(1.0)).clamp(0.0, 1.0);
+                    self.list_click(k, fx);
+                }
+                None => self.menu_drag = None,
+            }
+            return false;
+        }
         if let Some((y0, v0)) = self.both_drag {
             // (0x82c5f8: outside, the distance at the press times 1 + the way up over 500
             // pixels; in the bus the field of view at the press plus the way up over 500
@@ -1399,13 +1419,14 @@ impl App {
                         if self.game_menu.is_none() {
                             self.open_game_menu();
                         }
-                        // (a line under "More..." is found there)
-                        if !self.game_menu_items().iter().any(|m| m.0 == arg) {
-                            self.menu_more = !self.menu_more;
-                        }
+                        // (a line of the vehicle or world pages is done directly)
                         match self.game_menu_items().iter().position(|m| m.0 == arg) {
                             Some(k) => self.menu_choose(event_loop, k),
-                            None => log::warn!("input script: no menu line {arg}"),
+                            None => {
+                                if !self.page_action(arg) {
+                                    log::warn!("input script: no menu line {arg}");
+                                }
+                            }
                         }
                     }
                     let riders = self.humans.as_ref().map(|h| (h.people_in(crate::humans::BusId::Player), self.placed.iter().map(|q| h.people_in(crate::humans::BusId::Ai(crate::humans::placed_bus_id(q.uid)))).collect::<Vec<_>>()));
@@ -1436,7 +1457,8 @@ impl App {
         }
         self.game_menu = Some(0);
         self.menu_top = None;
-        self.menu_more = false;
+        self.menu_kbd = true;
+        self.menu_drag = None;
     }
 
     pub(crate) fn close_game_menu(&mut self) {
@@ -1447,6 +1469,7 @@ impl App {
 
     /// Show one of the menu's lists in the chooser (see `game_lists`).
     pub(crate) fn open_list(&mut self, kind: crate::game_lists::ListKind) {
+        self.dropdown = None;
         self.admin_list = Some(crate::game_lists::items(self, &kind));
         self.list_kind = Some(kind);
         // (on its first line, not on a heading)
@@ -1483,27 +1506,343 @@ impl App {
         self.chooser_pick(k);
     }
 
+    fn time_edit_key(&mut self, code: KeyCode) {
+        let digit = match code {
+            KeyCode::Digit0 | KeyCode::Numpad0 => Some('0'),
+            KeyCode::Digit1 | KeyCode::Numpad1 => Some('1'),
+            KeyCode::Digit2 | KeyCode::Numpad2 => Some('2'),
+            KeyCode::Digit3 | KeyCode::Numpad3 => Some('3'),
+            KeyCode::Digit4 | KeyCode::Numpad4 => Some('4'),
+            KeyCode::Digit5 | KeyCode::Numpad5 => Some('5'),
+            KeyCode::Digit6 | KeyCode::Numpad6 => Some('6'),
+            KeyCode::Digit7 | KeyCode::Numpad7 => Some('7'),
+            KeyCode::Digit8 | KeyCode::Numpad8 => Some('8'),
+            KeyCode::Digit9 | KeyCode::Numpad9 => Some('9'),
+            _ => None,
+        };
+        match code {
+            KeyCode::Escape => self.menu_edit = None,
+            KeyCode::Backspace | KeyCode::Delete => {
+                if let Some(d) = self.menu_edit.as_mut() {
+                    d.pop();
+                }
+            }
+            KeyCode::Enter | KeyCode::NumpadEnter => {
+                self.apply_time_edit();
+                return;
+            }
+            _ => {
+                if let (Some(c), Some(d)) = (digit, self.menu_edit.as_mut()) {
+                    if d.len() < 6 {
+                        d.push(c);
+                    }
+                }
+            }
+        }
+        self.refresh_list();
+    }
+
+    /// Set the clock to the time typed (digits: hh, hhmm or hhmmss; what is missing is 0).
+    pub(crate) fn apply_time_edit(&mut self) {
+        let Some(d) = self.menu_edit.take() else { return };
+        if !d.is_empty() {
+            let mut c = d.clone();
+            while c.len() < 6 {
+                c.push('0');
+            }
+            let n = |a: usize| c[a..a + 2].parse::<i64>().unwrap_or(0);
+            let (h, m, sec) = (n(0), n(2), n(4));
+            if h > 23 || m > 59 || sec > 59 {
+                self.service_msg = Some((format!("{:02}:{:02}:{:02} is no time of day", h, m, sec), 3.0));
+            } else if self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
+                self.service_msg = Some(("In a LAN session the host sets the clock".into(), 3.0));
+            } else if self.real_time_locked() {
+                self.service_msg = Some(("The time cannot be changed while the real-time sync is on".into(), 3.0));
+            } else {
+                let t = self.clock.time;
+                let day_start = t - t.rem_euclid(86400.0);
+                self.shift_clock(day_start + (h * 3600 + m * 60 + sec) as f64 - t);
+                self.service_msg = Some((format!("Clock: {:02}:{:02}:{:02}", h, m, sec), 3.0));
+            }
+        }
+        self.refresh_list();
+    }
+
+    /// The open list made again from what it shows (a value changed), the chosen line kept.
+    pub(crate) fn refresh_list(&mut self) {
+        let Some(kind) = self.list_kind.clone() else { return };
+        let keep = self.chooser;
+        self.open_list(kind);
+        if let (Some(k), Some(l)) = (keep, self.admin_list.as_ref()) {
+            self.chooser = Some(k.min(l.len().saturating_sub(1)));
+        }
+    }
+
+    /// Change the weather in force by hand: `f` changes a copy of it, which takes the place of
+    /// the weather at once (a change on its way and the weather cycle stop: this is the
+    /// weather now). The sky's clouds are made again when their type changed.
+    pub(crate) fn edit_weather(&mut self, f: impl FnOnce(&mut omsi_content::weather::Weather)) {
+        if self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
+            self.service_msg = Some(("In a LAN session the host sets the weather".into(), 3.0));
+            return;
+        }
+        if self.metar_locked() {
+            self.service_msg = Some(("The weather cannot be changed while the METAR sync is on".into(), 3.0));
+            return;
+        }
+        let mut w = self.weather.clone().unwrap_or_default();
+        if w.precip.len() < 5 {
+            w.precip.resize(5, 0.0);
+        }
+        let before = w.clouds.0.trim().to_string();
+        f(&mut w);
+        w.name = crate::game_lists::CUSTOM_WEATHER.to_string();
+        let clouds_changed = w.clouds.0.trim() != before;
+        omsi_sim::host::set_ambient_weather(w.temp.0, w.temp.1);
+        self.weather_blend = None;
+        self.weather_cycle = None;
+        self.weather = Some(w);
+        if clouds_changed {
+            if let (Some(r), Some(scene)) = (self.renderer.as_ref(), self.scene.as_mut()) {
+                crate::weather_setup::setup_sky(&self.args, r, scene, self.envir.as_ref(), self.weather.as_ref());
+            }
+        }
+    }
+
+    /// A settings window (options, vehicle, world) is open.
+    fn settings_list(&self) -> bool {
+        use crate::game_lists::ListKind;
+        self.chooser.is_some() && matches!(self.list_kind, Some(ListKind::Options(_) | ListKind::Vehicle(_) | ListKind::World(_)))
+    }
+
+    /// The open list is closed: back to the game menu.
+    pub(crate) fn close_list(&mut self) {
+        self.dropdown = None;
+        self.menu_edit = None;
+        self.chooser = None;
+        self.admin_list = None;
+        self.list_kind = None;
+        self.menu_top = None;
+    }
+
+    /// Show page `i` of the open settings window.
+    pub(crate) fn settings_tab(&mut self, i: usize) {
+        use crate::game_lists::ListKind;
+        let next = match self.list_kind {
+            Some(ListKind::Options(_)) => ListKind::Options(i),
+            Some(ListKind::Vehicle(_)) => ListKind::Vehicle(i),
+            Some(ListKind::World(_)) => ListKind::World(i),
+            _ => return,
+        };
+        self.menu_top = None;
+        self.menu_edit = None;
+        self.open_list(next);
+    }
+
+    /// The next (or previous) page of the open settings window, round the ends.
+    fn settings_tab_step(&mut self, forward: bool) {
+        let Some(kind) = self.list_kind.clone() else { return };
+        let Some((titles, at)) = crate::game_lists::page_titles(self, &kind) else { return };
+        let n = titles.len().max(1);
+        self.settings_tab(if forward { (at + 1) % n } else { (at + n - 1) % n });
+    }
+
+    /// A click on the sidebar of a settings window: page `i`, or (the last box) the way back.
+    pub(crate) fn settings_side_click(&mut self, i: usize) {
+        let Some(kind) = self.list_kind.clone() else { return };
+        let n = crate::game_lists::page_titles(self, &kind).map(|t| t.0.len()).unwrap_or(0);
+        if i < n {
+            self.settings_tab(i);
+        } else {
+            self.close_list();
+        }
+    }
+
+    /// Change the value of line `k` of the open settings window as `mv` says.
+    pub(crate) fn list_adjust(&mut self, k: usize, mv: crate::game_lists::Move) {
+        use crate::game_lists::ListKind;
+        let Some(kind) = self.list_kind.clone() else { return };
+        if !matches!(kind, ListKind::Options(_) | ListKind::World(_)) {
+            return;
+        }
+        let Some(action) = self.admin_list.as_ref().and_then(|l| l.get(k)).map(|x| x.1.clone()) else { return };
+        let slider = crate::game_lists::is_slider(action.split(' ').next().unwrap_or(""));
+        crate::game_lists::LIST_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(next) = crate::game_lists::run_move(self, &kind, &action, mv) {
+            // (a slider dragged sends the same value many times over: the list stays)
+            if slider && !crate::game_lists::LIST_DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            self.open_list(next);
+            let last = self.admin_list.as_ref().map(|l| l.len().saturating_sub(1)).unwrap_or(0);
+            self.chooser = Some(k.min(last));
+        }
+    }
+
+    /// A click on the control of line `k` (a slider's track, a stepper), `fx` of the way
+    /// along it from the left.
+    /// True when the control is a slider (which the mouse button then holds: it follows the cursor).
+    pub(crate) fn list_click(&mut self, k: usize, fx: f32) -> bool {
+        use crate::game_lists::Move;
+        let Some(action) = self.admin_list.as_ref().and_then(|l| l.get(k)).map(|x| x.1.clone()) else { return false };
+        let verb = action.split(' ').next().unwrap_or("");
+        let slider = crate::game_lists::is_slider(verb);
+        let mv = if slider {
+            Move::To(fx)
+        } else if fx < 0.5 {
+            Move::Dec
+        } else {
+            Move::Inc
+        };
+        self.list_adjust(k, mv);
+        slider
+    }
+
+
     /// A key while the vehicle chooser is open.
     fn chooser_key(&mut self, code: KeyCode) {
+        if self.dropdown.is_some() {
+            self.dropdown_key(code);
+            return;
+        }
+        if self.menu_edit.is_some() {
+            self.time_edit_key(code);
+            return;
+        }
         let n = self.admin_list.as_ref().unwrap_or(&self.vehicle_list).len().max(1);
         let sel = self.chooser.unwrap_or(0);
         self.menu_top = None;
         match code {
             KeyCode::Escape => {
-                self.chooser = None;
-                self.admin_list = None;
-                self.list_kind = None;
+                if self.tours_list() {
+                    self.open_list(crate::game_lists::ListKind::Lines);
+                } else {
+                    self.chooser = None;
+                    self.admin_list = None;
+                    self.list_kind = None;
+                }
             }
             KeyCode::ArrowUp | KeyCode::KeyW => self.chooser = Some(self.chooser_next(sel, n - 1)),
             KeyCode::ArrowDown | KeyCode::KeyS => self.chooser = Some(self.chooser_next(sel, 1)),
+            KeyCode::ArrowLeft | KeyCode::KeyA if self.settings_list() => self.list_adjust(sel, crate::game_lists::Move::Dec),
+            KeyCode::ArrowRight | KeyCode::KeyD if self.settings_list() => self.list_adjust(sel, crate::game_lists::Move::Inc),
+            KeyCode::Tab if self.settings_list() => {
+                let back = self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+                self.settings_tab_step(!back);
+            }
+            // (the stop to start from: - and +)
+            KeyCode::Minus | KeyCode::Slash | KeyCode::NumpadSubtract if self.tours_list() => self.tour_stop_step(false),
+            KeyCode::Equal | KeyCode::BracketRight | KeyCode::NumpadAdd if self.tours_list() => self.tour_stop_step(true),
+            // (the trip of the tour: the arrows go to the one leaving before or after, as OMSI's)
+            KeyCode::ArrowLeft | KeyCode::KeyA if self.tours_list() => self.trip_step(false),
+            KeyCode::ArrowRight | KeyCode::KeyD if self.tours_list() => self.trip_step(true),
             KeyCode::ArrowLeft | KeyCode::KeyA => self.chooser_adjust(sel, "-"),
             KeyCode::ArrowRight | KeyCode::KeyD => self.chooser_adjust(sel, "+"),
-            // (off a heading onto the line under it)
+            KeyCode::PageUp if self.settings_list() => self.settings_tab_step(false),
+            KeyCode::PageDown if self.settings_list() => self.settings_tab_step(true),
             KeyCode::PageUp => self.chooser = Some(sel.saturating_sub(15)).map(|k| if self.is_heading(k) { self.chooser_next(k, 1) } else { k }),
             KeyCode::PageDown => self.chooser = Some((sel + 15).min(n - 1)).map(|k| if self.is_heading(k) { self.chooser_next(k, 1) } else { k }),
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => self.chooser_pick(sel),
             _ => {}
         }
+    }
+
+    /// A key while a drop-down is open: the arrows choose, Enter takes, Esc closes it.
+    fn dropdown_key(&mut self, code: KeyCode) {
+        let Some(d) = self.dropdown.as_mut() else { return };
+        let n = d.items.len().max(1);
+        match code {
+            KeyCode::Escape => {
+                self.dropdown = None;
+                return;
+            }
+            KeyCode::ArrowUp | KeyCode::KeyW => d.sel = (d.sel + n - 1) % n,
+            KeyCode::ArrowDown | KeyCode::KeyS => d.sel = (d.sel + 1) % n,
+            KeyCode::PageUp => d.sel = d.sel.saturating_sub(5),
+            KeyCode::PageDown => d.sel = (d.sel + 5).min(n - 1),
+            KeyCode::Home => d.sel = 0,
+            KeyCode::End => d.sel = n - 1,
+            KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
+                let i = d.sel;
+                self.dropdown_pick(i);
+                return;
+            }
+            _ => return,
+        }
+        self.dd_reveal();
+    }
+
+    /// The drop-down's chosen entry is in view.
+    fn dd_reveal(&mut self) {
+        let rows = self.ui.as_ref().map(|u| u.dd_rows).unwrap_or(8).max(1);
+        if let Some(d) = self.dropdown.as_mut() {
+            if d.sel < d.top {
+                d.top = d.sel;
+            } else if d.sel >= d.top + rows {
+                d.top = d.sel + 1 - rows;
+            }
+        }
+    }
+
+    /// Entry `i` of the open drop-down is taken: done, and the window's rows shown again
+    /// with the new value.
+    pub(crate) fn dropdown_pick(&mut self, i: usize) {
+        let Some(d) = self.dropdown.take() else { return };
+        let Some((_, action)) = d.items.get(i).cloned() else { return };
+        crate::game_lists::dropdown_apply(self, &action);
+        if let Some(kind) = self.list_kind.clone() {
+            self.open_list(kind);
+            let last = self.admin_list.as_ref().map(|l| l.len().saturating_sub(1)).unwrap_or(0);
+            self.chooser = Some(d.row.min(last));
+        }
+    }
+
+    /// A line's tours are open, with the stops of the tour chosen beside them.
+    fn tours_list(&self) -> bool {
+        self.chooser.is_some() && matches!(self.list_kind, Some(crate::game_lists::ListKind::Tours(..)))
+    }
+
+    /// The trip of the chosen tour leaving before (or after) the one chosen, as OMSI's
+    /// timetable steps through the times of a tour (the tour itself stays).
+    pub(crate) fn trip_step(&mut self, forward: bool) {
+        let k = self.chooser.unwrap_or(0);
+        let (Some((line, tour)), Some((_, _, trip, trips))) = (crate::game_lists::tour_at(self, k), crate::game_lists::tour_choice(self, k)) else { return };
+        let to = if forward { (trip + 1).min(trips.saturating_sub(1)) } else { trip.saturating_sub(1) };
+        if to != trip {
+            self.pane_scroll = None;
+            self.list_kind = Some(crate::game_lists::ListKind::Tours(line, Some((tour, 0, to))));
+        }
+    }
+
+    /// The stop to start the chosen tour from, one on (or back).
+    fn tour_stop_step(&mut self, forward: bool) {
+        let k = self.chooser.unwrap_or(0);
+        let (Some((line, tour)), Some((n, at, trip, _))) = (crate::game_lists::tour_at(self, k), crate::game_lists::tour_choice(self, k)) else { return };
+        let to = if forward { (at + 1).min(n - 1) } else { at.saturating_sub(1) };
+        self.pane_scroll = None;
+        self.list_kind = Some(crate::game_lists::ListKind::Tours(line, Some((tour, to, trip))));
+    }
+
+    /// A click in the timetable beside the tours: stop `i` as the start, or (`usize::MAX`)
+    /// the button that starts the trip; `usize::MAX - 1` / `- 2` the trip before / after.
+    pub(crate) fn tour_pane_click(&mut self, i: usize) {
+        let k = self.chooser.unwrap_or(0);
+        // (the arrows beside the time: `usize::MAX - 1` the trip before, `- 2` the next)
+        if i == usize::MAX - 1 || i == usize::MAX - 2 {
+            self.trip_step(i == usize::MAX - 2);
+            return;
+        }
+        let (Some((line, tour)), Some((n, at, trip, _))) = (crate::game_lists::tour_at(self, k), crate::game_lists::tour_choice(self, k)) else { return };
+        if i < n {
+            self.pane_scroll = None;
+            self.list_kind = Some(crate::game_lists::ListKind::Tours(line, Some((tour, i, trip))));
+            return;
+        }
+        crate::game_lists::start_duty_at(self, &line, &tour, trip, at);
+        self.chooser = None;
+        self.admin_list = None;
+        self.list_kind = None;
+        self.close_game_menu();
     }
 
     /// Place the chosen vehicle: in front of the camera in a free or map view, else beside
@@ -1512,6 +1851,15 @@ impl App {
         // (a heading is no choice)
         if self.is_heading(k) {
             return;
+        }
+        // a row of a settings window that drops a list down (the weather preset, the clouds)
+        if self.settings_list() {
+            let id = self.admin_list.as_ref().and_then(|l| l.get(k)).map(|l| l.1.clone()).unwrap_or_default();
+            if let Some(d) = crate::game_lists::dropdown_for(self, k, &id) {
+                self.dropdown = Some(d);
+                self.dd_reveal();
+                return;
+            }
         }
         self.chooser = None;
         // a list of the menu's (the administration, the options …): done, and the list
@@ -1527,7 +1875,7 @@ impl App {
                         self.chooser = Some(k.min(self.admin_list.as_ref().map(|l| l.len().saturating_sub(1)).unwrap_or(0)));
                     }
                 }
-                None if action != "back" && matches!(kind, crate::game_lists::ListKind::Tours(_) | crate::game_lists::ListKind::Numbers | crate::game_lists::ListKind::Destinations | crate::game_lists::ListKind::RouteNumbers | crate::game_lists::ListKind::Hofs) => self.close_game_menu(),
+                None if action != "back" && matches!(kind, crate::game_lists::ListKind::Tours(..) | crate::game_lists::ListKind::Numbers | crate::game_lists::ListKind::Destinations | crate::game_lists::ListKind::RouteNumbers | crate::game_lists::ListKind::Hofs | crate::game_lists::ListKind::Spots) => self.close_game_menu(),
                 None => {}
             }
             return;
@@ -1839,6 +2187,7 @@ impl App {
     }
 
     pub(crate) fn menu_key(&mut self, event_loop: &ActiveEventLoop, code: KeyCode) {
+        self.menu_kbd = true;
         if self.chooser.is_some() {
             self.chooser_key(code);
             return;
@@ -1852,14 +2201,9 @@ impl App {
         match code {
             // P changes only the simulation state, even while a menu is open.
             KeyCode::KeyP if !modified => self.toggle_pause(),
-            // (from the full list back to the short one first)
-            KeyCode::Escape if self.menu_more => {
-                self.menu_more = false;
-                self.game_menu = Some(0);
-            }
             KeyCode::Escape => self.close_game_menu(),
-            KeyCode::ArrowUp | KeyCode::KeyW => self.game_menu = Some((sel + n - 1) % n),
-            KeyCode::ArrowDown | KeyCode::KeyS => self.game_menu = Some((sel + 1) % n),
+            KeyCode::ArrowUp | KeyCode::KeyW => self.game_menu = Some(self.menu_step(sel, n, false)),
+            KeyCode::ArrowDown | KeyCode::KeyS => self.game_menu = Some(self.menu_step(sel, n, true)),
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => self.menu_choose(event_loop, sel),
             _ => {}
         }
@@ -1868,12 +2212,36 @@ impl App {
     /// The mouse wheel over the game menu: the chosen line moves (the menu scrolls with it),
     /// in a list the same; no wrapping round.
     pub(crate) fn menu_wheel(&mut self, amount: f32) {
+        // (an open drop-down scrolls, not the window under it)
+        if self.dropdown.is_some() {
+            self.wheel_acc += amount;
+            let steps = self.wheel_acc.trunc() as i64;
+            if steps == 0 {
+                return;
+            }
+            self.wheel_acc -= steps as f32;
+            let rows = self.ui.as_ref().map(|u| u.dd_rows).unwrap_or(8);
+            if let Some(d) = self.dropdown.as_mut() {
+                let max = d.items.len().saturating_sub(rows) as i64;
+                d.top = (d.top as i64 - steps).clamp(0, max) as usize;
+            }
+            return;
+        }
         self.wheel_acc += amount;
         let steps = self.wheel_acc.trunc() as i64;
         if steps == 0 {
             return;
         }
         self.wheel_acc -= steps as f32;
+        // the wheel over the timetable beside the tours scrolls its stops
+        if let (Some(u), Some(k)) = (self.ui.as_ref(), self.chooser) {
+            let (x, y) = self.cursor;
+            if u.menu_pane_box.is_some_and(|r| x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3]) {
+                let first = (u.menu_pane_start as i64 - steps).max(0) as usize;
+                self.pane_scroll = Some((k, first));
+                return;
+            }
+        }
         // the list scrolls under the mouse; what is chosen stays chosen (the wheel used to
         // walk the highlight up and down the lines)
         let n = self.menu_len() as f32;
@@ -1897,55 +2265,19 @@ impl App {
             self.chooser_pick(k);
             return;
         }
-        match self.game_menu_items().get(k).map(|m| m.0) {
-            Some("more") => {
-                self.menu_more = true;
-                self.game_menu = Some(0);
-            }
-            Some("less") => {
-                self.menu_more = false;
-                self.game_menu = Some(0);
-            }
-            Some("place") => {
-                if self.vehicle_list.is_empty() {
-                    self.vehicle_list = crate::menu::Menu::new(&self.args.root, &self.args.map).vehicles;
-                    crate::mt::protect(self.vehicle_list.iter().map(|v| v.0.as_str()));
-                }
-                if self.vehicle_list.is_empty() {
-                    self.service_msg = Some(("No vehicles found".into(), 3.0));
-                } else {
-                    self.chooser = Some(0);
-                }
-            }
-            Some("couple") => {
-                self.close_game_menu();
-                self.couple();
-            }
-            Some("tobus") => {
-                self.close_game_menu();
-                self.back_to_bus();
-            }
-            Some("remove") => {
-                self.close_game_menu();
-                self.remove_driven_vehicle();
-            }
-            Some("clearplaced") => {
-                self.close_game_menu();
-                self.remove_placed_vehicles();
-            }
-            Some("getout") => {
-                self.close_game_menu();
-                self.get_up();
-            }
-            Some("reset") => {
-                self.close_game_menu();
-                if let Some(p) = self.player.as_ref() {
-                    let (at, heading) = (p.vehicle.position, p.vehicle.heading);
-                    crate::admin::teleport(self, at, heading);
-                    self.service_msg = Some(("The vehicle stands on its wheels again".into(), 3.0));
-                }
-            }
-            Some("map") => {
+        // (a greyed-out line does nothing)
+        if self.menu_item_off(k) {
+            return;
+        }
+        let Some(id) = self.game_menu_items().get(k).map(|m| m.0) else { return };
+        match id {
+            "resume" => self.close_game_menu(),
+            "options" => self.open_list(crate::game_lists::ListKind::Options(0)),
+            "vehicle" => self.open_list(crate::game_lists::ListKind::Vehicle(0)),
+            "world" => self.open_list(crate::game_lists::ListKind::World(0)),
+            "admin" => self.open_list(crate::game_lists::ListKind::Admin),
+            "duty" => self.open_list(crate::game_lists::ListKind::Lines),
+            "map" => {
                 self.close_game_menu();
                 if let Some(n) = self.navigator.as_mut() {
                     if !n.map_open() {
@@ -1953,15 +2285,96 @@ impl App {
                     }
                 }
             }
-            Some("admin") => self.open_list(crate::game_lists::ListKind::Admin),
-            Some("options") => self.open_list(crate::game_lists::ListKind::Options),
-            Some("duty") => self.open_list(crate::game_lists::ListKind::Lines),
-            Some("driver") => self.open_list(crate::game_lists::ListKind::Drivers),
-            Some("number") => self.open_list(crate::game_lists::ListKind::Numbers),
-            Some("dest") => self.open_list(crate::game_lists::ListKind::Destinations),
-            Some("hof") => self.open_list(crate::game_lists::ListKind::Hofs),
-            Some("clock") => self.open_list(crate::game_lists::ListKind::Clock),
-            Some("teleport") => {
+            "save" => {
+                self.quick_save();
+                self.close_game_menu();
+            }
+            "shot" => {
+                self.close_game_menu();
+                self.take_screenshot();
+            }
+            // the route ends here: free drive, as the list of lines has it
+            "endduty" => {
+                self.duty = None;
+                self.service_msg = Some(("Free drive: no duty".into(), 4.0));
+                self.close_game_menu();
+            }
+            "tobus" => {
+                self.close_game_menu();
+                self.back_to_bus();
+            }
+            "load" => {
+                self.game_menu = None;
+                if self.load_quicksave() {
+                    self.finish_session();
+                    crate::platform::exit(event_loop);
+                }
+            }
+            "quit" => {
+                self.game_menu = None;
+                self.finish_session();
+                crate::platform::exit(event_loop);
+            }
+            // (the rest are the lines of the vehicle and world pages)
+            other => {
+                self.page_action(other);
+            }
+        }
+    }
+
+    /// The actions of the vehicle and world pages (and of what the plugins and the input
+    /// script ask of the menu by name). False when `id` is none of them.
+    pub(crate) fn page_action(&mut self, id: &str) -> bool {
+        match id {
+            "place" => {
+                if self.vehicle_list.is_empty() {
+                    let menu = crate::menu::Menu::new(&self.args.root, &self.args.map);
+                    self.vehicle_meta = menu.vehicles.iter().zip(menu.vehicle_meta).map(|(v, meta)| (v.1.clone(), meta)).collect();
+                    self.vehicle_list = menu.vehicles;
+                    // (alphabetical)
+                    self.vehicle_list.sort_by_key(|v| v.0.to_lowercase());
+                    crate::mt::protect(self.vehicle_list.iter().map(|v| v.0.as_str()));
+                }
+                if self.vehicle_list.is_empty() {
+                    self.service_msg = Some(("No vehicles found".into(), 3.0));
+                } else {
+                    // (as the launcher's bus step: the manufacturer, then the type)
+                    self.open_list(crate::game_lists::ListKind::PlaceMaker);
+                }
+            }
+            "couple" => {
+                self.close_game_menu();
+                self.couple();
+            }
+            "uncouple" => {
+                self.close_game_menu();
+                self.uncouple();
+            }
+            "tobus" => {
+                self.close_game_menu();
+                self.back_to_bus();
+            }
+            "remove" => {
+                self.close_game_menu();
+                self.remove_driven_vehicle();
+            }
+            "clearplaced" => {
+                self.close_game_menu();
+                self.remove_placed_vehicles();
+            }
+            "getout" => {
+                self.close_game_menu();
+                self.get_up();
+            }
+            "reset" => {
+                self.close_game_menu();
+                if let Some(p) = self.player.as_ref() {
+                    let (at, heading) = (p.vehicle.position, p.vehicle.heading);
+                    crate::admin::teleport(self, at, heading);
+                    self.service_msg = Some(("The vehicle stands on its wheels again".into(), 3.0));
+                }
+            }
+            "teleport" => {
                 self.close_game_menu();
                 if let Some(n) = self.navigator.as_mut() {
                     if !n.map_open() {
@@ -1971,49 +2384,41 @@ impl App {
                     self.service_msg = Some(("Click a street on the map: the bus is put there".into(), 6.0));
                 }
             }
-            Some("uncouple") => {
-                self.close_game_menu();
-                self.uncouple();
-            }
-            Some("resume") => self.close_game_menu(),
-            Some("editor") => {
+            "driver" => self.open_list(crate::game_lists::ListKind::Drivers),
+            "number" => self.open_list(crate::game_lists::ListKind::Numbers),
+            "dest" => self.open_list(crate::game_lists::ListKind::Destinations),
+            "hof" => self.open_list(crate::game_lists::ListKind::Hofs),
+            "tplist" => self.open_list(crate::game_lists::ListKind::Spots),
+            "editor" => {
                 self.close_game_menu();
                 self.toggle_editor();
             }
-            Some("save") => {
-                self.quick_save();
-                self.close_game_menu();
-            }
-            Some("shot") => {
-                self.close_game_menu();
-                self.take_screenshot();
-            }
-            Some("timetable") => {
+            "timetable" => {
                 self.timetable = !self.timetable;
                 self.close_game_menu();
             }
-            Some("info") => {
+            "info" => {
                 self.info_bar = !self.info_bar;
                 self.close_game_menu();
             }
-            Some(k @ ("refuel" | "wash" | "repair")) => {
+            "refuel" | "wash" | "repair" => {
                 self.close_game_menu();
-                self.run_service(k);
+                self.run_service(id);
             }
-            Some("weather") => {
+            "weather" => {
                 self.close_game_menu();
                 self.next_weather();
             }
-            Some("switch") => {
+            "switch" => {
                 self.close_game_menu();
                 self.switch_vehicle();
             }
-            Some(k @ ("later" | "earlier" | "later10" | "earlier10")) => {
+            "later" | "earlier" | "later10" | "earlier10" => {
                 self.close_game_menu();
                 if self.lan.as_ref().map(|l| l.role == omsi_net::Role::Client).unwrap_or(false) {
                     self.service_msg = Some(("In a LAN session the host sets the clock".into(), 3.0));
                 } else {
-                    self.shift_clock(match k {
+                    self.shift_clock(match id {
                         "later" => 3600.0,
                         "earlier" => -3600.0,
                         "later10" => 600.0,
@@ -2021,20 +2426,9 @@ impl App {
                     });
                 }
             }
-            Some("load") => {
-                self.game_menu = None;
-                if self.load_quicksave() {
-                    self.finish_session();
-                    crate::platform::exit(event_loop);
-                }
-            }
-            Some("quit") => {
-                self.game_menu = None;
-                self.finish_session();
-                crate::platform::exit(event_loop);
-            }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     /// OMSI's weather dialog, the short way: the next weather of the Weather folder, in
@@ -2042,6 +2436,9 @@ impl App {
     /// How fast the clock runs: the session's in LAN play (the host's, which its time speed
     /// setting or its administration set), else the settings'.
     pub(crate) fn time_speed(&self) -> f64 {
+        if self.real_time_locked() {
+            return 1.0;
+        }
         match self.lan.as_ref() {
             Some(l) => l.clock_speed,
             None => self.settings.time_speed.clamp(1.0, 30.0),
@@ -2049,6 +2446,11 @@ impl App {
     }
 
     pub(crate) fn next_weather(&mut self) {
+        self.step_weather();
+    }
+
+    /// The next (`dir` 1) or previous (-1) weather of the Weather folder, round the ends.
+    pub(crate) fn step_weather(&mut self) {
         if self.lan.as_ref().map(|l| l.role == omsi_net::Role::Client).unwrap_or(false) {
             self.service_msg = Some(("In a LAN session the host sets the weather".into(), 3.0));
             return;
@@ -2073,6 +2475,10 @@ impl App {
     /// The player's own choice comes at once, as in Omsi.exe (the weather dialog loads the
     /// .owt and applies it straight away, 0x6828e0 -> 0x754c80); the cycle blends it in.
     pub(crate) fn change_weather(&mut self, file: Option<String>, share: bool, secs: f32) {
+        if self.metar_locked() {
+            self.service_msg = Some(("The weather cannot be changed while the METAR sync is on".into(), 3.0));
+            return;
+        }
         let from = self.weather.clone().unwrap_or_default();
         self.args.weather = file.clone();
         let to = load_weather(&self.args);
@@ -2108,6 +2514,9 @@ impl App {
         }
         let follows = self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client);
         if follows || self.weather_blend.is_some() {
+            return;
+        }
+        if self.metar_locked() {
             return;
         }
         let Some(c) = self.weather_cycle.as_mut() else { return };
@@ -2159,8 +2568,126 @@ impl App {
         self.service_msg = Some((format!("Now driving: {}", name.trim()), 4.0));
     }
 
+    /// The weather follows the METAR report and cannot be changed (the `metar_sync` setting).
+    /// In a LAN session as a client the host's weather counts: the host syncs, not us.
+    pub(crate) fn metar_locked(&self) -> bool {
+        self.settings.metar_sync && !self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client)
+    }
+
+    /// The airport whose report the sync follows: the one chosen, else the one of the weather
+    /// in force, else the one nearest the map.
+    pub(crate) fn metar_station(&self) -> String {
+        if !self.settings.metar_station.is_empty() {
+            return self.settings.metar_station.to_ascii_uppercase();
+        }
+        match self.args.weather.as_deref().and_then(|w| w.strip_prefix("metar:")) {
+            Some(code) if !code.trim().is_empty() => code.trim().to_ascii_uppercase(),
+            _ => crate::launcher::drive::nearest_airport(&self.args.root.to_string_lossy(), &self.args.map),
+        }
+    }
+
+    /// The METAR sync: with it on, the report is downloaded in the background (at once, then
+    /// every ten minutes) and the weather goes over to it; `dt` is real seconds.
+    pub(crate) fn tick_metar(&mut self, dt: f32) {
+        self.share_start_metar();
+        if !self.metar_locked() {
+            self.metar_rx = None;
+            self.metar_next = 0.0;
+            return;
+        }
+        if let Some(rx) = self.metar_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(report) => {
+                    self.metar_rx = None;
+                    if let Some(w) = report {
+                        self.apply_metar(w);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.metar_rx = None,
+            }
+            return;
+        }
+        self.metar_next -= dt as f64;
+        if self.metar_next > 0.0 {
+            return;
+        }
+        // (a failed download is tried again in a minute)
+        self.metar_next = 60.0;
+        let icao = self.metar_station();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.metar_rx = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::weather_setup::try_metar(&icao));
+        });
+    }
+
+    /// A host that started on `metar:<ICAO>` tells the players the report's values as soon as
+    /// they are there (they cannot download it by the station's name: only the host syncs).
+    fn share_start_metar(&mut self) {
+        let Some(l) = self.lan.as_mut().filter(|l| l.role == omsi_net::Role::Host) else { return };
+        if !l.weather().to_ascii_lowercase().starts_with("metar:") {
+            return;
+        }
+        if let Some(wire) = self.weather.as_ref().and_then(crate::weather_setup::report_wire) {
+            l.set_weather(&wire);
+        }
+    }
+
+    /// Go over to the weather of a METAR report that came in.
+    fn apply_metar(&mut self, to: omsi_content::weather::Weather) {
+        self.metar_next = 600.0;
+        let file = to.path.to_string_lossy().to_string();
+        // (what the players are told: the report's values, which they make the weather from)
+        let wire = crate::weather_setup::report_wire(&to).unwrap_or_else(|| file.clone());
+        let name = to.name.clone();
+        let from = self.weather.clone().unwrap_or_default();
+        crate::scene::SNOW_WEATHER.store(to.snow, std::sync::atomic::Ordering::Relaxed);
+        omsi_sim::host::set_ambient_weather(to.temp.0, to.temp.1);
+        self.args.weather = Some(file.clone());
+        self.weather_cycle = None;
+        self.weather_blend = Some(crate::weather_cycle::Blend::new(from, to, 60.0));
+        if let Some(l) = self.lan.as_mut().filter(|l| l.role == omsi_net::Role::Host) {
+            l.set_weather(&wire);
+        }
+        log::info!("weather: METAR sync, going over to {file} ({name})");
+        self.service_msg = Some((format!("Weather: {name}"), 4.0));
+    }
+
+    /// The clock follows the real time and cannot be changed (the `time_sync` setting). In a
+    /// LAN session as a client the host's clock counts: the host or the server syncs, not us.
+    pub(crate) fn real_time_locked(&self) -> bool {
+        self.settings.time_sync && !self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client)
+    }
+
+    /// With the real-time sync on: hold the clock to this device's date and time (a second
+    /// off at most; a bigger gap - the game was paused - is jumped, the traffic's clock with it).
+    pub(crate) fn sync_real_time(&mut self) {
+        if !self.real_time_locked() {
+            return;
+        }
+        let Some(real) = crate::real_time::clock_now(&self.clock) else { return };
+        let gap = crate::real_time::gap(&self.clock, &real);
+        if gap.abs() < 0.25 {
+            return;
+        }
+        self.clock.year = real.year;
+        self.clock.day_of_year = real.day_of_year;
+        self.clock.time = real.time;
+        if let Some(tr) = self.traffic.as_mut() {
+            tr.day_time += gap;
+        }
+        if let Some(p) = self.player.as_mut() {
+            p.vehicle.host.clock = self.clock.clone();
+        }
+    }
+
     /// Move the clock by `secs` (the traffic's clock with it), as OMSI's time dialog does.
     pub(crate) fn shift_clock(&mut self, secs: f64) {
+        if self.real_time_locked() {
+            self.service_msg = Some(("The time cannot be changed while the real-time sync is on".into(), 3.0));
+            return;
+        }
         let mut t = self.clock.time + secs;
         while t < 0.0 {
             t += 86400.0;
@@ -2223,7 +2750,9 @@ impl App {
             clock.time -= 86400.0;
             clock.day_of_year = clock.day_of_year % omsi_sim::clock::days_in_year(clock.year) + 1;
         }
-        self.clock = clock;
+        if !self.settings.time_sync || self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
+            self.clock = clock;
+        }
         p.vehicle.host.clock = self.clock.clone();
         for line in &msg {
             log::info!("{line}");
@@ -2737,6 +3266,11 @@ impl App {
         } else {
             0
         };
+        self.set_cursor_kind(kind);
+    }
+
+    /// Show the mouse cursor `kind` (0 arrow, 1 pointing hand, 2 cross, 3 arrows, 4 closed hand).
+    pub(crate) fn set_cursor_kind(&mut self, kind: u8) {
         if kind != self.cursor_kind {
             self.cursor_kind = kind;
             if let Some(w) = self.window.as_ref() {
@@ -2748,6 +3282,30 @@ impl App {
                     _ => winit::window::CursorIcon::Default,
                 });
             }
+        }
+    }
+
+    /// The cursor over the open game menu: a pointing hand over what can be clicked (a line,
+    /// a page, a control, the scroll bar), the closed hand while a slider or the scroll bar
+    /// is held.
+    pub(crate) fn menu_cursor_kind(&self) -> u8 {
+        if self.menu_drag.is_some() || self.menu_scroll_drag {
+            return 4;
+        }
+        let Some(u) = self.ui.as_ref() else { return 0 };
+        let (x, y) = self.cursor;
+        let inside = |r: &[f32; 4]| x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3];
+        let clickable = u.menu_scroll_thumb.is_some_and(|r| inside(&r))
+            || u.menu_side.iter().any(|r| inside(r))
+            || u.menu_pane.iter().any(|r| inside(r))
+            || u.menu_pane_go.as_ref().is_some_and(|r| inside(r))
+            || u.menu_time.iter().any(|r| inside(r))
+            || u.menu_ctl.iter().flatten().any(|r| inside(r))
+            || u.menu_rects.iter().enumerate().any(|(i, r)| inside(r) && !self.menu_item_off(i + u.menu_start));
+        if clickable {
+            1
+        } else {
+            0
         }
     }
 }
@@ -2843,33 +3401,24 @@ pub(crate) fn parse_input_script() -> Vec<(f32, String)> {
 
 /// The game menu on a server (`--lan-join https://…`): the world's clock and weather are the
 /// server's, and the way out leaves the server.
-pub(crate) const SERVER_GAME_MENU: [(&str, &str); 21] = [
+pub(crate) const SERVER_GAME_MENU: [(&str, &str); 7] = [
     ("resume", "Resume"),
     ("options", "Options..."),
-    ("dest", "Destination display..."),
-    ("hof", "Depot file (HOF)..."),
-    ("switch", "Drive the next vehicle"),
-    ("place", "Place a vehicle..."),
-    ("couple", "Couple"),
-    ("uncouple", "Uncouple"),
-    ("remove", "Remove this vehicle (on foot)"),
-    ("clearplaced", "Remove the placed vehicles"),
-    ("getout", "Get up and out (on foot)"),
-    ("reset", "Put the vehicle back on its wheels"),
+    ("vehicle", "Vehicle options..."),
+    ("world", "World options..."),
     ("map", "City map"),
     ("shot", "Screenshot"),
-    ("timetable", "Timetable"),
-    ("info", "Information bar"),
-    ("refuel", "Refuel"),
-    ("wash", "Wash"),
-    ("repair", "Repair"),
-    ("editor", "Object editor"),
     ("quit", "Leave the server"),
 ];
 
+/// Whether the session was started on a server (`--lan-join https://…`).
+pub(crate) fn on_server(args: &crate::Args) -> bool {
+    args.lan_join.as_deref().map(|t| omsi_net::ws::ws_url(t).is_some()).unwrap_or(false)
+}
+
 /// The game menu's lines for a session with these arguments.
 pub(crate) fn game_menu_for(args: &crate::Args) -> &'static [(&'static str, &'static str)] {
-    if args.lan_join.as_deref().map(|t| omsi_net::ws::ws_url(t).is_some()).unwrap_or(false) {
+    if on_server(args) {
         &SERVER_GAME_MENU
     } else {
         &GAME_MENU
@@ -2878,7 +3427,8 @@ pub(crate) fn game_menu_for(args: &crate::Args) -> &'static [(&'static str, &'st
 
 impl crate::App {
     /// The game menu's lines for this session: back to the own bus while walking about,
-    /// the administration for a host and a server's admin.
+    /// the administration for a host and a server's admin. What can be set is behind
+    /// "Options", "Vehicle options" and "World options".
     pub(crate) fn game_menu_items(&self) -> Vec<(&'static str, &'static str)> {
         let mut v: Vec<(&'static str, &'static str)> = game_menu_for(&self.args).to_vec();
         let mut at = 1;
@@ -2886,81 +3436,62 @@ impl crate::App {
             v.insert(at, ("tobus", "Back to my bus"));
             at += 1;
         }
-        // without a bus of one's own: nothing of a bus's to offer
+        // without a bus of one's own: no line to drive
         if self.player.is_none() {
-            v.retain(|x| !matches!(x.0, "remove" | "couple" | "uncouple" | "refuel" | "wash" | "repair" | "duty" | "number" | "dest" | "hof" | "teleport" | "getout" | "reset"));
-            if self.placed.is_empty() {
-                v.retain(|x| x.0 != "switch");
-            }
+            v.retain(|x| x.0 != "duty");
         }
-        if self.placed.is_empty() {
-            v.retain(|x| x.0 != "clearplaced");
-        }
-        if self.on_foot.is_some() {
-            v.retain(|x| x.0 != "getout");
+        // ending the route is offered only while there is one
+        if self.duty.is_none() {
+            v.retain(|x| x.0 != "endduty");
         }
         if self.navigator.is_none() {
             v.retain(|x| x.0 != "map");
         }
         let host = self.lan.as_ref().map(|l| l.role == omsi_net::Role::Host).unwrap_or(false);
         if host || self.is_admin {
-            v.insert(at, ("admin", "Administration..."));
-        }
-        // (a client's clock and weather are the host's)
-        if self.lan.as_ref().map(|l| l.role == omsi_net::Role::Client).unwrap_or(false) {
-            v.retain(|x| !matches!(x.0, "weather" | "clock" | "later" | "earlier" | "later10" | "earlier10" | "editor"));
-        }
-        // the everyday lines first; the rest behind "More..." (27 lines to scroll through
-        // was the pause menu players found confusing)
-        if self.menu_more {
-            v.retain(|x| !MENU_BASIC.contains(&x.0) || x.0 == "quit");
-            v.insert(0, ("less", "< Back"));
-        } else {
-            v.retain(|x| MENU_BASIC.contains(&x.0));
-            let at = v.iter().position(|x| x.0 == "quit").unwrap_or(v.len());
-            v.insert(at, ("more", "More..."));
+            let before_quit = v.iter().position(|x| x.0 == "quit").unwrap_or(v.len()).max(at);
+            v.insert(before_quit, ("admin", "Administration..."));
         }
         v
     }
+
+    /// The ids of the game menu's lines that are greyed out and cannot be chosen now.
+    pub(crate) fn menu_disabled_ids(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Whether line `k` of the game menu is greyed out.
+    pub(crate) fn menu_item_off(&self, k: usize) -> bool {
+        self.chooser.is_none() && self.game_menu_items().get(k).is_some_and(|m| self.menu_disabled_ids().contains(&m.0))
+    }
+
+    /// The next line up or down from `from` that can be chosen (round the ends; the greyed-out
+    /// lines are skipped).
+    fn menu_step(&self, from: usize, n: usize, down: bool) -> usize {
+        let mut k = from;
+        for _ in 0..n {
+            k = if down { (k + 1) % n } else { (k + n - 1) % n };
+            if !self.menu_item_off(k) {
+                return k;
+            }
+        }
+        from
+    }
 }
 
-/// The lines the game menu shows before "More...".
-const MENU_BASIC: [&str; 12] = ["resume", "tobus", "options", "duty", "dest", "map", "timetable", "getout", "reset", "save", "admin", "quit"];
-
-/// The lines of the game menu: (what, label).
-pub(crate) const GAME_MENU: [(&str, &str); 33] = [
+/// The lines of the game menu: (what, label). What can be set is on the pages behind
+/// "Options", "Vehicle options" and "World options" (see `game_lists`).
+pub(crate) const GAME_MENU: [(&str, &str); 11] = [
     ("resume", "Resume"),
     ("options", "Options..."),
-    ("duty", "Line and tour..."),
-    ("driver", "Driver..."),
-    ("number", "Fleet number..."),
-    ("dest", "Destination display..."),
-    ("hof", "Depot file (HOF)..."),
-    ("switch", "Drive the next vehicle"),
-    ("place", "Place a vehicle..."),
-    ("couple", "Couple"),
-    ("uncouple", "Uncouple"),
-    ("remove", "Remove this vehicle (on foot)"),
-    ("clearplaced", "Remove the placed vehicles"),
-    ("getout", "Get up and out (on foot)"),
-    ("reset", "Put the vehicle back on its wheels"),
+    ("vehicle", "Vehicle options..."),
+    ("world", "World options..."),
     ("map", "City map"),
-    ("teleport", "Move the bus on the map..."),
+    ("duty", "Line and tour..."),
+    ("endduty", "End the tour"),
     ("save", "Save the situation"),
     ("load", "Load the quicksave"),
-    ("weather", "Next weather"),
-    ("clock", "Set the clock..."),
-    ("later", "Clock +1 hour"),
-    ("later10", "Clock +10 minutes"),
-    ("earlier10", "Clock -10 minutes"),
-    ("earlier", "Clock -1 hour"),
     ("shot", "Screenshot"),
-    ("timetable", "Timetable"),
-    ("info", "Information bar"),
-    ("refuel", "Refuel"),
-    ("wash", "Wash"),
-    ("repair", "Repair"),
-    ("editor", "Object editor"),
     ("quit", "End the session"),
 ];
 

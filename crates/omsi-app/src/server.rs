@@ -35,6 +35,14 @@ pub(crate) struct ServerCfg {
     pub admin_password: String,
     /// How fast the server's clock runs (1 real time).
     pub time_speed: f64,
+    /// The clock follows the server machine's real date and time (the speed and the
+    /// administration's clock are ignored then).
+    pub real_time: bool,
+    /// The weather follows an airport's METAR report, downloaded here; the players are told its
+    /// values and need no sync of their own.
+    pub metar_sync: bool,
+    /// The airport of that report (ICAO; empty: the one nearest the map).
+    pub metar_station: String,
     /// Only these buses may be driven on the server (vehicle files, empty: every bus the
     /// server has installed).
     pub vehicles: Vec<String>,
@@ -80,6 +88,17 @@ admin_password =
 
 # how fast the clock runs (1 = real time, 2 = twice as fast, up to 30)
 time_speed = 1
+
+# the clock follows this machine's real date and time (1 = on; the time and date above are
+# then only for the very first moment, and time_speed and the admin's clock are ignored)
+real_time = 0
+
+# the weather follows the real METAR report of an airport (1 = on; the weather above is then
+# only for the first moment, and the admins cannot change it). The server downloads the report
+# every ten minutes and tells the players its values, so they need no METAR sync of their own.
+# metar_station is the airport's ICAO code, e.g. EDDB (empty: the one nearest the map)
+metar_sync = 0
+metar_station =
 
 # the buses players may drive, separated by ; (vehicle files such as
 # Vehicles/MAN_SD200/MAN_SD77.bus; empty: every bus installed on the server)
@@ -130,6 +149,9 @@ impl ServerCfg {
             icon,
             admin_password: kv.get("admin_password").cloned().unwrap_or_default(),
             time_speed: kv.get("time_speed").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(1.0).clamp(1.0, 30.0),
+            real_time: flag("real_time", false),
+            metar_sync: flag("metar_sync", false),
+            metar_station: kv.get("metar_station").map(|v| v.chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>().to_ascii_uppercase()).unwrap_or_default(),
             vehicles: kv.get("vehicles").map(|v| v.split(';').map(|x| x.trim().replace('\\', "/")).filter(|x| !x.is_empty()).collect()).unwrap_or_default(),
             share_positions: flag("share_positions", false),
         })
@@ -163,14 +185,28 @@ pub(crate) fn info_of(cfg: &ServerCfg) -> omsi_net::ws::ServerInfo {
 pub(crate) fn prepare(args: &mut Args, path: &Path) -> Result<ServerCfg> {
     let cfg = ServerCfg::load(path)?;
     SERVER_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
-    let _ = SERVER_ADMIN.set((cfg.admin_password.clone(), cfg.time_speed));
+    let _ = SERVER_ADMIN.set((cfg.admin_password.clone(), if cfg.real_time { 1.0 } else { cfg.time_speed }));
+    crate::real_time::set_server_real(cfg.real_time);
     let _ = SERVER_VEHICLES.set(cfg.vehicles.clone());
     args.map = cfg.map.clone();
     args.time = cfg.time.clone();
     if let Some(d) = &cfg.date {
         args.date = Some(d.clone());
     }
+    if cfg.real_time {
+        crate::real_time::start_at_now(args);
+    }
     args.weather = cfg.weather.clone();
+    // the METAR sync: the report's weather from the start (the host loop downloads it again)
+    let station = cfg.metar_sync.then(|| if cfg.metar_station.is_empty() { crate::launcher::drive::nearest_airport(&args.root.to_string_lossy(), &args.map) } else { cfg.metar_station.clone() });
+    if let Some(icao) = station.as_ref() {
+        match crate::weather_setup::try_metar(icao).and_then(|w| crate::weather_setup::report_wire(&w)) {
+            Some(wire) => args.weather = Some(wire),
+            None => log::warn!("server: no METAR report for {icao} yet; trying again soon"),
+        }
+        log::info!("server: the weather follows the METAR report of {icao}");
+    }
+    let _ = SERVER_METAR.set(station);
     args.traffic = cfg.traffic;
     args.schedule = cfg.timetable;
     args.passengers = cfg.passengers;
@@ -186,6 +222,9 @@ pub(crate) fn prepare(args: &mut Args, path: &Path) -> Result<ServerCfg> {
     log::info!("server '{}': map {}, {} at {}, traffic {}, timetable {}, passengers {}, UDP {} / web {}, at most {} players", cfg.name, cfg.map, cfg.date.as_deref().unwrap_or("today"), cfg.time, cfg.traffic, cfg.timetable, cfg.passengers, cfg.port, cfg.web_port, cfg.max_players);
     Ok(cfg)
 }
+
+/// The airport whose METAR report a dedicated server's weather follows (None: no METAR sync).
+pub(crate) static SERVER_METAR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
 /// The buses a dedicated server allows (`vehicles`; empty: every bus it has).
 pub(crate) static SERVER_VEHICLES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();

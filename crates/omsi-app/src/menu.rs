@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 pub struct Menu {
     pub maps: Vec<(String, String)>,
     pub vehicles: Vec<(String, String)>,
+    /// (manufacturer, type) of each of `vehicles`, as OMSI's [friendlyname] gives them.
+    pub vehicle_meta: Vec<(String, String)>,
     pub map: usize,
     pub vehicle: usize,
     pub hour: i32,
@@ -50,6 +52,7 @@ impl Menu {
         // what OMSI offers: those with a [friendlyname] - never an articulated bus's rear
         // section, which comes with its front
         let mut vehicles = Vec::new();
+        let mut vehicle_meta = Vec::new();
         for d in merged("Vehicles") {
             // the folder's files over all roots: a repaint installed as a mod brings only
             // textures and must neither hide the installation's bus nor add one of its own
@@ -68,6 +71,7 @@ impl Menu {
                 let rel = format!("Vehicles/{}/{}", folder, f.file_name().unwrap().to_string_lossy());
                 let stem = f.file_stem().unwrap().to_string_lossy().to_string();
                 let name = Some(format!("{} {}", v.manufacturer, v.type_name).trim().to_string()).filter(|n| !n.is_empty()).unwrap_or(stem);
+                vehicle_meta.push((v.manufacturer.trim().to_string(), Some(v.type_name.trim().to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| name.clone())));
                 vehicles.push((name, rel));
             }
         }
@@ -97,7 +101,7 @@ impl Menu {
         }
         let map = maps.iter().position(|m| m.1.eq_ignore_ascii_case(default_map)).unwrap_or(0);
         let vehicle = vehicles.iter().position(|v| v.1.to_ascii_lowercase().contains("sd80")).unwrap_or(0);
-        Menu { maps, vehicles, map, vehicle, hour: 9, traffic: 30, passengers: true, schedule: true, row: 0, start: false, situations, situation: 0, weathers, weather: 0, day: 150 }
+        Menu { maps, vehicles, vehicle_meta, map, vehicle, hour: 9, traffic: 30, passengers: true, schedule: true, row: 0, start: false, situations, situation: 0, weathers, weather: 0, day: 150 }
     }
 
     pub fn lines(&self) -> Vec<String> {

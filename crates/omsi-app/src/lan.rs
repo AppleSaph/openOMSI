@@ -1189,6 +1189,14 @@ fn host_weather(args: &Args, weather: &str) -> Result<Option<String>, String> {
     if w.is_empty() {
         return Ok(None);
     }
+    // a METAR report's values: made into a weather here, no file and no sync of our own
+    if w.starts_with(crate::weather_setup::REPORT) {
+        return if crate::weather_setup::from_report(w).is_some() {
+            Ok(Some(w.to_string()))
+        } else {
+            Err(format!("the host's weather {w} cannot be read here"))
+        };
+    }
     let path = omsi_cfg::resolve_path(&args.root, w);
     let inside = !w.contains("..") && !w.starts_with('/') && !w.contains(':');
     if inside && omsi_cfg::vfs::is_file(&path) {

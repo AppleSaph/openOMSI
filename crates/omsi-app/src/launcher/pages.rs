@@ -432,6 +432,75 @@ fn settings_tab(ui: &mut Ui, tab: usize, s: &mut Value, dirty: &mut f32, out: &m
     }
 }
 
+/// The saved graphics profiles' part of the Graphics tab: the list, the name being typed.
+#[derive(Default)]
+struct GfxProfileUi {
+    name: String,
+    sel: usize,
+    list: Option<Vec<String>>,
+    msg: String,
+}
+
+thread_local! {
+    static GFX_PROFILES: std::cell::RefCell<GfxProfileUi> = std::cell::RefCell::new(GfxProfileUi::default());
+}
+
+/// Save, load and delete the graphics settings as named profiles.
+fn graphics_profiles_block(ui: &mut Ui, s: &mut Value, dirty: &mut f32, c: &mut Col) {
+    GFX_PROFILES.with(|g| {
+        let mut g = g.borrow_mut();
+        let g = &mut *g;
+        let names: Vec<String> = g.list.get_or_insert_with(|| core::graphics_profiles().into_keys().collect()).clone();
+        g.sel = g.sel.min(names.len().saturating_sub(1));
+        let labels: Vec<String> = if names.is_empty() { vec!["No saved profiles".to_string()] } else { names.clone() };
+        let r = c.row();
+        ui.label(Rect::new(r.x, r.y, r.w * 0.45, r.h), "Saved profile");
+        if ui.select("s-gp-sel", Rect::new(r.x + r.w * 0.45, r.y, r.w * 0.55, r.h), &mut g.sel, &labels) && !names.is_empty() {
+            g.name = names[g.sel].clone();
+        }
+        let r = c.row();
+        let half = (r.w - GAP) * 0.5;
+        if ui.button("s-gp-load", Rect::new(r.x, r.y, half, r.h), "Load", Some("download"), ButtonKind::Normal) && !names.is_empty() {
+            let name = names[g.sel].clone();
+            match core::graphics_profiles().get(&name) {
+                Some(p) => {
+                    core::apply_graphics_profile(p, s);
+                    *dirty = 0.3;
+                    g.msg = format!("Loaded \"{name}\".");
+                }
+                None => g.msg = format!("\"{name}\" is gone."),
+            }
+        }
+        if ui.button("s-gp-del", Rect::new(r.x + half + GAP, r.y, half, r.h), "Delete", Some("delete"), ButtonKind::Danger) && !names.is_empty() {
+            let name = names[g.sel].clone();
+            g.msg = match core::delete_graphics_profile(&name) {
+                Ok(()) => format!("Deleted \"{name}\"."),
+                Err(e) => format!("{e:#}"),
+            };
+            g.list = None;
+        }
+        let r = c.row();
+        ui.text_input("s-gp-name", r, &mut g.name, "Profile name", None);
+        let r = c.row();
+        if ui.button("s-gp-save", r, "Save current graphics as profile", Some("save"), ButtonKind::Primary) {
+            g.msg = match core::save_graphics_profile(&g.name, s) {
+                Ok(name) => {
+                    g.name = name.clone();
+                    g.list = None;
+                    if let Some(i) = core::graphics_profiles().keys().position(|k| *k == name) {
+                        g.sel = i;
+                    }
+                    format!("Saved \"{name}\".")
+                }
+                Err(e) => format!("{e:#}"),
+            };
+        }
+        if !g.msg.is_empty() {
+            c.y += ui.paragraph(&g.msg, Vec2::new(c.inner.x, c.y), c.inner.w, 12.5, Weight::Regular, TEXT_DIM) + 8.0;
+        }
+    });
+}
+
 /// How the game looks and how fast it runs.
 fn graphics_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, cols: [Rect; 2]) -> [f32; 2] {
     let mut c = Col::new(ui, cols[0], "Graphics");
@@ -525,6 +594,8 @@ fn graphics_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, cols: [Rect; 2]) ->
     let opts: Vec<(&str, &str)> = vec![("0", auto_label.as_str()), ("500", "500 MB"), ("1000", "1 GB"), ("1500", "1.5 GB"), ("2000", "2 GB"), ("3000", "3 GB"), ("4000", "4 GB"), ("6000", "6 GB")];
     sel_setting(ui, s, dirty, "s-texmem", c.row(), "Texture memory", "texture_memory", &opts);
     toggle_setting(ui, s, dirty, c.row(), "Compress textures on loading", "texture_compression");
+    c.section(ui, "Profiles");
+    graphics_profiles_block(ui, s, dirty, &mut c);
     [left, c.used()]
 }
 
@@ -690,8 +761,12 @@ fn gameplay_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, cols: [Rect; 2]) ->
     toggle_setting(ui, s, dirty, c.row(), "Collisions with people", "collision_pedestrians");
     toggle_setting(ui, s, dirty, c.row(), "Start at the real time", "use_real_time");
     toggle_setting(ui, s, dirty, c.row(), "Start on today's date", "use_real_date");
+    // the game's clock follows this device's (the host's in multiplayer); the time cannot be set
+    toggle_setting(ui, s, dirty, c.row(), "Sync the clock with the real time (locks the time)", "time_sync");
+    // the weather follows the METAR report of the airport nearest the map; it cannot be changed then
+    toggle_setting(ui, s, dirty, c.row(), "Sync the weather with METAR (locks the weather)", "metar_sync");
     // (in multiplayer the host's or the server's speed counts)
-    sel_setting(ui, s, dirty, "s-timespeed", c.row(), "Time speed (not in multiplayer)", "time_speed", &[("1", "Real time"), ("2", "x2"), ("4", "x4"), ("8", "x8"), ("15", "x15"), ("30", "x30")]);
+    sel_setting(ui, s, dirty, "s-timespeed", c.row(), "Time speed (not in multiplayer or with the real-time sync)", "time_speed", &[("1", "Real time"), ("2", "x2"), ("4", "x4"), ("8", "x8"), ("15", "x15"), ("30", "x30")]);
     [left, c.used()]
 }
 
@@ -740,6 +815,7 @@ fn general_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, c
     c.section(ui, "Navigator");
     toggle_setting(ui, s, dirty, c.row(), "Navigator (Shift+N: map, schedule, off)", "navigator");
     toggle_setting(ui, s, dirty, c.row(), "Route arrows (as in OMSI 2)", "nav_arrows");
+    toggle_setting(ui, s, dirty, c.row(), "AI vehicles on the map", "nav_ai");
     // the corner: a little screen with four corners to click
     let r = Rect::new(c.inner.x, c.y, c.inner.w, 70.0);
     ui.label(Rect::new(r.x, r.y, r.w * 0.45, 24.0), "Corner");
@@ -778,7 +854,7 @@ fn general_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, c
         };
         ui.text_in(&text, Rect::new(r.x + 162.0, r.y, r.w - 162.0, r.h), 12.5, omsi_ui::Weight::Regular, TEXT_DIM, omsi_ui::paint::Align::Left);
     }
-    if ui.button("s-upd-github", c.row(), "github.com/openOMSI-Project/openOMSI", Some("open_in_new"), ButtonKind::Ghost) {
+    if ui.button("s-upd-github", c.row(), "github.com/openOmsi-project/openOMSI", Some("open_in_new"), ButtonKind::Ghost) {
         crate::updater::open_url(crate::updater::REPO_URL);
     }
     // every setting at once: here at the end, not first on the page where it was the
@@ -1113,7 +1189,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
     if let Some(w) = pv.wizard.as_mut() {
         let done = if w.step == WIZARD_STEPS.len() {
             feedback_setup(&mut l.ui, inner, w, d, &live, live_dev, &mut pv.io, &mut pv.feedback_test, hwnd,
-                l.state.settings.get("ff_invert").and_then(|v| v.as_bool()).unwrap_or(false))
+                           l.state.settings.get("ff_invert").and_then(|v| v.as_bool()).unwrap_or(false))
         } else {
             wizard(&mut l.ui, inner, w, d, &live, live_dev.is_some(), live_dev.is_some_and(|c| c.ff_capable && !c.gamepad))
         };
@@ -1431,8 +1507,8 @@ fn feedback_setup(
         }
         if !*active {
             ui.slider("wiz-ff-strength", Rect::new(r.x, y, r.w, ROW), &mut w.test_strength,
-                crate::ffb_calibration::PULSE_FORCE, crate::ffb_calibration::MAX_PULSE_FORCE, 0.01,
-                "Test strength", &|v| format!("{:.0}%", v * 100.0));
+                      crate::ffb_calibration::PULSE_FORCE, crate::ffb_calibration::MAX_PULSE_FORCE, 0.01,
+                      "Test strength", &|v| format!("{:.0}%", v * 100.0));
             y += ROW + 8.0;
             y += ui.paragraph("If the wheel barely moves, increase Test strength and retry. Keep your hands clear.", Vec2::new(r.x, y), r.w, 13.0, Weight::Regular, TEXT_DIM) + 10.0;
             if ui.button("wiz-ff-test", Rect::new(r.x, y, 180.0, 36.0), "Start test", Some("play_arrow"), ButtonKind::Primary) {
@@ -2153,11 +2229,11 @@ mod settings_tests {
         let sound = vec!["s-vol", "s-volai", "s-volsc", "set-doppler", "s-voices"];
         let gameplay = vec![
             "s-board", "set-exact_fare", "s-pax", "set-get_up", "s-unsched", "s-maxsched", "s-maxpark",
-            "s-maint", "set-collision_vehicles", "set-collision_objects", "set-collision_pedestrians", "set-use_real_time", "set-use_real_date", "s-timespeed",
+            "s-maint", "set-collision_vehicles", "set-collision_objects", "set-collision_pedestrians", "set-use_real_time", "set-use_real_date", "set-time_sync", "set-metar_sync", "s-timespeed",
         ];
         let general = vec![
             "s-lang", "set-machine_translation", "s-uiscale", "set-ui_scale_window", "s-uiop", "set-tooltips", "set-show_fps", "set-notes", "set-chat", "set-name_tags",
-            "set-navigator", "set-nav_arrows", "corner-top-left", "corner-top-right", "corner-bottom-left", "corner-bottom-right",
+            "set-navigator", "set-nav_arrows", "set-nav_ai", "corner-top-left", "corner-top-right", "corner-bottom-left", "corner-bottom-right",
             "set-update_check", "set-update_auto", "s-upd-check", "s-upd-github", "s-reset",
         ];
         vec![graphics, driving, camera, sound, gameplay, general]

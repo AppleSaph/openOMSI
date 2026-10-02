@@ -129,7 +129,9 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
             }
         }
         "speed" => {
-            if let Some(s) = finite(arg) {
+            if app.real_time_locked() {
+                app.service_msg = Some(("The time speed is fixed while the real-time sync is on".into(), 3.0));
+            } else if let Some(s) = finite(arg) {
                 let s = s.clamp(1.0, 30.0);
                 if let Some(l) = app.lan.as_mut() {
                     l.clock_speed = s;
@@ -487,12 +489,13 @@ pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &
                         lan.command(from, &format!("teleport {x:.2} {y:.2} {:.2} {h:.1}", pos.z));
                     }
                 }
-                "time" => {
+                // (a server on the real time keeps its clock and its speed)
+                "time" if !crate::real_time::server_real() => {
                     if let Some(s) = finite(a) {
                         adm.shift += s.clamp(-86400.0, 86400.0);
                     }
                 }
-                "speed" => {
+                "speed" if !crate::real_time::server_real() => {
                     if let Some(s) = finite(a) {
                         lan.clock_speed = s.clamp(1.0, 30.0);
                     }
@@ -540,7 +543,7 @@ pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &
                         lan.command(id, "unstick");
                     }
                 }
-                "clock" => {
+                "clock" if !crate::real_time::server_real() => {
                     // (the server's clock is the session's: moved by the difference)
                     if let Some(s) = finite(a) {
                         adm.set_clock = Some(s.rem_euclid(86400.0));
