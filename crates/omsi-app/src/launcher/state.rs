@@ -95,6 +95,7 @@ pub struct Choice {
     pub free: bool,
     /// Minutes of the day.
     pub time: i32,
+    pub start_trip: Option<(String, String, usize, i32)>,
     pub date: String,
     /// "auto", spring, summer, autumn, winter.
     pub season: String,
@@ -127,6 +128,7 @@ impl Default for Choice {
             tour: None,
             free: false,
             time: 9 * 60,
+            start_trip: None,
             date: "1989-05-30".into(),
             season: "auto".into(),
             weather: String::new(),
@@ -572,7 +574,8 @@ impl State {
             entry: Some(c.entry),
             line: if c.free { None } else { c.line.clone() },
             tour: if c.free { None } else { c.tour.clone() },
-            trip: None,
+            trip: if c.free { None } else { self.picked_trip().map(|i| i.to_string()) },
+            whole_tour: !c.free && self.picked_trip().is_some(),
             time: format!("{:02}:{:02}", c.time / 60, c.time % 60),
             date: Some(c.date.clone()),
             weather: Some(c.weather.clone()).filter(|w| !w.is_empty()),
@@ -682,6 +685,7 @@ impl State {
             let today = format!("{y:04}-{mo:02}-{d:02}");
             if self.choice.date != today {
                 self.choice.date = today;
+                self.load_lines();
             }
         }
     }
@@ -1092,8 +1096,18 @@ impl State {
     /// that left a minute or two ago still counts), else the tour's last.
     pub fn first_trip(&self) -> Option<usize> {
         let t = self.tour()?;
+        if let Some(i) = self.picked_trip() {
+            if let Some(k) = t.trips.iter().position(|x| x.index == i) {
+                return Some(k);
+            }
+        }
         let now = self.choice.time as f64 * 60.0;
         trip_index_at(t, now)
+    }
+
+    pub fn picked_trip(&self) -> Option<usize> {
+        let (line, tour, index, time) = self.choice.start_trip.as_ref()?;
+        (self.choice.line.as_ref() == Some(line) && self.choice.tour.as_ref() == Some(tour) && *time == self.choice.time).then_some(*index)
     }
 }
 

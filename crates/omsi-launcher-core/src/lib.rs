@@ -2086,6 +2086,8 @@ pub struct Duty {
     /// The trip of the tour to start with: its departure (HH:MM) or its place in the tour.
     #[serde(default)]
     pub trip: Option<String>,
+    #[serde(default)]
+    pub whole_tour: bool,
     /// HH:MM
     pub time: String,
     /// YYYY-MM-DD
@@ -2207,6 +2209,9 @@ pub fn duty_args(d: &Duty) -> Result<Vec<String>> {
             a.extend(["--tour".into(), t.trim().to_string()]);
             if let Some(tr) = d.trip.as_deref().filter(|x| !x.trim().is_empty()) {
                 a.extend(["--trip".into(), tr.trim().to_string()]);
+                if d.whole_tour {
+                    a.push("--whole-tour".into());
+                }
             }
         }
     }
@@ -2490,6 +2495,16 @@ mod tests {
 
     /// A duty file written before the number plate field (or one that leaves it out) loads
     /// with no plate, and a plate the player typed is kept as it stands.
+    #[test]
+    fn a_picked_trip_starts_the_rest_of_the_tour() {
+        let d = Duty { map: "maps/x/global.cfg".into(), bus: "Vehicles/x.bus".into(), time: "09:43".into(), line: Some("14".into()), tour: Some("1".into()), trip: Some("5".into()), whole_tour: true, ..Default::default() };
+        let a = duty_args(&d).unwrap();
+        let k = a.iter().position(|x| x == "--trip").unwrap();
+        assert_eq!((a[k + 1].as_str(), a[k + 2].as_str()), ("5", "--whole-tour"));
+        let alone = duty_args(&Duty { whole_tour: false, ..d }).unwrap();
+        assert!(!alone.iter().any(|x| x == "--whole-tour"));
+    }
+
     #[test]
     fn a_duty_keeps_its_plate_and_older_files_load_without_one() {
         let old: Duty = serde_json::from_str(r#"{"map":"maps/x/global.cfg","bus":"Vehicles/x.bus","time":"09:00"}"#).unwrap();
