@@ -1049,6 +1049,24 @@ impl GpuCache {
         self.take_texture_slot(renderer, scene, id)
     }
 
+    /// A transparent dynamic text texture with a full mip chain. Text textures are often
+    /// viewed much smaller than their authored pixel size; without lower levels the sampler
+    /// minifies level zero directly and thin glyph strokes break into unstable pixels.
+    fn add_blank_mips(&mut self, renderer: &Renderer, scene: &mut Scene, width: u32, height: u32) -> TextureId {
+        let (width, height) = (width.max(1), height.max(1));
+        self.add_image(
+            renderer,
+            scene,
+            &Image {
+                width,
+                height,
+                rgba: vec![0; (width * height * 4) as usize],
+                has_alpha: true,
+            },
+            true,
+        )
+    }
+
     fn take_texture_slot(
         &mut self,
         renderer: &Renderer,
@@ -6705,7 +6723,7 @@ impl World {
                                         );
                                         let (w, h) =
                                             (tt.width.max(1) as u32, tt.height.max(1) as u32);
-                                        let tex = gpu.add_blank(renderer, scene, w, h);
+                                        let tex = gpu.add_blank_mips(renderer, scene, w, h);
                                         let mat = renderer.add_material(
                                             scene,
                                             Some(tex),
@@ -6746,7 +6764,7 @@ impl World {
                                     // their text turned by 180° were `.x` meshes whose frames were
                                     // read transposed (upside down), the stop name plates are not
                                     let image = scenery_text_image(tt, atlas, &text);
-                                    let tex = gpu.add_image(renderer, scene, &image, false);
+                                    let tex = gpu.add_image(renderer, scene, &image, true);
                                     // (lit like the rest of the object: Omsi.exe only swaps
                                     // the slot's texture, a sign does not shine at night)
                                     let mat = renderer.add_material(
@@ -7383,7 +7401,7 @@ impl World {
                 }
                 let atlas = self.fonts.lock().get(&tt.font, &|p| omsi_texture::decode_file(p).ok().map(|i| (i.width, i.height, i.rgba)));
                 let image = scenery_text_image(tt, atlas, &text);
-                let tex = gpu.add_image(renderer, scene, &image, false);
+                let tex = gpu.add_image(renderer, scene, &image, true);
                 let mat = renderer.add_material(scene, Some(tex), alpha, [1.0; 4], false);
                 let mat = gpu.material(renderer, scene, mat);
                 gpu.text_textures.insert(key.clone(), (tex, mat, 1));
@@ -8762,7 +8780,7 @@ impl World {
                                     let _ = img.save(&path);
                                 }
                             }
-                            renderer.update_texture(
+                            renderer.update_texture_mips(
                                 scene,
                                 *tex,
                                 &Image {
@@ -9090,7 +9108,7 @@ pub fn sync_vehicle_part(
             part.text_textures[i].pending.take(),
         ) {
             let d = &part.text_textures[i].def;
-            renderer.update_texture(
+            renderer.update_texture_mips(
                 scene,
                 *tex,
                 &Image {
@@ -9375,7 +9393,7 @@ pub fn sync_vehicle_textures(
             vehicle.text_textures[i].pending.take(),
         ) {
             let d = &vehicle.text_textures[i].def;
-            renderer.update_texture(
+            renderer.update_texture_mips(
                 scene,
                 *tex,
                 &Image {
@@ -11054,6 +11072,9 @@ impl World {
         let blank = |gpu: &mut GpuCache, scene: &mut Scene, w: i32, h: i32| {
             Some(gpu.add_blank(renderer, scene, w.max(1) as u32, h.max(1) as u32))
         };
+        let blank_text = |gpu: &mut GpuCache, scene: &mut Scene, w: i32, h: i32| {
+            Some(gpu.add_blank_mips(renderer, scene, w.max(1) as u32, h.max(1) as u32))
+        };
         let sizes: Vec<(i32, i32)> = vt
             .model
             .text_textures
@@ -11062,7 +11083,7 @@ impl World {
             .collect();
         let text_textures: Vec<Option<TextureId>> = sizes
             .iter()
-            .map(|(w, h)| blank(&mut gpu, scene, *w, *h))
+            .map(|(w, h)| blank_text(&mut gpu, scene, *w, *h))
             .collect();
         let script_textures: Vec<Option<TextureId>> = match shared_script {
             Some(s) => s.to_vec(),
