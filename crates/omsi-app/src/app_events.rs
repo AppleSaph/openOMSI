@@ -1498,9 +1498,13 @@ impl ApplicationHandler for App {
                 if self.view != "free" {
                     self.ego = false;
                 }
+                // (the free camera flies; with no bus it is the view too - but not out of the
+                // walker's eyes: on foot without a bus of one's own (started on foot, the bus
+                // removed) the keys flew the camera on from where the walk had put it every
+                // frame, and walking jumped about, the more so the lower the frame rate, #807)
                 if let (Some(cam), true) = (
                     self.camera.as_mut(),
-                    self.view == "free" || self.player.is_none(),
+                    self.view == "free" || (self.player.is_none() && self.on_foot.is_none()),
                 ) {
                     let mut v = Vec3::ZERO;
                     let f = cam.forward();
