@@ -1810,6 +1810,18 @@ impl ApplicationHandler for App {
                     if self.editor.is_some() {
                         lines.push("Object editor: click picks · drag moves · wheel turns (Shift lifts) · Del · C copy · V variant · Backspace undo · Ctrl+S save · Esc".into());
                     }
+                    if let Some(d) = self.duty.as_ref().filter(|d| d.trip_done()) {
+                        lines.push(match d.trips.get(d.trip_index + 1) {
+                            Some(next) => format!(
+                                "End of the trip. Next: {} to {}, from {} at {} (it starts by itself a minute before)",
+                                if next.line.trim().is_empty() { "service trip".to_string() } else { format!("line {}", next.line) },
+                                next.terminus.strip_prefix(&format!("{} ", next.line)).unwrap_or(&next.terminus),
+                                next.stops.first().map(|s| s.name.trim()).unwrap_or("?"),
+                                crate::schedule::hhmm(next.departure)
+                            ),
+                            None => "End of the duty: the tour's last trip is done".into(),
+                        });
+                    }
                     if let Some((msg, left)) = self.service_msg.as_mut() {
                         *left -= dt;
                         if *left > 0.0 {
