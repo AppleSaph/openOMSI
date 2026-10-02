@@ -125,6 +125,7 @@ pub(crate) struct App {
     pub(crate) pane_scroll: Option<(usize, usize)>,
     /// The digits of a time being typed in the world page of the game menu (None: not typing).
     pub(crate) menu_edit: Option<String>,
+    pub(crate) menu_edit_icao: bool,
     /// The line of the open list whose slider the mouse button holds (it follows the cursor).
     pub(crate) menu_drag: Option<usize>,
     /// The keyboard chose the line of the menu last (the mouse moved since: false), so the
@@ -267,6 +268,8 @@ pub(crate) struct App {
     pub(crate) weather_cycle: Option<crate::weather_cycle::Cycle>,
     /// The METAR sync's download under way (see `tick_metar`), and the seconds to the next one.
     pub(crate) metar_rx: Option<std::sync::mpsc::Receiver<Option<omsi_content::weather::Weather>>>,
+    /// The current METAR receiver is a single manual fetch rather than the continuous sync.
+    pub(crate) metar_once: bool,
     pub(crate) metar_next: f64,
     /// The mouse cursor currently shows the hand (it is over a switch).
     pub(crate) cursor_kind: u8,

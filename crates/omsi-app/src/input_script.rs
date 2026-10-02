@@ -1462,6 +1462,10 @@ impl App {
     }
 
     pub(crate) fn close_game_menu(&mut self) {
+        if self.menu_edit_icao {
+            if let Some(w)=self.window.as_ref(){w.set_ime_allowed(false);}
+            self.menu_edit_icao=false; self.menu_edit=None;
+        }
         self.game_menu = None;
         self.menu_top = None;
         self.paused = self.menu_prev_pause;
@@ -1504,6 +1508,41 @@ impl App {
             l.1 = action;
         }
         self.chooser_pick(k);
+    }
+
+    fn icao_edit_key(&mut self,code:KeyCode){
+        match code{
+            KeyCode::Escape=>{self.menu_edit=None;self.menu_edit_icao=false;if let Some(w)=self.window.as_ref(){w.set_ime_allowed(false);}},
+            KeyCode::Backspace|KeyCode::Delete=>{if let Some(d)=self.menu_edit.as_mut(){d.pop();}},
+            KeyCode::Enter|KeyCode::NumpadEnter=>{self.apply_icao_edit();return;},
+            _=>{}
+        }
+        self.refresh_list();
+    }
+    pub(crate) fn icao_edit_text(&mut self,text:&str){
+        if !self.menu_edit_icao{return}
+        if let Some(d)=self.menu_edit.as_mut(){
+            for c in text.chars().filter(|c|c.is_ascii_alphabetic()){
+                if d.len()>=4{break} d.push(c.to_ascii_uppercase());
+            }
+        }
+        self.refresh_list();
+    }
+    pub(crate) fn start_icao_edit(&mut self){
+        self.menu_edit=Some(String::new()); self.menu_edit_icao=true;
+        if let Some(w)=self.window.as_ref(){w.set_ime_allowed(true);}
+    }
+    pub(crate) fn apply_icao_edit(&mut self){
+        let code=self.menu_edit.take().unwrap_or_default().trim().to_ascii_uppercase();
+        self.menu_edit_icao=false;
+        if let Some(w)=self.window.as_ref(){w.set_ime_allowed(false);}
+        if code.len()==4&&code.chars().all(|c|c.is_ascii_alphabetic()){
+            self.settings.metar_station=code.clone();
+            crate::game_lists::remember_setting("metar_station",&code);
+            self.metar_rx=None; self.metar_once=false; self.metar_next=0.0;
+            self.service_msg=Some((format!("METAR source: {code}"),3.0));
+        }else if !code.is_empty(){self.service_msg=Some(("ICAO must be exactly 4 letters".into(),3.0));}
+        self.refresh_list();
     }
 
     fn time_edit_key(&mut self, code: KeyCode) {
@@ -1581,32 +1620,42 @@ impl App {
     /// Change the weather in force by hand: `f` changes a copy of it, which takes the place of
     /// the weather at once (a change on its way and the weather cycle stop: this is the
     /// weather now). The sky's clouds are made again when their type changed.
-    pub(crate) fn edit_weather(&mut self, f: impl FnOnce(&mut omsi_content::weather::Weather)) {
-        if self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
-            self.service_msg = Some(("In a LAN session the host sets the weather".into(), 3.0));
-            return;
+    pub(crate) fn edit_weather(&mut self,f:impl FnOnce(&mut omsi_content::weather::Weather)){
+        if self.lan.as_ref().is_some_and(|l|l.role==omsi_net::Role::Client){
+            self.service_msg=Some(("In a LAN session the host sets the weather".into(),3.0));return;
         }
-        if self.metar_locked() {
-            self.service_msg = Some(("The weather cannot be changed while the METAR sync is on".into(), 3.0));
-            return;
-        }
-        let mut w = self.weather.clone().unwrap_or_default();
-        if w.precip.len() < 5 {
-            w.precip.resize(5, 0.0);
-        }
-        let before = w.clouds.0.trim().to_string();
+        if self.metar_locked(){self.service_msg=Some(("The weather cannot be changed while the METAR sync is on".into(),3.0));return;}
+        let mut w=self.weather.clone().unwrap_or_default();
+        if w.precip.len()<5{w.precip.resize(5,0.0);}
         f(&mut w);
-        w.name = crate::game_lists::CUSTOM_WEATHER.to_string();
-        let clouds_changed = w.clouds.0.trim() != before;
-        omsi_sim::host::set_ambient_weather(w.temp.0, w.temp.1);
-        self.weather_blend = None;
-        self.weather_cycle = None;
-        self.weather = Some(w);
-        if clouds_changed {
-            if let (Some(r), Some(scene)) = (self.renderer.as_ref(), self.scene.as_mut()) {
-                crate::weather_setup::setup_sky(&self.args, r, scene, self.envir.as_ref(), self.weather.as_ref());
+        let brightness=crate::weather_setup::custom_weather(self.args.weather.as_deref()).map(|c|c.brightness).unwrap_or(1.0);
+        let custom=crate::weather_setup::CustomWeather::from_weather(&w,brightness,self.wetness);
+        self.set_custom_weather(custom);
+    }
+
+    pub(crate) fn set_custom_weather(&mut self,mut custom:crate::weather_setup::CustomWeather){
+        if self.lan.as_ref().is_some_and(|l|l.role==omsi_net::Role::Client){
+            self.service_msg=Some(("In a LAN session the host sets the weather".into(),3.0));return;
+        }
+        if self.metar_locked(){self.service_msg=Some(("The weather cannot be changed while the METAR sync is on".into(),3.0));return;}
+        custom.normalize();
+        self.metar_rx=None;
+        self.metar_once=false;
+        let spec=custom.encode();
+        let to=custom.to_weather();
+        let clouds_changed=self.weather.as_ref().is_none_or(|w|w.clouds.0.trim()!=to.clouds.0.trim());
+        self.args.weather=Some(spec.clone()); self.weather_blend=None; self.weather_cycle=None; self.wetness=custom.road_wetness;
+        crate::scene::SNOW_WEATHER.store(to.snow,std::sync::atomic::Ordering::Relaxed);
+        omsi_sim::host::set_ambient_weather(to.temp.0,to.temp.1);
+        self.weather=Some(to);
+        if clouds_changed{
+            if let (Some(r),Some(scene))=(self.renderer.as_ref(),self.scene.as_mut()){
+                crate::weather_setup::setup_sky(&self.args,r,scene,self.envir.as_ref(),self.weather.as_ref());
             }
         }
+        self.follow_date();
+        if let Some(l)=self.lan.as_mut().filter(|l|l.role==omsi_net::Role::Host){l.set_weather(&spec);}
+        self.service_msg=Some(("Weather: Custom weather".into(),2.0));
     }
 
     /// A settings window (options, vehicle, world) is open.
@@ -1618,6 +1667,8 @@ impl App {
     /// The open list is closed: back to the game menu.
     pub(crate) fn close_list(&mut self) {
         self.dropdown = None;
+        if self.menu_edit_icao { if let Some(w)=self.window.as_ref(){w.set_ime_allowed(false);} }
+        self.menu_edit_icao=false;
         self.menu_edit = None;
         self.chooser = None;
         self.admin_list = None;
@@ -1706,7 +1757,7 @@ impl App {
             return;
         }
         if self.menu_edit.is_some() {
-            self.time_edit_key(code);
+            if self.menu_edit_icao { self.icao_edit_key(code); } else { self.time_edit_key(code); }
             return;
         }
         let n = self.admin_list.as_ref().unwrap_or(&self.vehicle_list).len().max(1);
@@ -2409,6 +2460,9 @@ impl App {
                 self.close_game_menu();
                 self.next_weather();
             }
+            "metar_once" => self.load_metar_once(),
+            "metar_refresh" => self.refresh_metar_now(),
+            "weather_custom" => self.current_weather_as_custom(),
             "switch" => {
                 self.close_game_menu();
                 self.switch_vehicle();
@@ -2479,6 +2533,8 @@ impl App {
             self.service_msg = Some(("The weather cannot be changed while the METAR sync is on".into(), 3.0));
             return;
         }
+        self.metar_rx = None;
+        self.metar_once = false;
         let from = self.weather.clone().unwrap_or_default();
         self.args.weather = file.clone();
         let to = load_weather(&self.args);
@@ -2586,26 +2642,72 @@ impl App {
         }
     }
 
+    /// Fetch the selected station once, without turning the ten-minute METAR sync on.
+    pub(crate) fn load_metar_once(&mut self) {
+        if self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
+            self.service_msg=Some(("In a LAN session the host sets the weather".into(),3.0));
+            return;
+        }
+        let icao=self.metar_station();
+        self.metar_rx=None;
+        self.metar_once=true;
+        let (tx,rx)=std::sync::mpsc::channel();
+        self.metar_rx=Some(rx);
+        std::thread::spawn(move||{let _=tx.send(crate::weather_setup::try_metar(&icao));});
+        self.service_msg=Some((format!("Weather: loading METAR for {}",self.metar_station()),4.0));
+    }
+
+    /// Ask the continuous METAR sync to fetch its selected station immediately.
+    pub(crate) fn refresh_metar_now(&mut self) {
+        if !self.metar_locked() {
+            self.load_metar_once();
+            return;
+        }
+        self.metar_rx=None;
+        self.metar_once=false;
+        self.metar_next=0.0;
+        self.service_msg=Some((format!("Weather: refreshing METAR for {}",self.metar_station()),4.0));
+    }
+
+    /// Freeze the weather currently in force into an editable custom state.
+    pub(crate) fn current_weather_as_custom(&mut self) {
+        if self.metar_locked() {
+            self.service_msg=Some(("Turn METAR sync off before editing its current weather".into(),3.0));
+            return;
+        }
+        let Some(w)=self.weather.as_ref() else{return};
+        let brightness=crate::weather_setup::custom_weather(self.args.weather.as_deref()).map(|c|c.brightness).unwrap_or(1.0);
+        let c=crate::weather_setup::CustomWeather::from_weather(w,brightness,self.wetness);
+        self.set_custom_weather(c);
+    }
+
     /// The METAR sync: with it on, the report is downloaded in the background (at once, then
     /// every ten minutes) and the weather goes over to it; `dt` is real seconds.
     pub(crate) fn tick_metar(&mut self, dt: f32) {
         self.share_start_metar();
-        if !self.metar_locked() {
-            self.metar_rx = None;
-            self.metar_next = 0.0;
-            return;
-        }
-        if let Some(rx) = self.metar_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(report) => {
-                    self.metar_rx = None;
-                    if let Some(w) = report {
-                        self.apply_metar(w);
+        if let Some(rx)=self.metar_rx.as_ref(){
+            match rx.try_recv(){
+                Ok(report)=>{
+                    let once=self.metar_once;
+                    self.metar_rx=None;
+                    self.metar_once=false;
+                    match report{
+                        Some(w)=>self.apply_metar(w),
+                        None=>self.service_msg=Some(("Weather: no METAR report could be loaded".into(),4.0)),
                     }
+                    if once{return;}
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.metar_rx = None,
+                Err(std::sync::mpsc::TryRecvError::Empty)=>return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected)=>{
+                    let once=self.metar_once;
+                    self.metar_rx=None;
+                    self.metar_once=false;
+                    if once{self.service_msg=Some(("Weather: METAR request failed".into(),4.0));return;}
+                }
             }
+        }
+        if !self.metar_locked() {
+            self.metar_next = 0.0;
             return;
         }
         self.metar_next -= dt as f64;
@@ -2617,6 +2719,7 @@ impl App {
         let icao = self.metar_station();
         let (tx, rx) = std::sync::mpsc::channel();
         self.metar_rx = Some(rx);
+        self.metar_once = false;
         std::thread::spawn(move || {
             let _ = tx.send(crate::weather_setup::try_metar(&icao));
         });

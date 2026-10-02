@@ -99,6 +99,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed && self.menu_edit_icao {
+                    if let Some(text)=event.text.as_deref(){ self.icao_edit_text(text); }
+                }
                 // '/' opens the chat's input box wherever the keyboard has it (the key
                 // itself is then swallowed by the chat) - but not Numpad ÷, OMSI's stock
                 // front door key (keyboard.cfg `bus_doorfront0 181`)
