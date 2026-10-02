@@ -928,6 +928,8 @@ fn known_action(a: &str) -> Option<String> {
         ("blinker_right_toggle", "Indicator right (toggle)"),
         ("blinker_off", "Indicators off"),
         ("blinker_warn_toggle", "Hazard lights"),
+        ("gear_up", "Gear up (manual gearbox)"),
+        ("gear_down", "Gear down (manual gearbox)"),
         ("horn", "Horn"),
         ("kw_scheinwerfer_toggle", "Headlights"),
         ("kw_standlicht_toggle", "Sidelights"),

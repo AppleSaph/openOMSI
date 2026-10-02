@@ -106,6 +106,14 @@ impl KeyboardCfg {
                 self.game.push(KeyBinding { action: action.into(), scan_code, modifier: 0 });
             }
         }
+        // a manual gearbox's gears up and down: Ctrl+Up / Ctrl+Down (DIK 200 / 208), keys the
+        // game used to hold for itself whatever the file said - an entry of their own, they
+        // can be put on other keys or cleared (#907, #930). An existing entry wins.
+        for (action, scan_code) in [("gear_up", 200), ("gear_down", 208)] {
+            if !self.game.iter().any(|b| b.action.eq_ignore_ascii_case(action)) {
+                self.game.push(KeyBinding { action: action.into(), scan_code, modifier: KEY_CTRL });
+            }
+        }
         for action in ["blinker_left_toggle", "blinker_right_toggle"] {
             if !self.vehicles.iter().any(|b| b.action.eq_ignore_ascii_case(action)) {
                 self.vehicles.push(KeyBinding { action: action.into(), scan_code: 0, modifier: 0 });
@@ -232,6 +240,18 @@ mod tests {
         assert!(cfg.vehicles.contains(&custom));
         let right = cfg.vehicles.iter().find(|b| b.action == "blinker_right_toggle").unwrap();
         assert_eq!((right.scan_code, right.modifier), (0, 0));
+    }
+
+    /// The manual gearbox's Ctrl+Up / Ctrl+Down are entries of the list, which stay as the
+    /// player moved or cleared them (#907).
+    #[test]
+    fn the_gear_keys_are_in_the_list_and_can_be_moved() {
+        let key = |c: &KeyboardCfg, a: &str| c.game.iter().filter(|b| b.action == a).map(|b| (b.scan_code, b.modifier)).collect::<Vec<_>>();
+        let cfg = KeyboardCfg::default().with_game_defaults().with_game_defaults();
+        assert_eq!(key(&cfg, "gear_up"), vec![(200, KEY_CTRL)]);
+        assert_eq!(key(&cfg, "gear_down"), vec![(208, KEY_CTRL)]);
+        let cleared = KeyboardCfg { game: vec![KeyBinding { action: "gear_up".into(), scan_code: 0, modifier: 0 }], ..Default::default() }.with_game_defaults();
+        assert_eq!(key(&cleared, "gear_up"), vec![(0, 0)]);
     }
 
     #[test]

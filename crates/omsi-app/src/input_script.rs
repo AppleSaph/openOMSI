@@ -251,7 +251,9 @@ impl App {
                 let flying = m == 0
                     && flies_free_camera(code)
                     && (self.view == "free" || (self.player.is_none() && self.on_foot.is_none()));
-                if let Some(scan) = keys::dik_code(code).filter(|_| !ours && !flying) {
+                // (Ctrl+Alt+arrows turn the mirror looked at: not Ctrl+arrow's gear or camera)
+                let mirror_aim = ctrl && alt && matches!(code, KeyCode::ArrowLeft | KeyCode::ArrowRight | KeyCode::ArrowUp | KeyCode::ArrowDown);
+                if let Some(scan) = keys::dik_code(code).filter(|_| !ours && !flying && !mirror_aim) {
                     let action = self.game_keys.iter().find(|b| b.scan_code == scan && b.matches(m)
                         && !b.action.starts_with("vr_")
                         && !(plain_arrow && b.action.starts_with("view_interiorcam_"))).map(|b| b.action.clone());
@@ -259,6 +261,7 @@ impl App {
                     // parking brake put on Space, the stock view_reset_all_directions key,
                     // reset the view and never reached the bus - #745)
                     let vehicle_too = self.player.as_ref().is_some_and(|p| p.bindings.iter().any(|b| b.scan_code == scan && b.matches(m)));
+                    log::debug!("key {code:?} (DIK {scan}, chord {m}): [game] {action:?}, a key of the bus too: {vehicle_too}; [game] keys on it: {:?}", self.game_keys.iter().filter(|b| b.scan_code == scan).collect::<Vec<_>>());
                     // OMSI's `exit` (Ctrl+Q, or what the player put it on): the game ends as
                     // the menu's Quit ends it. It was no action here at all, so the key did
                     // nothing (#817)
@@ -283,22 +286,14 @@ impl App {
                         self.game_action("toggel_mouse_ctrl");
                         return;
                     }
-                    // the interior cameras: Ctrl+Left/Right (the arrows drive)
-                    // a manual gearbox: Ctrl+Up / Ctrl+Down shift up and down - the stock key file
-                    // has no keys for it, and a bus like the LiAZ MKPP stayed in its gear
-                    KeyCode::ArrowUp | KeyCode::ArrowDown if ctrl && !alt => {
-                        let up = code == KeyCode::ArrowUp;
-                        self.shift_gear(up);
-                        return;
-                    }
+                    // (a manual gearbox's Ctrl+Up / Ctrl+Down are the [game] keys `gear_up` and
+                    // `gear_down` now, which can be moved: see `with_game_defaults`, #907)
                     // (Ctrl+Alt+arrows turn the mirror looked at, see the frame)
                     KeyCode::ArrowLeft | KeyCode::ArrowRight | KeyCode::ArrowUp | KeyCode::ArrowDown if ctrl && alt => return,
-                    KeyCode::ArrowLeft if ctrl => {
-                        self.game_action("view_interiorcam_minus");
-                        return;
-                    }
-                    KeyCode::ArrowRight if ctrl => {
-                        self.game_action("view_interiorcam_plus");
+                    // the interior cameras: Ctrl+Left/Right as well (the arrows drive) - unless
+                    // the player gave that combination to something else (#907)
+                    KeyCode::ArrowLeft | KeyCode::ArrowRight if ctrl && !self.chord_bound(code, shift_now, ctrl, alt) => {
+                        self.game_action(if code == KeyCode::ArrowLeft { "view_interiorcam_minus" } else { "view_interiorcam_plus" });
                         return;
                     }
                     // OMSI's `screenshot` (Ctrl+Shift+P: 25 / 6), and F12 as most games have it
@@ -3190,6 +3185,10 @@ impl App {
                 let next = if name == "view_toggle_viewpoint" { (mode + 1) % 4 } else { (mode + 3) % 4 };
                 return self.game_action(["view_set_driver", "view_set_passenger", "view_set_outside", "view_set_map"][next]);
             }
+            // a manual gearbox (Ctrl+Up / Ctrl+Down unless moved; a controller's button)
+            "gear_up" | "gear_down" => {
+                self.shift_gear(name == "gear_up");
+            }
             "view_interiorcam_plus" | "view_interiorcam_minus" => {
                 let Some(p) = self.player.as_mut() else { return true };
                 // (the interior cameras only cycle in the interior: from outside the keys
@@ -3227,6 +3226,15 @@ impl App {
     /// OMSI's `sim_pause`: the simulation stands still, the camera and the picture go on.
     /// Shift a manual gearbox up or down: the first of the usual trigger names the bus's
     /// scripts have (pressed and let go). False when it has none.
+    /// Whether `code` with these modifiers is one of the keyboard file's keys, of the game's
+    /// or of the bus's: then a built-in shortcut on it stands back.
+    pub(crate) fn chord_bound(&self, code: KeyCode, shift: bool, ctrl: bool, alt: bool) -> bool {
+        let m = omsi_content::input::chord(shift, ctrl, alt);
+        let Some(scan) = keys::dik_code(code) else { return false };
+        self.game_keys.iter().any(|b| b.scan_code == scan && b.matches(m))
+            || self.player.as_ref().is_some_and(|p| p.bindings.iter().any(|b| b.scan_code == scan && b.matches(m)))
+    }
+
     pub(crate) fn shift_gear(&mut self, up: bool) -> bool {
         let names: &[&str] = if up {
             &["kw_s_plus", "upshift", "gear_up", "gearup", "shift_up", "gang_hoch", "schalten_hoch", "manual_up"]
