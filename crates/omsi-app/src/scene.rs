@@ -3039,7 +3039,7 @@ impl World {
                     return (lanes, positions, signs, roads);
                 };
                 let origin2 = DVec2::new(tx as f64 * tile_size(), ty as f64 * tile_size());
-                let terrain = Terrain::load(&tile_companion(&path, ".terrain")).unwrap_or_else(|_| Terrain::flat());
+                let terrain = Terrain::load(&crate::tiles::terrain_file(&tile, path)).unwrap_or_else(|_| Terrain::flat());
                 for sp in tile.splines.iter().filter(|s| !s.deleted && !s.file.trim().is_empty()) {
                     let Some(st) = self.spline_type(&sp.file) else { continue };
                     if !st.def.paths.iter().any(|p| p.kind == 0) {
@@ -3536,7 +3536,12 @@ impl World {
     fn stage_tile(&self, tx: i32, ty: i32, path: &Path, index: &MapIndex) -> StagedTile {
         let origin2 = DVec2::new(tx as f64 * tile_size(), ty as f64 * tile_size());
         let origin = DVec3::new(origin2.x, origin2.y, 0.0);
-        let terrain_path = tile_companion(path, ".terrain");
+        let tile = crate::tiles::read_tile(path, &self.chrono_dirs.read());
+        // (an active chrono patch may bring the tile's terrain: see `Tile::terrain_from`)
+        let terrain_path = match &tile {
+            Some(t) => crate::tiles::terrain_file(t, path),
+            None => tile_companion(path, ".terrain"),
+        };
         let edited = self.terrain_edits.lock().get(&(tx, ty)).cloned();
         let base_terrain = edited.unwrap_or_else(|| Terrain::load(&terrain_path).unwrap_or_else(|_| Terrain::flat()));
         let counts = Mutex::new(LoadStats::default());
@@ -3559,7 +3564,7 @@ impl World {
             counts: LoadStats::default(),
             resolved: std::sync::OnceLock::new(),
         };
-        let Some(tile) = crate::tiles::read_tile(path, &self.chrono_dirs.read()) else {
+        let Some(tile) = tile else {
             return out;
         };
         // a tile with water carries one surface with a height at each corner. As in Omsi.exe
@@ -3568,7 +3573,7 @@ impl World {
         // -5 m (TFileWater 0x7ab6f0) and take the file's heights only when its count is 1
         // (0x7ab760).
         out.water = tile.has_water.then(|| {
-            match omsi_cfg::vfs::read(&PathBuf::from(format!("{}.water", path.display())))
+            match omsi_cfg::vfs::read(&crate::tiles::water_file(&tile, path))
                 .ok()
                 .map(|b| omsi_map::terrain::Water::parse(&b))
             {
