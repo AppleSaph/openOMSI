@@ -4,6 +4,75 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.1.810 - 2026-10-02
+
+### Launcher
+- Buttons that contain only an icon now centre it correctly instead of leaving the spacing
+  reserved for a missing label; this fixes the livery arrows on Drive > Bus and the mobile
+  file browser's folder-up button (#678).
+
+## 0.1.808 - 2026-10-02
+
+### Traffic
+- Traffic-light programs that use conditional backwards jumps to extend a phase no longer
+  repeat the same jump indefinitely and get stuck on one signal combination. The extension
+  is replayed once before the normal cycle continues (#692).
+
+### VR
+- VR has an adjustable cockpit navigator attached to the bus. It can be moved and rotated,
+  its distance and size can be adjusted, and position, rotation, size, opacity and visibility
+  are saved separately for each bus (#693).
+- `Ctrl+Shift+M` enters navigator placement mode and `Ctrl+Shift+N` shows or hides it; both
+  actions can be rebound. The same placement settings are available in the VR options menu
+  (#693).
+- The VR pause menu is smaller for a more comfortable fit (#693).
+
+## 0.1.800 - 2026-10-02
+
+### Server
+- A dedicated server can optionally expose `GET /players` for live web maps. The JSON list
+  contains each player's name, bus, line, destination, tour, position, heading and speed,
+  and latitude/longitude on maps with `[worldcoordinates]` (#674).
+- Player position sharing is off by default and must be enabled with `share_positions = 1`
+  in `server.cfg`; otherwise `/players` returns 404 (#674).
+- A player on foot is reported at the walker's position, and the walker is preferred over
+  a parked bus when both exist (#674).
+
+## 0.1.796 - 2026-10-01
+
+### Graphics
+- Enhanced graphics can reflect buses, buildings and scenery in wet-road puddles. Reflections
+  follow the local road height, slope and camber, and nearby articulated bus sections are
+  included (#686).
+- Puddle reflections use bounded half-resolution screen-space rendering and are skipped on
+  dry roads, full snow, mirror views, OpenGL and when reflections are disabled, limiting
+  their cost when they are not needed (#686).
+
+## 0.1.791 - 2026-10-01
+
+### Controls
+- DirectInput now finds generic controllers and button boxes with no axes, including custom
+  Arduino, Pro Micro and STM32 devices, instead of silently leaving them disconnected.
+  Keyboards, mice and screen pointers remain filtered out (#71, #662).
+- Holding both opposite steering keys keeps the wheel at its current position, as in OMSI,
+  instead of always giving the left key priority. Releasing either key immediately continues
+  steering in the remaining direction (#663).
+- `Toggle game controllers` follows its configured key binding instead of also having a
+  hard-coded `K`. Leaving the action unbound now frees `K`, and rebinding it to another key
+  works as expected (#649, #670).
+
+## 0.1.785 - 2026-10-01
+
+### Multiplayer
+- In LAN multiplayer, a client's bus can take the host's waiting passengers again. They are
+  claimed from the stop where the client's bus is listed and handed over as that client's
+  waiting passengers.
+
+### Project
+- Repository, updater, website, documentation and release links now use the project's new
+  `openOMSI-Project/openOMSI` home after the repository moved to the openOMSI-Project
+  organization.
+
 ## 0.1.782 - 2026-10-01
 
 ### People
