@@ -11060,6 +11060,15 @@ impl World {
         } else {
             (self.textures.get_gpu_path(&path)?, false)
         };
+        // (one to be swapped for its compressed whole goes up at half its size meanwhile, as
+        // the scenery's do: an articulated bus of big PNG and TGA textures put up whole as
+        // RGBA took gigabytes for a moment, and a card with 3 GB lost its device while the
+        // bus was loading, every start again, #921)
+        let img = if worth {
+            Arc::new(omsi_texture::gpu::halved_for_now(Arc::try_unwrap(img).unwrap_or_else(|a| (*a).clone())))
+        } else {
+            img
+        };
         let id = {
             let mut gpu = self.gpu.lock();
             let id = gpu.add_data(renderer, scene, &img);
