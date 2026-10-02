@@ -6134,11 +6134,13 @@ impl Traffic {
                             ss.add_part(*i, omsi_audio::SoundSet::new_exterior(audio, &part.chosen_for(&number), dir));
                         }
                         ss.master = crate::sound_gain(&crate::SOUND_AI);
+                        c.vehicle.host.snapshot_triggers = ss.curve_triggers().into_iter().collect();
                         c.sounds = Some(ss);
                     }
                 }
             }
             let fired: Vec<String> = std::mem::take(&mut c.vehicle.host.fired_triggers);
+            let fired_vars: Vec<(String, Vec<f32>)> = std::mem::take(&mut c.vehicle.host.fired_trigger_vars);
             let fired_files: Vec<(String, String)> =
                 std::mem::take(&mut c.vehicle.host.fired_file_triggers);
             c.vehicle.host.street_cond = street_cond;
@@ -6147,7 +6149,11 @@ impl Traffic {
                 ss.set_muffled(muffled);
                 let xf = c.vehicle.world_transform();
                 let v = &c.vehicle;
-                ss.update(audio, &|n| v.var(n), &xf, &fired);
+                let at_fire = |t: &str, n: &str| -> Option<f32> {
+                    let vals = &fired_vars.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(t))?.1;
+                    v.var_slot(n).and_then(|i| vals.get(i).copied())
+                };
+                ss.update_fired(audio, &|n| v.var(n), &xf, &fired, &at_fire);
                 ss.update_parts(
                     audio,
                     &|n| v.var(n),
