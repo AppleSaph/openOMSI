@@ -4149,24 +4149,17 @@ impl Renderer {
 
     pub fn add_blank_texture(&self, scene: &mut Scene, width: u32, height: u32) -> TextureId {
         let (width, height) = (width.max(1), height.max(1));
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&Default::default());
-        scene.textures.push(GpuTexture {
-            texture,
-            view,
-            size: (width, height),
-            bytes: texture_bytes(wgpu::TextureFormat::Rgba8UnormSrgb, width, height, 1),
-            gen: next_gen(),
-        });
+        // A newly allocated GPU texture has undefined contents. Script displays may be
+        // sampled before their first `STUnlock`, so initialise them as transparent rather
+        // than briefly showing arbitrary solid pixels on new or AI vehicles.
+        let image = omsi_texture::Image {
+            width,
+            height,
+            rgba: vec![0; (width * height * 4) as usize],
+            has_alpha: true,
+        };
+        let texture = upload_texture(&self.device, &self.queue, &image, false);
+        scene.textures.push(texture);
         scene.textures.len() - 1
     }
 

@@ -529,6 +529,9 @@ pub struct Traffic {
     rng: u64,
     /// Target number of cars around the camera.
     pub target: usize,
+    /// Made only so that the light programs run (no traffic, no timetable): nobody is put
+    /// on the roads - no aircraft, no parked car pulling out - while `target` is 0.
+    pub lights_only: bool,
     pub spawn_radius: f64,
     pub time: f32,
     /// Renders of cars that have gone, given back at the next `sync`.
@@ -1184,6 +1187,7 @@ impl Traffic {
             dormant_time: 0.0,
             rng: 0x9E37_79B9_7F4A_7C15,
             target,
+            lights_only: false,
             spawn_radius: 400.0,
             time: 0.0,
             released: Vec::new(),
@@ -1888,6 +1892,12 @@ impl Traffic {
         }
         if self.types.is_empty() || self.net.lanes.is_empty() {
             self.initial = false;
+            return;
+        }
+        // made only for the lights: nothing new while the target is 0, but the cars of a
+        // target raised and lowered again go as they do anywhere (returning before the loop
+        // above, they stood at the map's edge and drove over unloaded tiles for good)
+        if self.lights_only && self.target == 0 {
             return;
         }
         // aircraft: a few on the flight paths, independent of the street target

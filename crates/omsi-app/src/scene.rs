@@ -395,7 +395,6 @@ enum Placement {
     Attached {
         parent: i64,
         index: usize,
-        instance: usize,
         rot: [f64; 3],
     },
 }
@@ -3720,7 +3719,6 @@ impl World {
                 place: Placement::Attached {
                     parent,
                     index: o.attach_index,
-                    instance: o.instance,
                     rot: omsi_geometry::map_rotation(o.rot),
                 },
                 rules: o.rules.clone(),
@@ -3978,22 +3976,15 @@ impl World {
         loop {
             let mut progress = false;
             for (o, fp) in st.objects.iter().zip(final_poses.iter_mut()) {
-                let Placement::Attached {
-                    parent,
-                    index,
-                    instance,
-                    rot,
-                } = &o.place
-                else {
+                let Placement::Attached { parent, index, rot } = &o.place else {
                     continue;
                 };
                 if fp.is_some() {
                     continue;
                 }
-                let Some((pp, pt)) = poses
-                    .get(&(*parent, *instance))
-                    .or_else(|| poses.get(&(*parent, 0)))
-                else {
+                // (a spline attachment row by its first object: Omsi.exe refuses objects
+                // on its later ones)
+                let Some((pp, pt)) = poses.get(&(*parent, 0)) else {
                     continue;
                 };
                 // a point the parent does not have (its object was changed after the map
