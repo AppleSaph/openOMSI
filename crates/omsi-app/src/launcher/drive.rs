@@ -464,10 +464,15 @@ fn step_route_rest(l: &mut Launcher, r: Rect, mut y: f32) {
     let mut tours: Vec<&omsi_launcher_lib::TourInfo> = line.tours.iter().collect();
     tours.sort_by(|a, b| b.runs.cmp(&a.runs).then_with(|| natural(&a.number).cmp(&natural(&b.number))));
     let now = l.state.choice.time as f64 * 60.0;
+    let picked = l.state.choice.tour.clone().zip(l.state.first_trip());
     let tours: Vec<(String, usize, String, bool, Option<String>, Option<(f64, f64)>, String, String)> = tours.iter().map(|t| {
-        let trip = trip_index_at(t, now).and_then(|i| t.trips.get(i));
-        let from = t.trips.first().map(|x| x.from.clone()).unwrap_or_default();
-        let terminus = t.trips.last().map(|x| x.terminus.clone()).unwrap_or_default();
+        let first = match &picked {
+            Some((n, k)) if *n == t.number => Some(*k),
+            _ => trip_index_at(t, now),
+        };
+        let trip = first.and_then(|i| t.trips.get(i));
+        let from = trip.map(|x| x.from.clone()).unwrap_or_default();
+        let terminus = trip.map(|x| x.terminus.clone()).unwrap_or_default();
         (
             t.number.clone(),
             t.trips.len(),
@@ -851,14 +856,30 @@ fn step_roadbook(l: &mut Launcher, r: Rect) {
     };
     let from = l.state.first_trip().unwrap_or(0);
     l.ui.text_in(&format!("Line {} · tour {} · from {}", line.name, tour.number, hhmm(l.state.choice.time as f64 * 60.0)), Rect::new(r.x, r.y, r.w, 22.0), 14.0, Weight::Bold, TEXT, Align::Left);
-    let trips: Vec<omsi_launcher_lib::TripInfo> = tour.trips.iter().skip(from).cloned().collect();
+    l.ui.text_in("Click a trip to start the tour there.", Rect::new(r.x, r.y + 20.0, r.w, 16.0), 11.5, Weight::Regular, TEXT_DIM, Align::Left);
+    let trips: Vec<omsi_launcher_lib::TripInfo> = tour.trips.clone();
     let ibis_h = 150.0;
-    let list = Rect::new(r.x - 4.0, r.y + 30.0, r.w + 8.0, r.h - 30.0 - ibis_h - 10.0);
+    let list = Rect::new(r.x - 4.0, r.y + 40.0, r.w + 8.0, r.h - 40.0 - ibis_h - 10.0);
+    let mut start_at = None;
     l.ui.scroll_area("roadbook", list, &mut |ui, v| {
         let mut y = v.y;
-        for (k, t) in trips.iter().enumerate() {
+        for (i, t) in trips.iter().enumerate() {
             let head = Rect::new(v.x + 4.0, y, v.w - 12.0, 46.0);
-            ui.p().rounded(head, 6.0, if k == 0 { SELECTED } else { FIELD });
+            if i < from {
+                if ui.row(&format!("roadbook-trip-{i}"), head, false) {
+                    start_at = Some((t.index, t.departure));
+                }
+                ui.text_in(&format!("{} · {} → {}", omsi_ui::tr("Earlier"), if t.from.is_empty() { "?" } else { &t.from }, t.terminus), Rect::new(head.x + 10.0, head.y + 4.0, head.w - 20.0, 20.0), 13.0, Weight::Bold, TEXT_FAINT, Align::Left);
+                ui.text_in(&format!("{} - {} · {}", hhmm(t.departure), hhmm(t.arrival), if t.line.is_empty() { "depot run".to_string() } else { format!("line {}", t.line) }), Rect::new(head.x + 10.0, head.y + 24.0, head.w - 20.0, 18.0), 11.0, Weight::Regular, TEXT_FAINT, Align::Left);
+                y += 52.0;
+                continue;
+            }
+            let k = i - from;
+            if k == 0 {
+                ui.p().rounded(head, 6.0, SELECTED);
+            } else if ui.row(&format!("roadbook-trip-{i}"), head, false) {
+                start_at = Some((t.index, t.departure));
+            }
             ui.text_in(&format!("{} · {} → {}", if k == 0 { "Your first trip" } else { "Then" }, if t.from.is_empty() { "?" } else { &t.from }, t.terminus), Rect::new(head.x + 10.0, head.y + 4.0, head.w - 20.0, 20.0), 13.0, Weight::Bold, TEXT, Align::Left);
             ui.text_in(&format!("{} - {} · {:.1} km · {}{}", hhmm(t.departure), hhmm(t.arrival), t.km, if t.line.is_empty() { "depot run".to_string() } else { format!("line {}", t.line) }, format!(" · {}", t.name)), Rect::new(head.x + 10.0, head.y + 24.0, head.w - 20.0, 18.0), 11.0, Weight::Regular, TEXT_DIM, Align::Left);
             y += 52.0;
@@ -883,6 +904,12 @@ fn step_roadbook(l: &mut Launcher, r: Rect) {
         }
         y - v.y
     });
+    if let Some((index, dep)) = start_at {
+        let time = (dep / 60.0).floor() as i32;
+        l.state.choice.time = time;
+        l.state.choice.start_trip = Some((line.name.clone(), tour.number.clone(), index, time));
+        l.state.touched();
+    }
     ibis_box(l, Rect::new(r.x, r.bottom() - ibis_h, r.w, ibis_h));
 }
 
