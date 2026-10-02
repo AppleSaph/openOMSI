@@ -2684,8 +2684,8 @@ impl Traffic {
         id
     }
 
-    pub fn precache_random(&mut self, world: &World, renderer: &Renderer, scene: &mut Scene) {
-        let t0 = std::time::Instant::now();
+    /// The vehicle/paint sets the random traffic draws from.
+    pub fn random_sets(&self) -> Vec<(Arc<VehicleType>, Option<usize>)> {
         let mut sets: Vec<(Arc<VehicleType>, Option<usize>)> = Vec::new();
         for (ty, ..) in &self.types {
             let n = ty.paint_schemes.len().min(AI_SCHEMES);
@@ -2696,6 +2696,12 @@ impl Traffic {
                 }
             }
         }
+        sets
+    }
+
+    pub fn precache_random(&mut self, world: &World, renderer: &Renderer, scene: &mut Scene) {
+        let t0 = std::time::Instant::now();
+        let sets = self.random_sets();
         for chunk in sets.chunks(3) {
             world.prefetch_vehicle_sets(renderer, chunk);
             for (ty, scheme) in chunk {

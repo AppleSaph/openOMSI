@@ -1440,6 +1440,7 @@ impl Schedule {
             .iter()
             .map(|(t, s)| (t.def.path.clone(), *s))
             .chain(self.fleet_reading.keys().cloned())
+            .chain(traffic.random_sets().into_iter().map(|(t, s)| (t.def.path.clone(), s)))
             .collect();
         // (OMSI_FLEET_IDLE=<s> shortens the wait, for tests)
         let idle = omsi_cfg::env::var("OMSI_FLEET_IDLE")
@@ -4104,6 +4105,10 @@ fn tt_terminus_index(hof: Option<&omsi_vehicle::hof::Hof>, terminus: &str) -> i3
 impl PlayerDuty {
     pub fn trip(&self) -> &PlannedTrip {
         &self.trips[self.trip_index]
+    }
+
+    pub fn trip_done(&self) -> bool {
+        self.done
     }
 
     /// Service/depot legs have no public line and use the HOF's
