@@ -9514,6 +9514,21 @@ _version: 2
   id: "Perbaiki"
   ms: "Baiki"
   tl: "Ayusin"
+"Copy server code":
+  de: "Servercode kopieren"
+  fr: "Copier le code du serveur"
+  ru: "Копировать код сервера"
+  es: "Copiar código del servidor"
+"Server code copied":
+  de: "Servercode kopiert"
+  fr: "Code du serveur copié"
+  ru: "Код сервера скопирован"
+  es: "Código del servidor copiado"
+"Server code":
+  de: "Servercode"
+  fr: "Code du serveur"
+  ru: "Код сервера"
+  es: "Código del servidor"
 "Object editor":
   ru: "Редактор объектов"
   de: "Objekteditor"
