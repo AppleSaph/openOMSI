@@ -1111,6 +1111,15 @@ impl ApplicationHandler for App {
                         });
                     }
                 }
+                // on foot (or the free camera) without a bus of one's own: the field of view
+                // setting and the wheel's zoom, as with one - only the player's frame applied
+                // them, so after removing the bus the wheel zoomed nothing (#837)
+                if self.player.is_none() && matches!(self.view.as_str(), "free" | "foot") {
+                    if let Some(cam) = self.camera.as_mut() {
+                        let base = if self.settings.fov >= 20.0 { self.settings.fov.min(120.0) } else { 60.0 };
+                        cam.fov_deg = (base * self.view_zoom.get(&self.view).copied().unwrap_or(1.0)).clamp(8.0, 120.0);
+                    }
+                }
                 // on foot without a bus of one's own: the vehicles one placed still stand, run
                 // their scripts and are drawn where they are (the player's frame did it)
                 if let (None, Some(r), Some(scene)) = (self.player.as_ref(), self.renderer.as_ref(), self.scene.as_mut()) {
