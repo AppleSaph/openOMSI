@@ -1002,7 +1002,6 @@ impl DriverFigure {
         let fwd = Vec3::new(h.sin(), h.cos(), 0.0);
         let mut t = Targets { grips: [Vec3::ZERO; 2], frames: [(Vec3::ZERO, Vec3::ZERO); 2], tubes: [Vec3::ZERO; 2] };
         let lever = self.lever_target(v, fwd);
-        let lever = self.lever_target(v, fwd);
         for k in 0..2 {
             let (seen, lift) = self.hands[k].seen(self.theta);
             let a = seen.to_radians();
@@ -1360,10 +1359,6 @@ fn frame_quat(d: Vec3, p: Vec3) -> glam::Quat {
 }
 
 /// The vehicle's first `[drivpos]`.
-
-fn frame_quat(d: Vec3, p: Vec3) -> glam::Quat {
-    glam::Quat::from_mat3(&glam::Mat3::from_cols(d, p, d.cross(p))).normalize()
-}
 
 fn seat_of(v: &VehicleInstance) -> Option<omsi_vehicle::cabin::PassPos> {
     cabin_of(&v.ty.def)?.driver_positions.first().cloned()
