@@ -246,6 +246,12 @@ impl ApplicationHandler for App {
                 if self.vr_nav_edit.is_some() && (!self.vr_active() || self.view != "driver") {
                     self.finish_vr_nav_edit();
                 }
+                if (!self.vr_active() || self.player.is_none())
+                    && matches!(self.list_kind, Some(crate::game_lists::ListKind::Options(_)))
+                    && self.admin_list.as_ref().is_some_and(|rows| rows.iter().any(|(_, action)| action.starts_with("vr_nav_")))
+                {
+                    self.open_list(crate::game_lists::ListKind::Options(0));
+                }
                 #[cfg(windows)]
                 self.poll_vr_cursor_position();
                 // OMSI's autosave of the last situation: every five minutes of play

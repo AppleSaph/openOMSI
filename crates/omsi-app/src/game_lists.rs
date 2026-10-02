@@ -463,6 +463,14 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
             // (the arrows and a click on a stepper only change values: no buttons)
             let step = matches!(mv, Move::Next);
             match verb {
+                "vr_nav_edit" if step && app.vr_active() && app.player.is_some() => {
+                    app.start_vr_nav_edit();
+                    return None;
+                }
+                "vr_nav_reset" if step && app.vr_active() && app.player.is_some() => {
+                    app.vr_nav_adjust("reset", 1.0);
+                    LIST_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 // (the preset, the clouds and the precipitation are picked from a drop-down: `App::chooser_pick`)
                 "weather" | "cloudkind" | "precipkind" | "metar_src" | "sel" | "preset" | "gfxprofile" | "reset" => {}
                 // the exact time: Enter starts typing it, and sets it when typed
@@ -695,6 +703,11 @@ fn slider_row(app: &App, id: &str, name: &str, desc: &str, fmt: &dyn Fn(f32) -> 
 /// The values a slider's setting runs through.
 fn steps_of(verb: &str) -> Option<Vec<f32>> {
     Some(match verb {
+        "vr_nav_x" | "vr_nav_y" | "vr_nav_z" => (-100..=100).map(|v| v as f32 * 0.02).collect(),
+        "vr_nav_width" => (12..=65).map(|v| v as f32 * 0.01).collect(),
+        "vr_nav_yaw" | "vr_nav_roll" => (-90..=90).map(|v| v as f32 * 2.0).collect(),
+        "vr_nav_tilt" => (-40..=40).map(|v| v as f32 * 2.0).collect(),
+        "vr_nav_opacity" => (6..=20).map(|v| v as f32 * 0.05).collect(),
         "speed" => SPEEDS.iter().map(|&v| v as f32).collect(),
         "traffic" => TRAFFIC.iter().map(|&v| v as f32).collect(),
         "pax" => PAX.to_vec(),
@@ -789,6 +802,9 @@ fn step_move(steps: &[f32], now: f32, mv: Move) -> f32 {
 
 /// The value of the slider setting `verb` (`arg`: the seat's axis).
 fn option_now(app: &App, verb: &str, arg: &str) -> Option<f32> {
+    if let Some(field) = verb.strip_prefix("vr_nav_") {
+        return if app.vr_active() && app.player.is_some() { app.vr_nav_profile().value(field) } else { None };
+    }
     let s = &app.settings;
     Some(match verb {
         "speed" => s.time_speed as f32,
@@ -827,6 +843,10 @@ fn option_now(app: &App, verb: &str, arg: &str) -> Option<f32> {
 
 /// Set the slider setting `verb` to `v`; the key and value to keep for the next game.
 fn option_set(app: &mut App, verb: &str, arg: &str, v: f32) -> Option<(&'static str, String)> {
+    if let Some(field) = verb.strip_prefix("vr_nav_") {
+        app.vr_nav_set(field, v);
+        return None; // Stored per bus, never in the desktop settings file.
+    }
     match verb {
         "speed" => {
             app.settings.time_speed = v as f64;
@@ -959,7 +979,7 @@ fn option_set(app: &mut App, verb: &str, arg: &str, v: f32) -> Option<(&'static 
 fn toggle_now(app: &App, id: &str) -> Option<bool> {
     let s = &app.settings;
     Some(match id {
-        "navigator" => app.navigator.as_ref().is_some_and(|n| n.enabled),
+        "navigator" => if app.vr_active() { app.vr_nav_profile().enabled } else { app.navigator.as_ref().is_some_and(|n| n.enabled) },
         "nav_ai" => app.navigator.as_ref().map_or(s.nav_ai, |n| n.show_ai),
         "shadows" => s.shadows,
         "head" => s.head_movement,
@@ -1015,6 +1035,10 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
     let bit = (on as u8).to_string();
     match id {
         "navigator" => {
+            if app.vr_active() {
+                if app.vr_nav_profile().enabled != on { app.vr_nav_adjust("enabled", 1.0); }
+                return None;
+            }
             if let Some(n) = app.navigator.as_mut() {
                 n.enabled = on;
             }
@@ -1744,7 +1768,24 @@ fn options_pages(app: &App) -> Vec<Page> {
         .into_iter()
         .flatten()
         .collect();
-    vec![("Gameplay", game), ("Graphics", graphics), ("Display and memory", display), ("Sound", sound), ("Camera", camera), ("Controls", controls), ("Interface", interface)]
+    let mut pages = vec![("Gameplay", game), ("Graphics", graphics), ("Display and memory", display), ("Sound", sound), ("Camera", camera), ("Controls", controls), ("Interface", interface)];
+    if app.vr_active() && app.player.is_some() {
+        let desc = "Navigator position (this bus)";
+        let mut rows = vec![
+            switch_row(app, "navigator", "Navigator", desc).unwrap(),
+            button("Move and rotate with the mouse...", "Open", desc, "vr_nav_edit"),
+        ];
+        for (id, label) in [("x", "Position right / left"), ("y", "Position forward / back"), ("z", "Position up / down"), ("width", "Display width")] {
+            rows.extend(slider_row(app, &format!("vr_nav_{id}"), label, desc, &cm));
+        }
+        for (id, label) in [("yaw", "Display rotation"), ("tilt", "Display tilt"), ("roll", "Display roll")] {
+            rows.extend(slider_row(app, &format!("vr_nav_{id}"), label, desc, &|v| format!("{v:.0}°")));
+        }
+        rows.extend(slider_row(app, "vr_nav_opacity", "Interface opacity", desc, &pct));
+        rows.push(button("Reset navigator position", "Reset", desc, "vr_nav_reset"));
+        pages.push(("VR", rows));
+    }
+    pages
 }
 
 fn vehicle_pages(app: &App) -> Vec<Page> {
@@ -1881,17 +1922,18 @@ fn pages_of(app: &App, kind: &ListKind) -> Option<(Vec<Page>, usize)> {
 /// Asked every frame while a window is open, and building the pages is the work of
 /// all their rows: the answer is kept for a moment.
 pub(crate) fn page_titles(app: &App, kind: &ListKind) -> Option<(Vec<String>, usize)> {
+    let vr_nav_available = app.vr_active() && app.player.is_some();
     thread_local! {
-        static TITLES: std::cell::RefCell<Option<(ListKind, std::time::Instant, (Vec<String>, usize))>> = const { std::cell::RefCell::new(None) };
+        static TITLES: std::cell::RefCell<Option<(ListKind, bool, std::time::Instant, (Vec<String>, usize))>> = const { std::cell::RefCell::new(None) };
     }
     if let Some(hit) = TITLES.with(|c| {
-        c.borrow().as_ref().filter(|(k, t, _)| k == kind && t.elapsed().as_millis() < 300).map(|(_, _, r)| r.clone())
+        c.borrow().as_ref().filter(|(k, vr, t, _)| k == kind && *vr == vr_nav_available && t.elapsed().as_millis() < 300).map(|(_, _, _, r)| r.clone())
     }) {
         return Some(hit);
     }
     let (pages, tab) = pages_of(app, kind)?;
     let r = (pages.iter().map(|p| p.0.to_string()).collect::<Vec<_>>(), tab);
-    TITLES.with(|c| *c.borrow_mut() = Some((kind.clone(), std::time::Instant::now(), r.clone())));
+    TITLES.with(|c| *c.borrow_mut() = Some((kind.clone(), vr_nav_available, std::time::Instant::now(), r.clone())));
     Some(r)
 }
 

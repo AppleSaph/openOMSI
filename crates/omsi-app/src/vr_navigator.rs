@@ -32,6 +32,26 @@ impl Default for Placement {
 }
 
 impl Placement {
+    pub(crate) fn value(&self, field: &str) -> Option<f32> {
+        Some(match field {
+            "x" => self.offset[0], "y" => self.offset[1], "z" => self.offset[2],
+            "width" => self.width, "yaw" => self.yaw, "tilt" => self.tilt,
+            "roll" => self.roll, "opacity" => self.opacity,
+            _ => return None,
+        })
+    }
+
+    fn set_value(&mut self, field: &str, value: f32) {
+        match field {
+            "x" => self.offset[0] = value, "y" => self.offset[1] = value,
+            "z" => self.offset[2] = value, "width" => self.width = value,
+            "yaw" => self.yaw = value, "tilt" => self.tilt = value,
+            "roll" => self.roll = value, "opacity" => self.opacity = value,
+            _ => return,
+        }
+        *self = self.sanitize();
+    }
+
     fn scroll(&mut self, amount: f32, resize: bool, eye: Vec3, driver: Vec3) {
         if !amount.is_finite() {
             return;
@@ -223,6 +243,9 @@ impl crate::App {
         self.chooser = None;
         self.admin_list = None;
         self.list_kind = None;
+        self.dropdown = None;
+        self.menu_drag = None;
+        self.menu_edit = None;
         self.view = "driver".into();
         self.vr_nav_edit = Some(Editing {
             moving: false,
@@ -397,6 +420,14 @@ impl crate::App {
     }
 
     pub(crate) fn vr_nav_adjust(&mut self, field: &str, direction: f32) {
+        self.update_vr_nav_profile(|p| p.adjust(field, direction));
+    }
+
+    pub(crate) fn vr_nav_set(&mut self, field: &str, value: f32) {
+        self.update_vr_nav_profile(|p| p.set_value(field, value));
+    }
+
+    fn update_vr_nav_profile(&mut self, update: impl FnOnce(&mut Placement)) {
         if !self.vr_active() {
             return;
         }
@@ -404,11 +435,7 @@ impl crate::App {
             return;
         };
         let key = bus_key(&player.vehicle.ty.def.path, &self.args.root);
-        self.vr_nav_profiles
-            .buses
-            .entry(key)
-            .or_default()
-            .adjust(field, direction);
+        update(self.vr_nav_profiles.buses.entry(key).or_default());
         if self.vr_nav_edit.is_none() {
             self.save_vr_nav_profiles();
         }
@@ -418,6 +445,23 @@ impl crate::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_values_keep_visibility_and_clamp_to_placement_limits() {
+        let mut p = Placement::default();
+        p.set_value("x", 0.42);
+        p.set_value("opacity", 0.7);
+        assert_eq!(p.value("x"), Some(0.42));
+        assert_eq!(p.value("opacity"), Some(0.7));
+        assert!(!p.enabled);
+        p.set_value("width", 20.0);
+        p.set_value("tilt", -100.0);
+        assert_eq!(p.width, 0.65);
+        assert_eq!(p.tilt, -80.0);
+        let saved = p;
+        p.set_value("unknown", 1.0);
+        assert_eq!(p, saved);
+    }
 
     #[test]
     fn navigator_translations_are_loaded_for_all_languages() {

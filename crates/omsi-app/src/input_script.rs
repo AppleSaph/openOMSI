@@ -2784,6 +2784,9 @@ impl App {
                 }
             }
             self.hover_key = None;
+            if matches!(self.list_kind, Some(crate::game_lists::ListKind::Options(_))) {
+                self.refresh_list();
+            }
             return true;
         }
         if self.vr.is_none() { return false; }
