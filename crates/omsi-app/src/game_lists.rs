@@ -1293,7 +1293,7 @@ fn world_pages(app: &App) -> Vec<Page> {
     if !client {
         let t = app.clock.time;
         let now = format!("{:02}:{:02}", ((t / 3600.0) as i64).rem_euclid(24), ((t / 60.0) as i64) % 60);
-        time.extend(switch_row(app, "time_sync", "Real-time sync", "The game's date and time follow this device's clock; the time cannot be changed while it is on"));
+        time.extend(switch_row(app, "time_sync", "Real-time sync", "The game follows your device's date and time"));
         if app.real_time_locked() {
             let (d, m) = app.clock.day_month();
             let text = format!("{:04}-{m:02}-{d:02}  {}:{:02}", app.clock.year, now, (t as i64) % 60);
@@ -1328,12 +1328,12 @@ fn world_pages(app: &App) -> Vec<Page> {
                 time.extend(slider_row(app, "speed", "Time speed", "How fast the world's clock runs", &|v| format!("x{v}")));
             }
         }
-        weather.extend(switch_row(app, "metar_sync", "METAR sync", "The weather follows the real METAR report; it cannot be changed while this is on"));
+        weather.extend(switch_row(app, "metar_sync", "METAR sync", "The weather follows the real METAR report"));
         if app.metar_locked() {
             let src = if app.settings.metar_station.is_empty() { format!("{} ({})", app.metar_station(), omsi_ui::tr("automatic")) } else { app.metar_station() };
             weather.push((row("METAR source", 'o', &src, "The airport whose METAR report the weather follows.", None), "metar_src".to_string()));
         }
-        weather.push((row("Preset", 'o', &weather_name(app), "A ready-made weather. It blends in over a few minutes; everything below adjusts it.", None), "weather".to_string()));
+        weather.push((row("Preset", 'o', &weather_name(app), "A ready-made weather", None), "weather".to_string()));
         let cloud = app.weather.as_ref().and_then(|w| cloud_index(&w.clouds.0)).map(|i| CLOUD_TYPES[i].1.to_string()).or_else(|| app.weather.as_ref().map(|w| w.clouds.0.trim().to_string())).unwrap_or_default();
         weather.push((row("Clouds", 'o', &cloud, "The kind of clouds in the sky.", None), "cloudkind".to_string()));
         weather.extend(slider_row(app, "visibility", "Visibility", "How far one can see; less is fog.", &|v| if v >= 1000.0 { format!("{:.1} km", v / 1000.0) } else { format!("{} m", v as i64) }));
