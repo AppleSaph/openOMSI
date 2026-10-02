@@ -1277,18 +1277,15 @@ impl ApplicationHandler for App {
                         }
                         if let Some(d) = self.discord.as_ref() {
                             let bus = self.player.as_ref().map(|p| {
-                                let full = format!(
-                                    "{} {}",
-                                    p.vehicle.ty.def.manufacturer, p.vehicle.ty.def.type_name
-                                )
-                                .trim()
-                                .to_string();
-                                (p.vehicle.ty.def.type_name.as_str(), full)
+                                let definition = &p.vehicle.ty.def;
+                                let short = omsi_launcher_lib::vehicle_type_label(&definition.type_name, &definition.path);
+                                let full = omsi_launcher_lib::display_bus_name(&format!("{} {short}", definition.manufacturer));
+                                (short, full)
                             });
                             let duty = self.duty.as_ref().map(|d| (d.line.as_str(), d.tour.as_str()));
                             d.set(crate::discord::Presence::for_game(
                                 self.world.as_ref().map(|w| w.global.name.as_str()),
-                                bus.as_ref().map(|(short, full)| (*short, full.as_str())),
+                                bus.as_ref().map(|(short, full)| (short.as_str(), full.as_str())),
                                 duty,
                                 self.lan.is_some(),
                             ));

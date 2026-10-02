@@ -736,6 +736,20 @@ pub struct VehicleInfo {
     pub numbers: Vec<(String, String)>,
 }
 
+/// Names in older vehicle packs use underscores as spaces.
+pub fn display_bus_name(name: &str) -> String {
+    name.replace('_', " ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The displayed vehicle type, using its file name when [friendlyname] leaves it empty.
+pub fn vehicle_type_label(type_name: &str, path: &Path) -> String {
+    if type_name.trim().is_empty() {
+        display_bus_name(&path.file_stem().unwrap_or_default().to_string_lossy())
+    } else {
+        display_bus_name(type_name)
+    }
+}
+
 /// The vehicle packs whose parts a model file names and that are installed nowhere.
 fn missing_packs_of(model: &Path) -> Vec<String> {
     let Ok(text) = omsi_cfg::vfs::read(model) else { return Vec::new() };
@@ -2445,6 +2459,15 @@ pub fn cli(cmd: &str, arg: &str) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vehicle_type_label_falls_back_to_the_file_name() {
+        let path = std::path::Path::new("Vehicles/Pack/NL_202.bus");
+        for empty in ["", "   "] {
+            assert_eq!(super::vehicle_type_label(empty, path), "NL 202");
+        }
+        assert_eq!(super::vehicle_type_label("  MAN_NL202  ", path), "MAN NL202");
+    }
+
     #[test]
     fn a_part_found_from_the_vehicle_folder_is_no_missing_pack() {
         let root = std::env::temp_dir().join(format!("openomsi-packs-{}", std::process::id()));

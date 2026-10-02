@@ -42,7 +42,11 @@ impl Presence {
         multiplayer: bool,
     ) -> Option<Self> {
         let map = map.filter(|name| !name.trim().is_empty())?;
-        let bus = bus.filter(|(short, _)| !short.trim().is_empty());
+        let bus = bus.map(|(short, full)| {
+            let short = short.trim();
+            let full = full.trim();
+            (if short.is_empty() { full } else { short }, full)
+        });
         let details = match duty {
             Some((line, _)) => format!("{} · Line {}", compact(map, 24), line.trim()),
             None => compact(map, 24),
@@ -916,6 +920,25 @@ mod tests {
             .large_text
             .contains("Thueringer Wald MB O550 Euro3 Automatik"));
         assert_eq!(compact("🚌".repeat(20).as_str(), 16).chars().count(), 16);
+    }
+
+    #[test]
+    fn a_driven_bus_with_an_empty_type_uses_its_full_name() {
+        for short in ["", "   "] {
+            let free =
+                Presence::for_game(Some("Grundorf"), Some((short, "MAN NL202")), None, false)
+                    .unwrap();
+            assert_eq!(free.state, "MAN NL202 · Free drive");
+            let duty = Presence::for_game(
+                Some("Grundorf"),
+                Some((short, "MAN NL202")),
+                Some(("76", "1")),
+                false,
+            )
+            .unwrap();
+            assert_eq!(duty.state, "MAN NL202 · Tour 1");
+            assert!(duty.large_text.ends_with("MAN NL202"));
+        }
     }
 
     #[test]

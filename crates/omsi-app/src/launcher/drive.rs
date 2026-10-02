@@ -7,6 +7,7 @@ use super::theme::*;
 use super::ui::{id_of, ButtonKind};
 use super::Launcher;
 use glam::Vec2;
+use omsi_launcher_lib::{display_bus_name, vehicle_type_label};
 use omsi_ui::paint::Align;
 use omsi_ui::{Color, Rect, Weight};
 
@@ -79,12 +80,6 @@ pub fn draw(l: &mut Launcher, area: Rect) {
     summary(l, side);
 }
 
-/// Names in older packs often use underscores as spaces. Keep the original file and
-/// friendly name for searching/tooltips, but display readable labels in the picker.
-fn display_bus_name(name: &str) -> String {
-    name.replace('_', " ").split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 /// OMSI takes the manufacturer and the complete type from [friendlyname]. The
 /// vehicle folder and rendering configuration do not define this hierarchy.
 fn build_bus_manufacturers(vehicles: &[omsi_launcher_lib::VehicleInfo], allowed: Option<&std::collections::HashSet<String>>, fresh: &std::collections::HashSet<String>) -> Vec<BusManufacturer> {
@@ -98,9 +93,7 @@ fn build_bus_manufacturers(vehicles: &[omsi_launcher_lib::VehicleInfo], allowed:
         let group = grouped.entry(key.clone()).or_insert_with(|| BusManufacturer {
             key, name: if maker.is_empty() { "Unknown manufacturer".into() } else { display_bus_name(maker) }, variants: Vec::new(),
         });
-        let type_name = if vehicle.type_name.trim().is_empty() {
-            display_bus_name(&std::path::Path::new(&vehicle.file).file_stem().unwrap_or_default().to_string_lossy())
-        } else { display_bus_name(&vehicle.type_name) };
+        let type_name = vehicle_type_label(&vehicle.type_name, std::path::Path::new(&vehicle.file));
         group.variants.push(BusVariant {
             file: vehicle.file.clone(), name: display_bus_name(&vehicle.name), variant: type_name,
             fresh: fresh.contains(&vehicle.file), installed: vehicle.installed,
@@ -1033,6 +1026,18 @@ mod vehicle_picker_tests {
             folder: folder.into(), file: format!("Vehicles/{folder}/{file}.bus"),
             description: String::new(), paints: vec!["Paint".into()], hofs: vec![],
             installed: false, missing_packs: vec![], numbers: vec![], default_paint: "Beige".into(),
+        }
+    }
+
+    #[test]
+    fn empty_vehicle_types_use_the_file_name() {
+        for empty in ["", "   "] {
+            let manufacturers = build_bus_manufacturers(
+                &[vehicle("Pack", "MAN", empty, "NL_202")],
+                None,
+                &Default::default(),
+            );
+            assert_eq!(manufacturers[0].variants[0].variant, "NL 202");
         }
     }
 
