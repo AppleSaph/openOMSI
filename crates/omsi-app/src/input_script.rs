@@ -689,14 +689,15 @@ impl App {
                 cam.yaw = (cam.yaw + dx).rem_euclid(360.0);
                 cam.pitch = (cam.pitch - dy).clamp(-89.0, 89.0);
             }
+        } else if self.view == "outside" {
+            // F3 chase orbit: full turn in yaw; pitch stops between near
+            // top-down and just below eye level so the camera never swings
+            // under the bus (see `chase_orbit_step` for the mouse gain).
+            self.look.0 = (self.look.0 + dx).rem_euclid(360.0);
+            self.look.1 = (self.look.1 - dy).clamp(-60.0, 25.0);
         } else {
-            self.look.0 += dx;
+            self.look.0 = (self.look.0 + dx).clamp(-140.0, 140.0);
             self.look.1 = (self.look.1 - dy).clamp(-85.0, 85.0);
-            if self.view != "outside" {
-                self.look.0 = self.look.0.clamp(-140.0, 140.0);
-            } else {
-                self.look.0 = self.look.0.rem_euclid(360.0);
-            }
         }
     }
 
@@ -2725,11 +2726,35 @@ fn look_deg_per_px(fov_deg: f32) -> f32 {
     fov_deg / 78.75
 }
 
+/// F3 chase orbit step from raw drag pixels: full turn in yaw at 0.35
+/// deg/px (faster than the head's 0.15), pitch between -60 (near top-down)
+/// and +25 (just below eye level) around the -15 rest pose, so the camera
+/// never swings under the bus. Pure (tested below).
+pub(crate) fn chase_orbit_step(yaw: f32, pitch: f32, dx_px: f32, dy_px: f32) -> (f32, f32) {
+    const GAIN: f32 = 0.35;
+    (
+        (yaw + dx_px * GAIN).rem_euclid(360.0),
+        (pitch - dy_px * GAIN).clamp(-60.0, 25.0),
+    )
+}
+
 #[cfg(test)]
 mod look_tests {
     #[test]
     fn a_cursor_way_of_78_75_px_turns_by_the_field_of_view() {
         assert!((78.75 * super::look_deg_per_px(60.0) - 60.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn chase_orbits_at_035_deg_px_with_stops_above_and_below() {
+        // 100 px drag down-right: +35 yaw, -35 pitch.
+        let (y, p) = super::chase_orbit_step(0.0, 0.0, 100.0, 100.0);
+        assert!((y - 35.0).abs() < 1e-4 && (p + 35.0).abs() < 1e-4, "{y} {p}");
+        // yaw wraps the full circle.
+        assert!((super::chase_orbit_step(350.0, 0.0, 100.0, 0.0).0 - 25.0).abs() < 1e-3);
+        // pitch never leaves the stops, whichever way it is dragged.
+        assert_eq!(super::chase_orbit_step(0.0, 0.0, 0.0, -1000.0).1, 25.0);
+        assert_eq!(super::chase_orbit_step(0.0, 0.0, 0.0, 1000.0).1, -60.0);
     }
 }
 
