@@ -146,6 +146,9 @@ pub(crate) struct App {
     /// speed, and at 30 km/h the edge of the screen was a third of the lock, with nowhere
     /// further to move.
     pub(crate) mouse_edge: f32,
+    /// Where the cursor steered when the right button began to look round: it goes back
+    /// there when the button is let go, so the wheel does not jump to where looking left it.
+    pub(crate) steer_cursor: Option<(f32, f32)>,
     /// The mouse's throttle and brake (eased in with the steering).
     pub(crate) mouse_pedals: (f32, f32),
     /// The speed mouse steering divides by, smoothed.

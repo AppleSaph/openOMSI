@@ -188,6 +188,7 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
             line(&mut out, tr("Volume"), format!("{:.0} %", s.volume * 100.0), "volume");
             head(&mut out, "Driving");
             line(&mut out, tr("Steering with the mouse"), on(app.mouse_drive), "mouse");
+            line(&mut out, tr("A right click ends the mouse steering"), on(s.mouse_right_off), "mouse_right");
             // (how far the wheel turns for the cursor's way across the window: 100% is OMSI's)
             line(&mut out, tr("Mouse steering sensitivity"), format!("{:.0} %", s.mouse_sens * 100.0), "mouse_sens");
             line(&mut out, tr("Keyboard brake stays on until the throttle"), on(s.brake_hold), "brake_hold");
@@ -407,17 +408,12 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
                     Some(("collision_vehicles", (s.collision_vehicles as u8).to_string()))
                 }
                 "mouse" => {
-                    app.mouse_drive = !app.mouse_drive;
-                    if !app.mouse_drive {
-                        crate::player::keep_wheel(app.player.as_mut());
-                    }
-                    #[cfg(windows)]
-                    if !app.mouse_drive {
-                        app.reset_vr_pointer();
-                    }
-                    app.mouse_steer = (app.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
-                    app.mouse_pedals = app.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
+                    app.set_mouse_drive(!app.mouse_drive);
                     None
+                }
+                "mouse_right" => {
+                    s.mouse_right_off = !s.mouse_right_off;
+                    Some(("mouse_right_off", (s.mouse_right_off as u8).to_string()))
                 }
                 "fps" => {
                     s.show_fps = !s.show_fps;
@@ -649,7 +645,7 @@ fn natural(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// Write one key of `~/.openomsi/settings.cfg` (the launcher's file; the other lines
 /// stay as they are).
-fn remember_setting(key: &str, value: &str) {
+pub(crate) fn remember_setting(key: &str, value: &str) {
     let Ok(mut v) = omsi_launcher_lib::get_settings() else { return };
     let parsed: serde_json::Value = value.parse::<f64>().map(serde_json::Value::from).unwrap_or_else(|_| serde_json::Value::from(value));
     // a switch goes in as true/false, as the launcher's own values are: written as 1 it

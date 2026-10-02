@@ -767,14 +767,26 @@ impl App {
         if !pressed {
             self.both_drag = None;
         }
-        // a right click lets go of the mouse steering, as in OMSI (#162)
-        if pressed && self.mouse_drive && self.game_menu.is_none() {
-            self.mouse_drive = false;
-            crate::player::keep_wheel(self.player.as_mut());
+        // a right click lets go of the mouse steering as in OMSI (#162) when the player
+        // wants it so; otherwise the right button looks round and the wheel and pedals stay
+        // where the mouse left them (it went off with every look round, and with every
+        // look round in the pause)
+        if pressed && self.mouse_drive && self.game_menu.is_none() && self.settings.mouse_right_off && !self.paused {
+            self.set_mouse_drive(false);
             self.service_msg = Some(("Mouse steering off".into(), 3.0));
         }
         if pressed && self.right_zooms() && self.start_both_drag() {
             return;
+        }
+        if self.mouse_drive && self.game_menu.is_none() {
+            if pressed {
+                self.steer_cursor = Some(self.cursor);
+            } else if let Some((x, y)) = self.steer_cursor.take() {
+                self.cursor = (x, y);
+                if let Some(win) = self.window.as_ref() {
+                    let _ = win.set_cursor_position(winit::dpi::PhysicalPosition::new(x as f64, y as f64));
+                }
+            }
         }
         self.mouse_look = pressed;
         // (the cursor shows it at once, not with the next look at what is under it)
@@ -1345,6 +1357,18 @@ impl App {
                         let (fwd, right) = (glam::DVec2::new(h.sin(), h.cos()), glam::DVec2::new(h.cos(), -h.sin()));
                         log::info!("input script: view {} camera in the bus ({:.2}, {:.2}, {:.2}), on foot {:?}", self.view, d.truncate().dot(right), d.truncate().dot(fwd), d.z, self.on_foot.as_ref().map(|f| f.pos));
                     }
+                }
+                // `log mouse`: the mouse steering's state
+                "log" if arg == "mouse" => {
+                    log::info!(
+                        "input script: mouse steering {} look {} menu {:?} paused {} focused {} steer {:.3}",
+                        self.mouse_drive,
+                        self.mouse_look,
+                        self.game_menu,
+                        self.paused,
+                        self.window_focused,
+                        self.mouse_steer.0
+                    );
                 }
                 "log" => {
                     let v = self
@@ -2374,17 +2398,7 @@ impl App {
                 }
             }
             "toggel_mouse_ctrl" => {
-                self.mouse_drive = !self.mouse_drive;
-                if !self.mouse_drive {
-                    crate::player::keep_wheel(self.player.as_mut());
-                }
-                #[cfg(windows)]
-                if !self.mouse_drive {
-                    self.reset_vr_pointer();
-                }
-                // (the wheel eases from where it is to the cursor for the first second)
-                self.mouse_steer = (self.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
-                self.mouse_pedals = self.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
+                self.set_mouse_drive(!self.mouse_drive);
                 let msg = if self.mouse_drive { "Mouse steering on: across steers, up is the throttle, down the brake (O turns it off)" } else { "Mouse steering off" };
                 self.service_msg = Some((msg.into(), 4.0));
             }
@@ -2441,6 +2455,24 @@ impl App {
         p.vehicle.trigger(n);
         p.vehicle.trigger(&format!("{n}_off"));
         true
+    }
+
+    /// Switch the mouse steering on or off, and remember it for the next game. Switched off,
+    /// the wheel stays where the mouse left it; switched on, it eases from where it is to
+    /// the cursor for the first second.
+    pub(crate) fn set_mouse_drive(&mut self, on: bool) {
+        self.mouse_drive = on;
+        if !on {
+            crate::player::keep_wheel(self.player.as_mut());
+            #[cfg(windows)]
+            self.reset_vr_pointer();
+        }
+        self.mouse_steer = (self.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
+        self.mouse_pedals = self.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
+        if self.settings.mouse_steering != on {
+            self.settings.mouse_steering = on;
+            crate::game_lists::remember_setting("mouse_steering", if on { "1" } else { "0" });
+        }
     }
 
     pub(crate) fn toggle_pause(&mut self) {

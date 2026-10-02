@@ -161,9 +161,7 @@ impl ApplicationHandler for App {
                     if state == ElementState::Pressed && self.game_menu.is_none()
                         && self.chooser.is_none() {
                         if self.mouse_drive {
-                            self.mouse_drive = false;
-                            crate::player::keep_wheel(self.player.as_mut());
-                            self.reset_vr_pointer();
+                            self.set_mouse_drive(false);
                             self.service_msg = Some(("Mouse steering off".into(), 3.0));
                         } else {
                             self.vr_zoom_active = !self.vr_zoom_active;
