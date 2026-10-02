@@ -555,6 +555,7 @@ mod tests {
         let g = grey.sky_horizontal;
         assert!((g.z / g.x) < 1.15, "{g:?}");
         let clear_global = lum(clear.sun * sun_at(40.0).z + clear.sky_horizontal);
+        assert!((0.2..0.5).contains(&(lum(g) / clear_global)), "{} of {}", lum(g), clear_global);
         assert!(grey.exposure > clear.exposure * 1.5);
     }
 
