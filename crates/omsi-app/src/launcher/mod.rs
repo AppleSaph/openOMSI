@@ -676,7 +676,14 @@ impl Launcher {
 
     /// Looked at while a game runs (see `awake_in_game`): drawn and answering as usual.
     fn awake(&self) -> bool {
-        self.awake_in_game && self.focused && self.state.queued_launch.is_none()
+        // (the player asked the launcher not to rest while a game runs: it is always awake)
+        !self.rests() || (self.awake_in_game && self.focused && self.state.queued_launch.is_none())
+    }
+
+    /// Whether the launcher gives the graphics device up while a game runs (#834: the setting
+    /// "The launcher rests while a game runs"; on by default).
+    fn rests(&self) -> bool {
+        self.state.settings.get("launcher_rest").and_then(|v| v.as_bool()).unwrap_or(true)
     }
 
     fn frame(&mut self, event_loop: &ActiveEventLoop) {
