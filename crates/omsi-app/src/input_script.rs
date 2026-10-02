@@ -3233,7 +3233,15 @@ impl App {
         // LiAZ MKPP - its `kw_s_plus` never fires, the script's condition is broken): the
         // next gate from the gear engaged, with the clutch down as the gates want it
         if p.vehicle.ty.program.trigger("kw_s_1").is_some() {
-            let cur = p.vehicle.var("antrieb_getr_aktugang").unwrap_or(0.0).round() as i32;
+            // the gear engaged is the variable the gates store (`antrieb_getr_gang` in the
+            // stock cars' antrieb.osc, `antrieb_getr_aktugang` in the LiAZ): read as the
+            // LiAZ's alone, every other lever was always in "0" and gear_up never got past
+            // first gear (#866)
+            let cur = gate_gear_var(&p.vehicle.ty.program)
+                .and_then(|v| p.vehicle.var(&v))
+                .or_else(|| p.vehicle.var("antrieb_getr_aktugang"))
+                .unwrap_or(0.0)
+                .round() as i32;
             let to = if up { cur + 1 } else { cur - 1 };
             let name = match to {
                 0 => "kw_s_N".to_string(),
@@ -3646,6 +3654,29 @@ fn route_char(code: KeyCode) -> Option<char> {
     (chars.next().is_none() && ch.is_ascii_alphanumeric()).then(|| ch.to_ascii_uppercase())
 }
 
+/// The variable a gear lever's gate triggers keep the gear in: `antrieb_getr_aktugang` (the
+/// LiAZ, whose gates only move the lever and leave the gear to its frame), else
+/// `antrieb_getr_gang` (the stock cars' antrieb.osc), else one named for the gear that both
+/// `kw_s_1` and `kw_s_2` set.
+fn gate_gear_var(program: &omsi_script::Program) -> Option<String> {
+    for known in ["antrieb_getr_aktugang", "antrieb_getr_gang"] {
+        if program.var(known).is_some() {
+            return Some(known.to_string());
+        }
+    }
+    let mut names: Vec<String> = program
+        .var_names()
+        .into_iter()
+        .filter(|n| n.contains("gang") || n.contains("gear"))
+        .filter(|n| {
+            let by = program.triggers_setting(n);
+            by.iter().any(|t| t == "kw_s_1") && by.iter().any(|t| t == "kw_s_2")
+        })
+        .collect();
+    names.sort_by_key(|n| (n.len(), n.clone()));
+    names.into_iter().next()
+}
+
 /// Degrees the view turns per (logical) pixel of the cursor's way while looking round:
 /// Omsi.exe's fov / 78.75 (TForm_main.Panel1MouseMove 0x82c5f8).
 fn look_deg_per_px(fov_deg: f32) -> f32 {
@@ -3662,6 +3693,29 @@ pub(crate) fn chase_orbit_step(yaw: f32, pitch: f32, dx_px: f32, dy_px: f32) -> 
         (yaw + dx_px * GAIN).rem_euclid(360.0),
         (pitch - dy_px * GAIN).clamp(-60.0, 25.0),
     )
+}
+
+#[cfg(test)]
+mod gear_lever_tests {
+    /// The stock cars' gates keep the gear in `antrieb_getr_gang` (#866).
+    #[test]
+    fn the_gear_is_read_where_the_gates_store_it() {
+        let program = |vars: &str, osc: &str| {
+            let dir = std::env::temp_dir().join(format!("omsi_gates_{}_{}", std::process::id(), vars.len()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let (vl, sc) = (dir.join("varlist.txt"), dir.join("antrieb.osc"));
+            std::fs::write(&vl, vars).unwrap();
+            std::fs::write(&sc, osc).unwrap();
+            let p = omsi_script::compile(&omsi_script::CompileInput { varlists: vec![vl], scripts: vec![sc], ..Default::default() });
+            let _ = std::fs::remove_dir_all(&dir);
+            p
+        };
+        let stock = program("antrieb_getr_gang\n", "{trigger:kw_s_1_fest}\n{trigger:kw_s_1}\n1 (S.L.antrieb_getr_gang)\n{end}\n{end}\n{trigger:kw_s_2}\n2 (S.L.antrieb_getr_gang)\n{end}\n");
+        assert_eq!(super::gate_gear_var(&stock).as_deref(), Some("antrieb_getr_gang"));
+        // a lever moved by every gate is not the gear
+        let own = program("lever_moved\nmy_gear\n", "{trigger:kw_s_1}\n1 (S.L.lever_moved)\n1 (S.L.my_gear)\n{end}\n{trigger:kw_s_2}\n1 (S.L.lever_moved)\n2 (S.L.my_gear)\n{end}\n");
+        assert_eq!(super::gate_gear_var(&own).as_deref(), Some("my_gear"));
+    }
 }
 
 #[cfg(test)]

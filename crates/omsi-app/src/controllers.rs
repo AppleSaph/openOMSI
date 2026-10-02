@@ -706,7 +706,11 @@ impl Controllers {
                         self.notice = Some(format!("{} is not set up: it steers; set up its pedals and buttons in the launcher (Controls → Game controllers)", c.name));
                     }
                     if let Some((_, v)) = c.axes.iter().find(|(k, _)| *k == 0) {
-                        let (steering, position) = wheel_steering(*v, false, 0, dz.max(0.02), self.steer_gain);
+                        // (a joystick's centre is slack, so it gets a little dead zone; a
+                        // force-feedback wheel's is not: 2 % of it held a 1080° wheel's
+                        // picture 11° behind the rim, #866)
+                        let dz_free = if c.ff_capable { dz } else { dz.max(0.02) };
+                        let (steering, position) = wheel_steering(*v, false, 0, dz_free, self.steer_gain);
                         out.steering.get_or_insert(steering);
                         if steer.is_none() {
                             steer = Some((c.name.clone(), position, c.ff));
