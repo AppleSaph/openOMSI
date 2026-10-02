@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The window and picture size when `--size` is not given.
+pub(crate) const DEFAULT_SIZE: &str = "1600x900";
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "openomsi", version = crate::startup::VERSION, about = "openOMSI")]
 pub(crate) struct Args {
@@ -17,7 +20,7 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) offscreen: Option<PathBuf>,
     /// Offscreen image size.
-    #[arg(long, default_value = "1600x900")]
+    #[arg(long, default_value = DEFAULT_SIZE)]
     pub(crate) size: String,
     /// Camera: x,y,z,yaw,pitch (world metres / degrees). Default: the map's editor camera.
     #[arg(long)]

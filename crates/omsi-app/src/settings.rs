@@ -315,6 +315,13 @@ impl Settings {
         Some(PathBuf::from(home).join(".openomsi").join("settings.cfg"))
     }
 
+    /// The window's size in pixels the settings ask for (`resolution=WxH`, #904); None:
+    /// automatic (fitted to the screen, the whole of it under gamescope).
+    pub fn resolution() -> Option<(u32, u32)> {
+        let text = std::fs::read_to_string(Self::path()?).ok()?;
+        resolution_of(&text)
+    }
+
     pub fn load() -> Settings {
         let Some(p) = Self::path() else { return Settings::default() };
         let mut text = std::fs::read_to_string(&p).unwrap_or_default();
@@ -733,4 +740,21 @@ pub fn save_mirror_offsets(bus: &std::path::Path, offsets: &[[f32; 2]]) {
         let _ = std::fs::create_dir_all(d);
     }
     let _ = std::fs::write(&p, lines.join("\n") + "\n");
+}
+/// `resolution=` (or `window_size=`) of a settings text, the last one written.
+pub fn resolution_of(text: &str) -> Option<(u32, u32)> {
+    let v = text.lines().filter_map(|l| l.split_once('=')).filter(|(k, _)| matches!(k.trim().to_ascii_lowercase().as_str(), "resolution" | "window_size")).last()?.1;
+    let (w, h) = omsi_launcher_lib::resolution_text(v).split_once('x').map(|(w, h)| (w.parse().ok(), h.parse().ok()))?;
+    Some((w?, h?))
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    #[test]
+    fn the_window_size_is_read_from_the_settings() {
+        assert_eq!(super::resolution_of("msaa=4\nresolution=1280x800\n"), Some((1280, 800)));
+        assert_eq!(super::resolution_of("resolution=auto\n"), None);
+        assert_eq!(super::resolution_of("window_size=1920*1080\n"), Some((1920, 1080)));
+        assert_eq!(super::resolution_of("vsync=1\n"), None);
+    }
 }

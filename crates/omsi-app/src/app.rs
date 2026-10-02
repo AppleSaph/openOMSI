@@ -360,7 +360,23 @@ impl App {
         if let Some(at) = at {
             attrs = attrs.with_position(at);
         }
-        if self.settings.fullscreen {
+        // the window size of the settings (pixels, #904) unless --size names one
+        let resolution = crate::settings::Settings::resolution().filter(|_| self.args.size == crate::cli::DEFAULT_SIZE);
+        if let Some((w, h)) = resolution {
+            attrs = attrs.with_inner_size(winit::dpi::PhysicalSize::new(w, h));
+            if let Some(m) = event_loop.primary_monitor().or_else(|| event_loop.available_monitors().next()) {
+                let (sw, sh) = (m.size().width as i32, m.size().height as i32);
+                attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(m.position().x + ((sw - w as i32) / 2).max(0), m.position().y + ((sh - h as i32) * 2 / 5).max(0)));
+            }
+        }
+        // (a Steam Deck's Gaming Mode: gamescope shows one window over the whole screen and
+        // scales whatever size it has to it - a window fitted to 90 % of the screen came out
+        // blurred and letterboxed. There the window is the screen's, unless a size is set)
+        let gamescope = resolution.is_none() && crate::startup::under_gamescope();
+        if gamescope {
+            log::info!("gamescope (Steam Deck Gaming Mode): the window fills the screen");
+        }
+        if self.settings.fullscreen || gamescope {
             attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         }
         // OMSI_BACKGROUND=1: a test window that does not take the keyboard from whoever is

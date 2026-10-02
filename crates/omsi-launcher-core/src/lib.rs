@@ -1602,6 +1602,15 @@ pub fn get_settings() -> Result<Value> {
 // (`navigator_opacity`: the opacity was the navigator's before it was the whole interface's)
 const SETTING_ALIASES: &[(&str, &str)] = &[("af", "anisotropy"), ("ambient_occlusion", "ssao"), ("fractal", "detail_textures"), ("lang", "language"), ("texmemlimit", "texture_memory"), ("navigator_opacity", "ui_opacity"), ("gear_buttons_hold", "momentary_gears")];
 
+/// A window size as the settings keep it: "WxH" in pixels (each 320..16384), else "auto".
+pub fn resolution_text(v: &str) -> String {
+    let v = v.trim().to_ascii_lowercase().replace(' ', "").replace(['*', '×'], "x");
+    match v.split_once('x').map(|(w, h)| (w.trim().parse::<u32>(), h.trim().parse::<u32>())) {
+        Some((Ok(w), Ok(h))) if (320..=16384).contains(&w) && (240..=16384).contains(&h) => format!("{w}x{h}"),
+        _ => "auto".into(),
+    }
+}
+
 fn setting_key(k: &str) -> String {
     let k = k.trim().to_ascii_lowercase();
     SETTING_ALIASES.iter().find(|(alias, _)| *alias == k).map(|(_, key)| key.to_string()).unwrap_or(k)
@@ -1689,6 +1698,8 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
     v["discord_app_id"] = json!("");
     // the launcher gives the graphics card up while a game runs (off: it stays drawn)
     v["launcher_rest"] = json!(true);
+    // the window's size in pixels, "auto" to fit the screen (#904)
+    v["resolution"] = json!("auto");
     // OMSI's own options
     for (k, d) in [("maintenance", json!(0)), ("ai_unsched_factor", json!(100)), ("ai_max_scheduled", json!(0)), ("ai_max_parked", json!(0)), ("use_real_time", json!(false)), ("use_real_date", json!(false)), ("use_real_year", json!(false)), ("collision_vehicles", json!(true)), ("collision_objects", json!(true)), ("collision_pedestrians", json!(true)), ("head_movement", json!(true)), ("driverview_smooth", json!(true)), ("hands_in_cab", json!(false)), ("alt_view", json!(true))] {
         v[k] = d;
@@ -1736,6 +1747,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
             "ctrl_off" => v[&k] = json!(val),
             "metar_station" => v[&k] = json!(val.chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>().to_ascii_uppercase()),
             "discord_app_id" => v[&k] = json!(val),
+            "resolution" | "window_size" => v["resolution"] = json!(resolution_text(val)),
             "graphics_api" => v[&k] = json!(match val.to_ascii_lowercase().as_str() { "vulkan" => "vulkan", "dx12" => "dx12", "gl" => "gl", _ => "auto" }),
             "shadow_casters" => v[&k] = json!(if val.eq_ignore_ascii_case("omsi") { "omsi" } else { "all" }),
             "ctrl_deadzone" => v[&k] = json!(val.parse::<f64>().unwrap_or(0.0).clamp(0.0, 0.3)),
@@ -2071,6 +2083,7 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
     // what the page does not manage (keys of newer games, hand-written ones) stays as it
     // was in the file; other spellings of the keys just written go
     let mut text = text;
+    text.push_str(&format!("resolution={}\n", resolution_text(v.get("resolution").and_then(|x| x.as_str()).unwrap_or("auto"))));
     text.push_str(&format!("mirror_refresh={}\n", mirror_refresh(v.get("mirror_refresh").and_then(|x| x.as_str()).unwrap_or("full"))));
     text.push_str(&format!("look_sens={}\nsteer_look_angle={}\nsteer_look_response={}\ntime_sync={}\nmetar_sync={}\nmetar_station={}\n", f("look_sens", 1.0).clamp(0.1, 2.0), f("steer_look_angle", 30.0).clamp(0.0, 60.0), f("steer_look_response", 0.25).clamp(0.05, 1.0), b("time_sync", false), b("metar_sync", false), v.get("metar_station").and_then(|x| x.as_str()).unwrap_or("").chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>().to_ascii_uppercase()));
     let written: Vec<String> = text.lines().filter_map(|l| l.split_once('=')).map(|(k, _)| k.trim().to_ascii_lowercase()).collect();
@@ -2600,6 +2613,12 @@ mod tests {
             v[k] = x;
         }
         let back = settings_from_text(Some(&settings_to_text(&v, None)));
+        let mut r = settings_from_text(None);
+        assert_eq!(r["resolution"], json!("auto"));
+        r["resolution"] = json!("1280x800");
+        assert_eq!(settings_from_text(Some(&settings_to_text(&r, None)))["resolution"], json!("1280x800"));
+        assert_eq!(resolution_text("1920 x 1080"), "1920x1080");
+        assert_eq!(resolution_text("huge"), "auto");
         for k in ["steer_look", "discord_status", "launcher_rest", "camera_collision", "brake_hold", "auto_clutch", "momentary_gears", "ff_enabled", "head_tracking", "collision_objects", "led_mips", "led_glow", "look_sens", "blinker_cancel", "pedal_brake", "seat_y"] {
             assert_eq!(back[k], v[k], "{k}");
         }

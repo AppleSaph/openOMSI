@@ -252,6 +252,9 @@ fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&Value::Null)
 }
 
+/// The window sizes the settings offer (`resolution`).
+pub(crate) const RESOLUTIONS: &[(&str, &str)] = &[("auto", "Automatic"), ("1280x720", "1280 x 720"), ("1280x800", "1280 x 800 (Steam Deck)"), ("1366x768", "1366 x 768"), ("1600x900", "1600 x 900"), ("1920x1080", "1920 x 1080"), ("1920x1200", "1920 x 1200"), ("2560x1440", "2560 x 1440"), ("3840x2160", "3840 x 2160")];
+
 fn sel_setting(ui: &mut Ui, s: &mut Value, dirty: &mut f32, name: &str, r: Rect, label: &str, key: &str, options: &[(&str, &str)]) {
     ui.label(Rect::new(r.x, r.y, r.w * 0.45, r.h), label);
     let cur = match get(s, key) {
@@ -568,6 +571,9 @@ fn graphics_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, cols: [Rect; 2]) ->
     let left = c.used();
     let mut c = Col::new(ui, cols[1], "Display");
     toggle_setting(ui, s, dirty, c.row(), "Fullscreen", "fullscreen");
+    // (the window's own size in pixels; a Steam Deck's Gaming Mode and other odd screens,
+    // #904 - "Automatic" fits the screen, and fills it under gamescope)
+    sel_setting(ui, s, dirty, "s-res", c.row(), "Window size", "resolution", RESOLUTIONS);
     toggle_setting(ui, s, dirty, c.row(), "V-sync", "vsync");
     sel_setting(ui, s, dirty, "s-fps", c.row(), "Frame limit", "max_fps", &[("0", "Screen refresh rate"), ("30", "30 fps"), ("45", "45 fps"), ("60", "60 fps"), ("120", "120 fps"), ("144", "144 fps"), ("1000", "Unlimited")]);
     // (a Mac has Metal only; elsewhere a driver's Vulkan that misbehaves, or a card without
@@ -2290,7 +2296,7 @@ mod settings_tests {
         let mut graphics = vec![
             "s-gp-sel", "s-gp-load", "s-gp-del", "s-gp-name", "s-gp-save",
             "s-preset", "s-graphics", "s-msaa", "s-scale", "s-af", "s-shadow", "set-ssao", "set-shadows", "s-casters", "set-detail_textures", "s-led", "s-led-mip", "set-shadow_blobs", "set-reflections", "set-clouds",
-            "set-fullscreen", "set-vsync", "s-fps", "s-view", "s-maxobj", "s-minobj", "s-mirror", "s-mirror-refresh", "s-texmem", "set-texture_compression",
+            "set-fullscreen", "s-res", "set-vsync", "s-fps", "s-view", "s-maxobj", "s-minobj", "s-mirror", "s-mirror-refresh", "s-texmem", "set-texture_compression",
         ];
         if !cfg!(target_os = "macos") {
             graphics.push("s-api");
