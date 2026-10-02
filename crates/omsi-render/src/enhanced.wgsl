@@ -233,6 +233,9 @@ fn lamp_light(p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, sf: Surface, thin: bool)
 // most of the sky, and the dashboard lies right under the windscreen.
 const CAB_AMBIENT: f32 = 1.15;
 
+// How far the puddle threshold drops with the wetness: see the puddle mask in `shade_enhanced`.
+const PUDDLE_SPREAD: f32 = 0.45;
+
 /// The mip level a pixel's footprint asks for, in levels of the texture whose size is
 /// `texels` (the usual `log2` of the larger derivative, held at 0 and up). An LED panel is
 /// sampled with this, held at `enh.led.y` (`Lighting::led_mips`): 0 point-samples it, which
@@ -566,11 +569,12 @@ fn shade_enhanced(in: FsIn, puddle_weight: ptr<function, vec2<f32>>, capture: bo
         // half of the wheel splashes in `puddles.rs`.
         let pattern_xy = world_pattern_xy(in.world);
         let pn = vnoise_f(pattern_xy, 0.22, vec2<f32>(17.3, -9.1)) * 0.65 + vnoise_f(pattern_xy, 0.9, vec2<f32>(-4.0, 8.0)) * 0.35;
-        // OMSI's own rule: the puddle map is alpha-tested against
-        // 255 * (1 - wetness), so the pools spread from the lowest spots as the road soaks
-        // and a road that is wet through is one sheet of water (the old threshold never
-        // passed three quarters of the carriageway, leaving dry islands in a downpour).
-        let puddle_t = 1.0 - wet_road * 1.15;
+        // The pools spread from the lowest spots as the road soaks, but they stay pools: a
+        // road wet through has standing water on about a third of it (PUDDLE_SPREAD, the
+        // same in `omsi-app/src/puddles.rs`) and wet asphalt between. With the whole
+        // carriageway one sheet of water, the scene reflections turned every road into a
+        // mirror with no surface left to see.
+        let puddle_t = 1.0 - wet_road * PUDDLE_SPREAD;
         puddle = smoothstep(puddle_t - 0.06, puddle_t + 0.06, pn) * smoothstep(0.75, 0.95, n.z);
         if (puddle > 0.001) {
             // A drop is a few millimetres across and its ring dies away within a hand's
