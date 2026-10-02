@@ -86,20 +86,20 @@ const FINGER_HALF: f32 = 0.009;
 /// The most the seat is slid forward to bring the hands to the wheel (m); what is still
 /// missing is made up by leaning forward. Slid further, the driver sat in front of his seat
 /// (the interior mirror showed the seat empty).
-const SLIDE_MAX: f32 = 0.20;
+const SLIDE_MAX: f32 = 0.12;
 /// A driver at a wheel does not hold his arms out straight: the seat is slid up (and then the
 /// body leaned forward by at most `LEAN_COMFORT` degrees) until the wrist is this fraction of
 /// the arm's length from the shoulder (1 is an arm stretched out, 0.9 an elbow bent about 130
 /// degrees); `UPPER_ARM` is the shoulder-to-elbow length (m) of the stock figure.
-const ARM_RATIO: f32 = 0.93;
-const LEAN_COMFORT: f32 = 8.0;
+const ARM_RATIO: f32 = 0.97;
+const LEAN_COMFORT: f32 = 3.0;
 const UPPER_ARM: f32 = 0.30;
 /// A hand lets go this many seconds ahead of the moment it would leave its range (at most
 /// `LEAD_MAX` degrees ahead), and a lone hand (the other at the gear lever) goes this far
 /// (degrees) past its range before it lets go.
 const REGRIP_LEAD: f32 = 0.08;
 const LEAD_MAX: f32 = 14.0;
-const ONE_HAND_OVER: f32 = 8.0;
+const ONE_HAND_OVER: f32 = 12.0;
 /// What a gear lever measures (m, the diagonal of its parts' box): less is a button or a
 /// switch (an automatic's selector), more a panel.
 const LEVER_MIN_SIZE: f32 = 0.09;
@@ -966,7 +966,8 @@ impl DriverFigure {
                 // (at a tenth of a second a hand flew back to its hold); a lone hand is
                 // quicker, the wheel has none else
                 let dur = (0.38 + (to - from).abs() / 350.0) / (1.0 + self.rate.abs() / 2000.0);
-                let dur = if lone { (dur * 0.70).max(0.22) } else { dur.max(0.32) };
+                // Both hands on wheel normally; lone hand when one is at lever (rare/brief)
+                let dur = dur.max(0.32);
                 self.hands[k] = Hand { on_rim: self.hands[k].on_rim, mv: Some(Regrip::new(from, to, dur, self.rate)) };
             } else {
                 // the rim slides through the hand past its range: the hand goes on with it
@@ -1151,7 +1152,7 @@ impl DriverFigure {
                 continue;
             }
             let side = if k == 1 { 1.0 } else { -1.0 };
-            let shoulder = hip + up * 0.38 + Vec3::new(0.10 * side, 0.0, 0.0);
+            let shoulder = hip + up * 0.50 + Vec3::new(0.12 * side, 0.0, 0.0);
             let arm = UPPER_ARM + (wrist[k] - elbow[k]).length();
             let excess = (wrist[k] - shoulder).length() - ARM_RATIO * arm;
             if excess.is_finite() {
@@ -1341,7 +1342,7 @@ impl DriverFigure {
         let h = self.heading.to_radians();
         let right = Vec3::new(h.cos(), -h.sin(), 0.0);
         let side = if sh.hand == 1 { 1.0 } else { -1.0 };
-        let shoulder = self.hip + fwd * self.slide + Vec3::Z * 0.38 + right * (0.10 * side);
+        let shoulder = self.hip + fwd * self.slide + Vec3::Z * 0.50 + right * (0.12 * side);
         // The palm lies on the knob's end; the fingers point the way the arm comes from.
         let palm = -axis;
         let reach = knob - shoulder;
