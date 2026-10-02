@@ -1046,9 +1046,27 @@ pub fn controls(l: &mut Launcher, area: Rect) {
             shown.sort_by_key(|(_, label, _, _)| !label.starts_with("VR:"));
         }
         let capturing = l.pages.capturing;
+        // what the row's buttons asked: (entry, cleared) a key cleared or to be pressed,
+        // `more` another key for an entry's action (#854)
         let mut clicked: Option<(usize, bool)> = None;
+        let mut more: Option<usize> = None;
         let time = l.ui.time;
-        l.ui.scroll_area(&format!("kb-{sec}"), Rect::new(inner.x - 6.0, inner.y + 62.0, inner.w + 12.0, inner.h - 62.0), &mut |ui, v| {
+        // a name the list does not have (a bus's own trigger a mod's readme gives a key, the
+        // Urbanway's `ASS_toggle`): added to the list as a key of its own, as an [entry]
+        // added to OMSI's keyboard.cfg by hand is (#854)
+        let new_action = filter.trim();
+        let mut list_top = inner.y + 62.0;
+        if shown.is_empty() && new_action.len() > 1 && new_action.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            if l.ui.button(&format!("kb-add-{sec}"), Rect::new(inner.x, list_top, inner.w, 36.0), &format!("Add \"{new_action}\" and give it a key"), Some("add"), ButtonKind::Normal) {
+                if let Some(a) = l.state.keybindings.get_mut(*key).and_then(|a| a.as_array_mut()) {
+                    a.push(json!({ "action": new_action, "scan_code": 0, "modifier": 0 }));
+                    l.pages.capturing = Some((sec, a.len() - 1));
+                }
+                // (the filter stays: the new row is the one it shows, waiting for its key)
+            }
+            list_top += 44.0;
+        }
+        l.ui.scroll_area(&format!("kb-{sec}"), Rect::new(inner.x - 6.0, list_top, inner.w + 12.0, inner.bottom() - list_top), &mut |ui, v| {
             let rh = 40.0;
             for (row, (i, label, keyn, clash)) in shown.iter().enumerate() {
                 let rr = Rect::new(v.x + 6.0, v.y + row as f32 * rh, v.w - 16.0, rh - 4.0);
@@ -1056,7 +1074,16 @@ pub fn controls(l: &mut Launcher, area: Rect) {
                     continue;
                 }
                 ui.p().rounded(rr, 8.0, Color::WHITE.alpha(0.03));
-                ui.text_in(label, Rect::new(rr.x + 12.0, rr.y, rr.w - 210.0, rr.h), 13.0, Weight::Medium, TEXT_SOFT, Align::Left);
+                ui.text_in(label, Rect::new(rr.x + 12.0, rr.y, rr.w - 240.0, rr.h), 13.0, Weight::Medium, TEXT_SOFT, Align::Left);
+                // another key for the same action (OMSI's file may give one action
+                // several [entry]s; several actions on one key need nothing more than the
+                // same key pressed for each)
+                let pr = Rect::new(rr.right() - 222.0, rr.y + 5.0, 26.0, rr.h - 10.0);
+                let (hp, _, cp) = ui.interact(id_of(&format!("kb-{sec}-{i}-more")), pr);
+                ui.icon("add", pr.center(), 16.0, if hp { ACCENT } else { TEXT_FAINT });
+                if cp {
+                    more = Some(*i);
+                }
                 let kr = Rect::new(rr.right() - 190.0, rr.y + 5.0, 150.0, rr.h - 10.0);
                 let waiting = capturing == Some((sec, *i));
                 let id = id_of(&format!("kb-{sec}-{i}"));
@@ -1090,6 +1117,16 @@ pub fn controls(l: &mut Launcher, area: Rect) {
             }
             Some((i, false)) => l.pages.capturing = Some((sec, i)),
             None => {}
+        }
+        if let Some(i) = more {
+            if let Some(a) = l.state.keybindings.get_mut(*key).and_then(|a| a.as_array_mut()) {
+                if let Some(b) = a.get(i).cloned() {
+                    // (the held bit is the action's: it goes with it)
+                    let hold = b.get("modifier").and_then(|x| x.as_i64()).unwrap_or(0) & omsi_content::input::KEY_HOLD as i64;
+                    a.insert(i + 1, json!({ "action": b.get("action").cloned().unwrap_or(json!("")), "scan_code": 0, "modifier": hold }));
+                    l.pages.capturing = Some((sec, i + 1));
+                }
+            }
         }
     }
     if !l.state.keybindings_error.is_empty() {
