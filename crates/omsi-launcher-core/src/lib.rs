@@ -2144,6 +2144,73 @@ pub fn last_situation(map: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// A situation saved on a map to continue from: the file, its `[name]`, when it was written
+/// (seconds since 1970).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedSituation {
+    pub file: PathBuf,
+    pub name: String,
+    pub saved: u64,
+}
+
+/// What can be continued on `map` (#341): the last situation, then the save slots the game
+/// writes into `Saves` of the map's folder in the content folder, the newest first.
+pub fn saved_situations(map: &str) -> Vec<SavedSituation> {
+    let mut out: Vec<SavedSituation> = last_situation(map).map(|f| SavedSituation { saved: modified_secs(&f), file: f, name: "Last situation".into() }).into_iter().collect();
+    if let (Some(dir), Some(c)) = (Path::new(&map.replace('\\', "/")).parent(), content_dir()) {
+        out.extend(save_slots(&c.join(dir).join("Saves")));
+    }
+    out
+}
+
+fn modified_secs(p: &Path) -> u64 {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// The situations in a map's `Saves` folder, the newest first, by their `[name]`.
+fn save_slots(dir: &Path) -> Vec<SavedSituation> {
+    let mut slots: Vec<SavedSituation> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("osn")))
+        .map(|f| {
+            // (the `[name]` line alone: the lists ask again every few seconds, and a whole
+            // situation holds every variable of every vehicle; the game writes them in
+            // UTF-16, as OMSI does)
+            let text = std::fs::read(&f).map(|b| omsi_cfg::decode_text(&b[..b.len().min(8192) & !1])).unwrap_or_default();
+            let mut lines = text.lines().map(str::trim);
+            let name = lines.by_ref().find(|l| l.eq_ignore_ascii_case("[name]")).and_then(|_| lines.next()).map(str::to_string).filter(|n| !n.is_empty()).unwrap_or_else(|| f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+            SavedSituation { saved: modified_secs(&f), file: f, name }
+        })
+        .collect();
+    slots.sort_by(|a, b| b.saved.cmp(&a.saved).then_with(|| b.name.cmp(&a.name)));
+    slots
+}
+
+#[cfg(test)]
+mod save_slot_tests {
+    use super::*;
+
+    #[test]
+    fn the_slots_of_a_map_are_listed_by_their_names() {
+        let dir = std::env::temp_dir().join(format!("omsi_slots_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // as the game writes them: UTF-16 with its mark
+        let utf16 = |t: &str| [0xFFu8, 0xFE].into_iter().chain(t.encode_utf16().flat_map(|u| u.to_le_bytes())).collect::<Vec<u8>>();
+        std::fs::write(dir.join("Slot 1.osn"), utf16("\r\n[name]\r\nSlot 1: SD202, 09:00\r\n[description]\r\nx\r\n")).unwrap();
+        std::fs::write(dir.join("Slot 2.osn"), utf16("[name]\r\nSlot 2: NG272, 10:30\r\n")).unwrap();
+        std::fs::write(dir.join("notes.txt"), "not a situation").unwrap();
+        let mut names: Vec<String> = save_slots(&dir).into_iter().map(|s| s.name).collect();
+        names.sort();
+        assert_eq!(names, ["Slot 1: SD202, 09:00", "Slot 2: NG272, 10:30"]);
+        assert!(save_slots(&dir.join("none")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// The command line a duty becomes.
 pub fn duty_args(d: &Duty) -> Result<Vec<String>> {
     let root = root()?;

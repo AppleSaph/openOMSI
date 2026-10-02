@@ -2352,6 +2352,10 @@ impl App {
                 self.quick_save();
                 self.close_game_menu();
             }
+            "saveslot" => {
+                self.save_slot();
+                self.close_game_menu();
+            }
             "shot" => {
                 self.close_game_menu();
                 self.take_screenshot();
@@ -3230,6 +3234,43 @@ impl App {
         }
     }
 
+    /// A save of its own (#341): the situation into the next free `Saves/Slot <n>.osn` of
+    /// the map's folder in the content folder - none is ever overwritten. The launcher
+    /// offers them, with the last situation, to continue from.
+    pub(crate) fn save_slot(&mut self) {
+        let (Some(w), Some(cam)) = (self.world.as_ref(), self.camera.as_ref()) else { return };
+        let Some(dir) = crate::startup::content_dir().and_then(|base| {
+            std::path::Path::new(&self.args.map.replace('\\', "/")).parent().map(|d| base.join(d).join(SAVES))
+        }) else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(&dir);
+        let Some(n) = (1..10_000).find(|n| !dir.join(format!("Slot {n}.osn")).exists()) else { return };
+        let out = dir.join(format!("Slot {n}.osn"));
+        let bus = self.player.as_ref().map(|p| {
+            let d = &p.vehicle.ty.def;
+            if d.type_name.trim().is_empty() { d.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default() } else { d.type_name.trim().to_string() }
+        });
+        let t = self.clock.time;
+        let what = match (bus, self.duty.as_ref()) {
+            (Some(b), Some(d)) => format!("{b}, line {} / {}", d.line.trim(), d.tour.trim()),
+            (Some(b), None) => b,
+            (None, _) => "on foot".to_string(),
+        };
+        let name = format!("Slot {n}: {what}, {:02}:{:02}", (t / 3600.0) as i32 % 24, ((t % 3600.0) / 60.0) as i32);
+        let sit = build_situation(&self.args, w, &self.clock, self.args.weather.as_deref(), self.player.as_ref(), &self.placed, cam, self.duty.as_ref(), &name);
+        match sit.save(&out) {
+            Ok(()) => {
+                log::info!("saved situation {} ({} vehicles)", out.display(), sit.vehicles.len());
+                self.service_msg = Some((format!("Saved as slot {n}: the launcher continues from it"), 4.0));
+            }
+            Err(e) => {
+                log::warn!("saving {}: {e}", out.display());
+                self.service_msg = Some((format!("Could not save: {e}"), 5.0));
+            }
+        }
+    }
+
     /// OMSI's `screenshot`: the picture into the content folder's `Screenshots`, named by the
     /// date and time.
     pub(crate) fn take_screenshot(&mut self) {
@@ -3608,9 +3649,13 @@ impl crate::App {
     }
 }
 
+/// The folder of a map's save slots, inside the map's folder in the content folder (the
+/// launcher reads it as well: `omsi_launcher_lib::saved_situations`).
+pub(crate) const SAVES: &str = "Saves";
+
 /// The lines of the game menu: (what, label). What can be set is on the pages behind
 /// "Options", "Vehicle options" and "World options" (see `game_lists`).
-pub(crate) const GAME_MENU: [(&str, &str); 11] = [
+pub(crate) const GAME_MENU: [(&str, &str); 12] = [
     ("resume", "Resume"),
     ("options", "Options..."),
     ("vehicle", "Vehicle options..."),
@@ -3619,6 +3664,7 @@ pub(crate) const GAME_MENU: [(&str, &str); 11] = [
     ("duty", "Line and tour..."),
     ("endduty", "End the tour"),
     ("save", "Save the situation"),
+    ("saveslot", "Save to a new slot"),
     ("load", "Load the quicksave"),
     ("shot", "Screenshot"),
     ("quit", "End the session"),
