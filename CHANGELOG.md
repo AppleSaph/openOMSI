@@ -4,6 +4,50 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.1.960 - 2026-10-02
+
+### Passengers
+- A stop is no longer a destination of itself or of a stop of the same name, so riders on
+  circular lines no longer board and get straight off again. [#795](https://github.com/openOMSI-Project/openOMSI/issues/795)
+- Riders know their stop by its timetable name as well as by its map label, so they get off
+  at intermediate stops where the two names differ, not only at the terminus. [#773](https://github.com/openOMSI-Project/openOMSI/issues/773) [#748](https://github.com/openOMSI-Project/openOMSI/issues/748) [#736](https://github.com/openOMSI-Project/openOMSI/issues/736)
+
+### Traffic and maps
+- Cars drive into the end of a road at speed and are taken off there, as in OMSI, instead of
+  stopping before it one by one; released AI buses no longer queue at the map's end. [#765](https://github.com/openOMSI-Project/openOMSI/issues/765) [#598](https://github.com/openOMSI-Project/openOMSI/issues/598)
+- The player's bus holds up only traffic on its own level, not cars on a bridge above it. [#753](https://github.com/openOMSI-Project/openOMSI/issues/753)
+- A depot file's stop list belongs to the trip written before it, as Omsi.exe reads it; a trip
+  without a list no longer gives every later route another trip's stops in the IBIS. [#667](https://github.com/openOMSI-Project/openOMSI/issues/667)
+- On a Chinese, Japanese or Korean Windows, Russian HOF and map text keeps its stop names. [#785](https://github.com/openOMSI-Project/openOMSI/issues/785)
+- A continued situation resumes at the trip of the tour it was saved on, with the rest of the
+  tour, and is saved again with that trip. [#653](https://github.com/openOMSI-Project/openOMSI/issues/653)
+
+### Vehicles and input
+- Door hit sounds with a `doorSpeed` volume curve are heard: a triggered sound reads its
+  volume curves as they stand when the trigger fires (player's and AI buses). [#676](https://github.com/openOMSI-Project/openOMSI/issues/676)
+- A switch let go with the right button held stays where it is. [#769](https://github.com/openOMSI-Project/openOMSI/issues/769)
+- On foot, the switches of an articulated bus's rear section are in reach by that section. [#715](https://github.com/openOMSI-Project/openOMSI/issues/715)
+- A key bound in both [game] and [vehicles] works the vehicle too. [#745](https://github.com/openOMSI-Project/openOMSI/issues/745)
+- The brake stays on when the mouse steering is switched off. [#517](https://github.com/openOMSI-Project/openOMSI/issues/517) [#760](https://github.com/openOMSI-Project/openOMSI/issues/760)
+- The built-in view keys step aside for keys the player bound themselves. [#701](https://github.com/openOMSI-Project/openOMSI/issues/701)
+- The city map (Shift+M) and the navigator (Shift+N) open on foot. [#705](https://github.com/openOMSI-Project/openOMSI/issues/705)
+- The ticket desk camera keeps where it was turned (Home recentres only when unbound). [#733](https://github.com/openOMSI-Project/openOMSI/issues/733)
+- Head tracking stays on when its UDP port is taken by opentrack. [#775](https://github.com/openOMSI-Project/openOMSI/issues/775)
+
+### Launcher
+- Dropdown lists scroll by dragging their bar, and sliding an open list no longer scrolls the
+  page behind it. [#794](https://github.com/openOMSI-Project/openOMSI/issues/794) [#774](https://github.com/openOMSI-Project/openOMSI/issues/774)
+- Typing into an open dropdown filters it (entry points, buses, fleet numbers). [#747](https://github.com/openOMSI-Project/openOMSI/issues/747)
+- The game's and the launcher's windows fit the screen and open in its middle. [#771](https://github.com/openOMSI-Project/openOMSI/issues/771)
+
+### Graphics
+- No rain inside the rear section of articulated buses. [#777](https://github.com/openOMSI-Project/openOMSI/issues/777)
+- Clouds no longer vanish when a sky texture cannot be read; 24-bit bitfield BMPs load. [#749](https://github.com/openOMSI-Project/openOMSI/issues/749)
+- The VR headset shows the Enhanced graphics. [#784](https://github.com/openOMSI-Project/openOMSI/issues/784)
+- Fleet numbers and plates no longer glow in the dark; only text with a light or night map
+  does. [#698](https://github.com/openOMSI-Project/openOMSI/issues/698)
+- The loading screen remakes a Vulkan swapchain that no longer fits instead of freezing. [#776](https://github.com/openOMSI-Project/openOMSI/issues/776)
+
 ## 0.1.929 - 2026-10-02
 
 ### VR
