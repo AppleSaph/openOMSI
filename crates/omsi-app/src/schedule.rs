@@ -2956,10 +2956,13 @@ fn line_code_from_text(line: &str, route_code: Option<u32>) -> Option<u32> {
     if let (Some(_), Some(code)) = (line_prefix(line), route_code) {
         return Some(code / 100 * 100 + line_suffix_from_text(line));
     }
+    // (four and five digit lines too: the IBIS takes line x 100 + suffix whatever the
+    // line's length, and a São Paulo 7110 fell back to its route code, whose last two
+    // digits - the route, not a suffix - came out on the display as a letter, #459)
     match line_number_digits(line)
         .parse::<u32>()
         .ok()
-        .filter(|n| *n > 0 && *n < 1000)
+        .filter(|n| *n > 0 && *n < 100_000)
     {
         Some(number) => Some(number * 100 + line_suffix_from_text(line)),
         None => route_code,
@@ -4582,6 +4585,16 @@ mod tests {
         assert_eq!(line_suffix_from_text("5S"), 23);
         assert_eq!(line_code_from_text("5E", Some(505)), Some(510));
         assert_eq!(line_code_from_text("5", Some(505)), Some(500));
+    }
+
+    /// #459: a four-digit line keeps its number and gets no suffix from its route code.
+    #[test]
+    fn four_digit_line_keeps_its_number() {
+        assert_eq!(line_code_from_text("7110", Some(711001)), Some(711000));
+        assert_eq!(line_code_from_text("7110", None), Some(711000));
+        assert_eq!(line_code_from_text("7110-10", Some(711010)), Some(711000));
+        assert_eq!(line_code_from_text("1234E", None), Some(123410));
+        assert_eq!(complex_line_text("7110", 7110.0), "7110  ");
     }
 
     /// #546: a letter-first line had no number, and the DL05's matrix blanks line 0.

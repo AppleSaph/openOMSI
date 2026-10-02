@@ -1382,8 +1382,9 @@ pub struct Humans {
     ai_visits: HashMap<u64, (i64, f64)>,
     /// When each bus last had a door open (the passengers' clock).
     last_door_open: HashMap<BusId, f64>,
-    /// Timetable buses to keep at their stop for a few seconds more (for the traffic).
-    holds: Vec<(u64, f32)>,
+    /// Timetable buses to keep at their stop for a few seconds more (for the traffic): the
+    /// bus, the stop it must be serving for it (none: any), the seconds.
+    holds: Vec<(u64, Option<i64>, f32)>,
     /// Door requests for the timetable buses' scripts: (bus, entries, exits).
     ai_requests: Vec<(u64, Vec<bool>, Vec<bool>)>,
     pub tickets: Option<Arc<omsi_content::tickets::TicketPack>>,
@@ -3365,7 +3366,7 @@ impl Humans {
     }
 
     /// Timetable buses to hold at their stop, for the traffic.
-    pub fn take_holds(&mut self) -> Vec<(u64, f32)> {
+    pub fn take_holds(&mut self) -> Vec<(u64, Option<i64>, f32)> {
         std::mem::take(&mut self.holds)
     }
 
@@ -3859,10 +3860,26 @@ impl Humans {
                         p.end_node(net, &leg)
                             .and_then(|n| p.next_leg(net, n, leg.lane, pick))
                     })
-                    .unwrap_or(Leg {
-                        lane: leg.lane,
-                        a: leg.b,
-                        b: leg.a,
+                    .unwrap_or_else(|| {
+                        // a leg that ends in the middle of its path (the point of a stop
+                        // somebody got off at) goes on to one of its ends: turned round
+                        // there, the people off a bus were sent back to the same point
+                        // every frame and milled round each other at the stop (#913)
+                        let lane_len = net.lanes[leg.lane].length();
+                        if leg.b > 0.05 && leg.b < lane_len - 0.05 {
+                            let fwd = if leg.len() > 0.05 { leg.b > leg.a } else { pick % 2 == 0 };
+                            Leg {
+                                lane: leg.lane,
+                                a: leg.b,
+                                b: if fwd { lane_len } else { 0.0 },
+                            }
+                        } else {
+                            Leg {
+                                lane: leg.lane,
+                                a: leg.b,
+                                b: leg.a,
+                            }
+                        }
                     });
                 walk.legs.push(next);
                 if walk.leg > 6 {

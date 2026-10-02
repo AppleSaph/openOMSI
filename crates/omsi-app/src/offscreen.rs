@@ -633,7 +633,14 @@ pub(crate) fn run_offscreen(
                         // (a gate of a manual gearbox comes with the automatic clutch, as
                         // from the keys)
                         player.clutch_for_gate(name);
-                        player.vehicle.trigger(name);
+                        // (the game's door actions, `door_<n>` / `doors_all`, as a button
+                        // pressed and let go)
+                        if crate::player::door_action(name).is_some() {
+                            player.action(name, true);
+                            player.action(name, false);
+                        } else {
+                            player.vehicle.trigger(name);
+                        }
                     }
                 }
                 player.axes.clutch = (player.axes.clutch - 0.7 * dt).max(0.0);
@@ -963,8 +970,8 @@ pub(crate) fn run_offscreen(
             if let Some(t) = traffic.as_mut() {
                 let (alighting, waiting) = h.stop_wishes();
                 t.set_stop_wishes(alighting, waiting);
-                for (id, secs) in h.take_holds() {
-                    t.hold_boarding(id, secs);
+                for (id, stop, secs) in h.take_holds() {
+                    t.hold_boarding(id, stop, secs);
                 }
                 for (id, entry, exit) in h.take_ai_requests() {
                     t.set_pax_requests(id, &entry, &exit);
@@ -2793,6 +2800,20 @@ pub(crate) fn run_offscreen(
     let t0 = Instant::now();
     if let Some(p) = player_ref.as_ref() {
         render_mirrors(&mut renderer, &mut scene, &world, p, &lighting, None, None);
+    }
+    if let Some(p) = player_ref.as_ref() {
+        let mode = omsi_cfg::env::var("OMSI_MIRROR_HUD").ok().and_then(|v| v.parse::<u8>().ok()).unwrap_or(settings.mirror_hud);
+        let mut panels = crate::mirror_hud::MirrorHud::default();
+        panels.set_aspects(world.mirror_aspect.lock().clone());
+        panels.sync(p, mode);
+        if mode != 0 {
+            panels.enabled = true;
+            if panels.panels.is_empty() {
+                panels.toggle_edit(p);
+                panels.toggle_edit(p);
+            }
+        }
+        panels.push(&mut scene, &world, w as f32, h as f32, (0.0, 0.0));
     }
     let pixels = renderer.render_to_image(&mut scene, w, h, &camera, &lighting)?;
     log::info!(

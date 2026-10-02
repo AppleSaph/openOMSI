@@ -6462,10 +6462,10 @@ impl Traffic {
         self.stop_wishes = Some((alighting, waiting));
     }
 
-    pub fn hold_boarding(&mut self, id: u64, secs: f32) {
+    pub fn hold_boarding(&mut self, id: u64, stop: Option<i64>, secs: f32) {
         if let Some(c) = self.cars.iter_mut().find(|c| c.id == id) {
             if let Some(b) = c.bus.as_mut() {
-                b.hold(secs);
+                b.hold(stop, secs);
             }
         }
     }

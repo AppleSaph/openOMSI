@@ -293,6 +293,12 @@ pub const VERSION: &str = env!("OPENOMSI_VERSION");
 /// middle: 1600 x 900 points at 125 % are 2000 x 1125 pixels, wider than a 1920 screen, and
 /// the window opened partly off it (#771). Where the system tells no screen (Wayland), the
 /// size as asked and no place.
+/// The game runs inside gamescope (a Steam Deck's Gaming Mode, a Steam Machine): one
+/// window, shown over the whole screen.
+pub(crate) fn under_gamescope() -> bool {
+    std::env::var_os("GAMESCOPE_WAYLAND_DISPLAY").is_some() || std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_ascii_lowercase().contains("gamescope"))
+}
+
 pub(crate) fn fit_window(event_loop: &winit::event_loop::ActiveEventLoop, w: f64, h: f64) -> (winit::dpi::LogicalSize<f64>, Option<winit::dpi::PhysicalPosition<i32>>) {
     let Some(m) = event_loop.primary_monitor().or_else(|| event_loop.available_monitors().next()) else {
         return (winit::dpi::LogicalSize::new(w, h), None);

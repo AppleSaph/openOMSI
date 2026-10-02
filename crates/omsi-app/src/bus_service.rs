@@ -204,9 +204,12 @@ impl BusService {
         }
     }
 
-    /// Somebody is still at the doors: keep them open for `secs` more.
-    pub fn hold(&mut self, secs: f32) {
-        if self.phase == Phase::Boarding {
+    /// Somebody is still at the doors: keep them open for `secs` more - for somebody
+    /// coming from stop `stop` only while the bus serves that stop (Omsi.exe 0x7d9f1d: the
+    /// person's stop is the bus's), not a stop it stands next to.
+    pub fn hold(&mut self, stop: Option<i64>, secs: f32) {
+        let here = stop.is_none_or(|s| self.stops.front().is_some_and(|f| f.id == s));
+        if self.phase == Phase::Boarding && here {
             self.boarding = self.boarding.max(secs);
         }
     }
@@ -473,6 +476,23 @@ pub fn stop_shift(ty: &omsi_sim::VehicleType, rail: bool) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Somebody coming from another stop than the one the bus serves does not keep it there
+    /// (#767); somebody on the way out does, wherever.
+    #[test]
+    fn a_hold_counts_at_the_stop_served() {
+        let stop = Stop { ri: 0, s: 0.0, bay: 0.0, depart: 0.0, id: 42, side: 0.0 };
+        let mut s = BusService::new(vec![stop]);
+        s.phase = Phase::Boarding;
+        s.boarding = 0.0;
+        s.hold(Some(41), 2.5);
+        assert_eq!(s.boarding, 0.0);
+        s.hold(Some(42), 2.5);
+        assert_eq!(s.boarding, 2.5);
+        s.boarding = 0.0;
+        s.hold(None, 2.5);
+        assert_eq!(s.boarding, 2.5);
+    }
 
     #[test]
     fn standing_time() {

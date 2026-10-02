@@ -12,7 +12,7 @@ pub(crate) mod drive;
 pub mod mobile;
 pub mod phone;
 mod multiplayer;
-mod pages;
+pub(crate) mod pages;
 mod showroom;
 mod state;
 #[cfg_attr(not(target_os = "android"), allow(unused_imports))]

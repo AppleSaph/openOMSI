@@ -1600,7 +1600,16 @@ pub fn get_settings() -> Result<Value> {
 /// dropped when the file is written again (the game takes the last line of them, so a kept
 /// `texmemlimit=` would undo the page's `texture_memory=`).
 // (`navigator_opacity`: the opacity was the navigator's before it was the whole interface's)
-const SETTING_ALIASES: &[(&str, &str)] = &[("af", "anisotropy"), ("ambient_occlusion", "ssao"), ("fractal", "detail_textures"), ("lang", "language"), ("texmemlimit", "texture_memory"), ("navigator_opacity", "ui_opacity")];
+const SETTING_ALIASES: &[(&str, &str)] = &[("af", "anisotropy"), ("ambient_occlusion", "ssao"), ("fractal", "detail_textures"), ("lang", "language"), ("texmemlimit", "texture_memory"), ("navigator_opacity", "ui_opacity"), ("gear_buttons_hold", "momentary_gears")];
+
+/// A window size as the settings keep it: "WxH" in pixels (each 320..16384), else "auto".
+pub fn resolution_text(v: &str) -> String {
+    let v = v.trim().to_ascii_lowercase().replace(' ', "").replace(['*', '×'], "x");
+    match v.split_once('x').map(|(w, h)| (w.trim().parse::<u32>(), h.trim().parse::<u32>())) {
+        Some((Ok(w), Ok(h))) if (320..=16384).contains(&w) && (240..=16384).contains(&h) => format!("{w}x{h}"),
+        _ => "auto".into(),
+    }
+}
 
 fn setting_key(k: &str) -> String {
     let k = k.trim().to_ascii_lowercase();
@@ -1689,12 +1698,14 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
     v["discord_app_id"] = json!("");
     // the launcher gives the graphics card up while a game runs (off: it stays drawn)
     v["launcher_rest"] = json!(true);
+    // the window's size in pixels, "auto" to fit the screen (#904)
+    v["resolution"] = json!("auto");
     // OMSI's own options
     for (k, d) in [("maintenance", json!(0)), ("ai_unsched_factor", json!(100)), ("ai_max_scheduled", json!(0)), ("ai_max_parked", json!(0)), ("use_real_time", json!(false)), ("use_real_date", json!(false)), ("use_real_year", json!(false)), ("collision_vehicles", json!(true)), ("collision_objects", json!(true)), ("collision_pedestrians", json!(true)), ("head_movement", json!(true)), ("driverview_smooth", json!(true)), ("hands_in_cab", json!(false)), ("alt_view", json!(true))] {
         v[k] = d;
     }
     // openOMSI's own: what passengers say, OMSI's route arrows, getting up from the seat
-    for (k, d) in [("pax_voices", json!("all")), ("nav_arrows", json!(false)), ("nav_ai", json!(true)), ("get_up", json!(false)), ("time_speed", json!("1")), ("time_sync", json!(false)), ("metar_sync", json!(false)), ("metar_station", json!("")), ("machine_translation", json!(false)), ("shadow_casters", json!("all")), ("shadow_blobs", json!(true)), ("reflections", json!(true)), ("mouse_sens", json!(1.0)), ("graphics_api", json!("auto")), ("ctrl_off", json!("")), ("steering_linear", json!(false)), ("old_steering", json!(false)), ("red_steer_spd", json!(false)), ("ff_invert", json!(false)), ("ff_enabled", json!(true)), ("brake_hold", json!(true)), ("auto_clutch", json!(true)), ("wheel_range", json!(900.0)), ("wheel_lock", json!(0.0)), ("fov", json!(0.0)), ("camera_collision", json!(true)), ("steer_look", json!(false)), ("pedal_throttle", json!(1.0)), ("pedal_brake", json!(1.0)), ("seat_x", json!(0.0)), ("seat_y", json!(0.0)), ("seat_z", json!(0.0)), ("head_tracking", json!(false)), ("led_glow", json!(6)), ("led_mips", json!(1.3)), ("ui_scale", json!(1.0)), ("ui_scale_window", json!(true)), ("notes", json!(true)), ("mouse_steering", json!(false)), ("mouse_right_off", json!(false)), ("blinker_cancel", json!(true))] {
+    for (k, d) in [("pax_voices", json!("all")), ("nav_arrows", json!(false)), ("nav_ai", json!(true)), ("get_up", json!(false)), ("time_speed", json!("1")), ("time_sync", json!(false)), ("metar_sync", json!(false)), ("metar_station", json!("")), ("machine_translation", json!(false)), ("shadow_casters", json!("all")), ("shadow_blobs", json!(true)), ("reflections", json!(true)), ("mouse_sens", json!(1.0)), ("graphics_api", json!("auto")), ("ctrl_off", json!("")), ("steering_linear", json!(false)), ("old_steering", json!(false)), ("red_steer_spd", json!(false)), ("ff_invert", json!(false)), ("ff_enabled", json!(true)), ("brake_hold", json!(true)), ("auto_clutch", json!(true)), ("momentary_gears", json!(false)), ("wheel_range", json!(900.0)), ("wheel_lock", json!(0.0)), ("fov", json!(0.0)), ("camera_collision", json!(true)), ("steer_look", json!(false)), ("pedal_throttle", json!(1.0)), ("pedal_brake", json!(1.0)), ("seat_x", json!(0.0)), ("seat_y", json!(0.0)), ("seat_z", json!(0.0)), ("head_tracking", json!(false)), ("led_glow", json!(6)), ("led_mips", json!(1.3)), ("ui_scale", json!(1.0)), ("ui_scale_window", json!(true)), ("notes", json!(true)), ("mouse_steering", json!(false)), ("mouse_right_off", json!(false)), ("blinker_cancel", json!(true))] {
         v[k] = d;
     }
     v["steer_look_angle"] = json!(30.0);
@@ -1736,6 +1747,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
             "ctrl_off" => v[&k] = json!(val),
             "metar_station" => v[&k] = json!(val.chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>().to_ascii_uppercase()),
             "discord_app_id" => v[&k] = json!(val),
+            "resolution" | "window_size" => v["resolution"] = json!(resolution_text(val)),
             "graphics_api" => v[&k] = json!(match val.to_ascii_lowercase().as_str() { "vulkan" => "vulkan", "dx12" => "dx12", "gl" => "gl", _ => "auto" }),
             "shadow_casters" => v[&k] = json!(if val.eq_ignore_ascii_case("omsi") { "omsi" } else { "all" }),
             "ctrl_deadzone" => v[&k] = json!(val.parse::<f64>().unwrap_or(0.0).clamp(0.0, 0.3)),
@@ -1754,7 +1766,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
             "steer_look_response" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.05, 1.0)).unwrap_or(0.25)),
             "pedal_throttle" | "pedal_brake" => v[&k] = json!(val.parse::<f64>().map(|x| x.clamp(0.25, 4.0)).unwrap_or(1.0)),
             "seat_x" | "seat_y" | "seat_z" => v[&k] = json!(val.parse::<f64>().map(|x| x.clamp(-1.5, 1.5)).unwrap_or(0.0)),
-            "nav_arrows" | "nav_ai" | "get_up" | "time_sync" | "metar_sync" | "ui_scale_window" | "notes" | "machine_translation" | "update_check" | "update_auto" | "reflections" | "steering_linear" | "old_steering" | "red_steer_spd" | "ff_invert" | "ff_enabled" | "brake_hold" | "auto_clutch" | "mouse_steering" | "mouse_right_off" | "blinker_cancel" => v[&k] = json!(b(val)),
+            "nav_arrows" | "nav_ai" | "get_up" | "time_sync" | "metar_sync" | "ui_scale_window" | "notes" | "machine_translation" | "update_check" | "update_auto" | "reflections" | "steering_linear" | "old_steering" | "red_steer_spd" | "ff_invert" | "ff_enabled" | "brake_hold" | "auto_clutch" | "momentary_gears" | "mouse_steering" | "mouse_right_off" | "blinker_cancel" => v[&k] = json!(b(val)),
             "time_speed" => v[&k] = json!(val.trim_start_matches(['x', 'X']).parse::<f64>().map(|x| x.clamp(1.0, 30.0)).map(|x| if x.fract() == 0.0 { format!("{}", x as i64) } else { x.to_string() }).unwrap_or_else(|_| "1".into())),
             "language" => v[&k] = json!(language_code(val)),
             "graphics" | "renderer" => graphics = Some(graphics_mode(val)),
@@ -2007,7 +2019,7 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
         b("alt_view", true),
     );
     let text = format!(
-        "{text}pax_voices={}\nnav_arrows={}\nnav_ai={}\nget_up={}\ntime_speed={}\nmachine_translation={}\nshadow_casters={}\nshadow_blobs={}\nctrl_deadzone={}\nupdate_check={}\nupdate_auto={}\nreflections={}\nmouse_sens={}\ngraphics_api={}\nctrl_off={}\nsteering_linear={}\nold_steering={}\nred_steer_spd={}\nff_invert={}\nwheel_range={}\nwheel_lock={}\nfov={}\ncamera_collision={}\npedal_throttle={}\npedal_brake={}\nseat_x={}\nseat_y={}\nseat_z={}\nsteer_look={}\nhead_tracking={}\nff_enabled={}\nbrake_hold={}\nauto_clutch={}\nled_glow={}\nled_mips={}\nui_scale={}\nui_scale_window={}\nnotes={}\nmouse_steering={}\nmouse_right_off={}\nblinker_cancel={}\n",
+        "{text}pax_voices={}\nnav_arrows={}\nnav_ai={}\nget_up={}\ntime_speed={}\nmachine_translation={}\nshadow_casters={}\nshadow_blobs={}\nctrl_deadzone={}\nupdate_check={}\nupdate_auto={}\nreflections={}\nmouse_sens={}\ngraphics_api={}\nctrl_off={}\nsteering_linear={}\nold_steering={}\nred_steer_spd={}\nff_invert={}\nwheel_range={}\nwheel_lock={}\nfov={}\ncamera_collision={}\npedal_throttle={}\npedal_brake={}\nseat_x={}\nseat_y={}\nseat_z={}\nsteer_look={}\nhead_tracking={}\nff_enabled={}\nbrake_hold={}\nauto_clutch={}\nmomentary_gears={}\nled_glow={}\nled_mips={}\nui_scale={}\nui_scale_window={}\nnotes={}\nmouse_steering={}\nmouse_right_off={}\nblinker_cancel={}\n",
         match v.get("pax_voices").and_then(|x| x.as_str()).unwrap_or("all") {
             "tickets" => "tickets",
             "off" => "off",
@@ -2054,6 +2066,7 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
         b("ff_enabled", true),
         b("brake_hold", true),
         b("auto_clutch", true),
+        b("momentary_gears", false),
         n("led_glow", 6).clamp(0, 15),
         f("led_mips", 1.3).clamp(0.0, 4.0),
         f("ui_scale", 1.0).clamp(0.5, 2.0),
@@ -2070,6 +2083,7 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
     // what the page does not manage (keys of newer games, hand-written ones) stays as it
     // was in the file; other spellings of the keys just written go
     let mut text = text;
+    text.push_str(&format!("resolution={}\n", resolution_text(v.get("resolution").and_then(|x| x.as_str()).unwrap_or("auto"))));
     text.push_str(&format!("mirror_refresh={}\n", mirror_refresh(v.get("mirror_refresh").and_then(|x| x.as_str()).unwrap_or("full"))));
     text.push_str(&format!("look_sens={}\nsteer_look_angle={}\nsteer_look_response={}\ntime_sync={}\nmetar_sync={}\nmetar_station={}\n", f("look_sens", 1.0).clamp(0.1, 2.0), f("steer_look_angle", 30.0).clamp(0.0, 60.0), f("steer_look_response", 0.25).clamp(0.05, 1.0), b("time_sync", false), b("metar_sync", false), v.get("metar_station").and_then(|x| x.as_str()).unwrap_or("").chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>().to_ascii_uppercase()));
     let written: Vec<String> = text.lines().filter_map(|l| l.split_once('=')).map(|(k, _)| k.trim().to_ascii_lowercase()).collect();
@@ -2595,11 +2609,17 @@ mod tests {
     fn the_games_options_survive_a_save() {
         // what the pause menu's Options change, read back as they were set
         let mut v = settings_from_text(None);
-        for (k, x) in [("steer_look", json!(true)), ("discord_status", json!(false)), ("launcher_rest", json!(false)), ("camera_collision", json!(false)), ("brake_hold", json!(false)), ("auto_clutch", json!(false)), ("ff_enabled", json!(false)), ("head_tracking", json!(true)), ("collision_objects", json!(false)), ("led_mips", json!(2.5)), ("led_glow", json!(11)), ("look_sens", json!(0.5)), ("blinker_cancel", json!(false)), ("pedal_brake", json!(1.5)), ("seat_y", json!(-0.1))] {
+        for (k, x) in [("steer_look", json!(true)), ("discord_status", json!(false)), ("launcher_rest", json!(false)), ("camera_collision", json!(false)), ("brake_hold", json!(false)), ("auto_clutch", json!(false)), ("momentary_gears", json!(true)), ("ff_enabled", json!(false)), ("head_tracking", json!(true)), ("collision_objects", json!(false)), ("led_mips", json!(2.5)), ("led_glow", json!(11)), ("look_sens", json!(0.5)), ("blinker_cancel", json!(false)), ("pedal_brake", json!(1.5)), ("seat_y", json!(-0.1))] {
             v[k] = x;
         }
         let back = settings_from_text(Some(&settings_to_text(&v, None)));
-        for k in ["steer_look", "discord_status", "launcher_rest", "camera_collision", "brake_hold", "auto_clutch", "ff_enabled", "head_tracking", "collision_objects", "led_mips", "led_glow", "look_sens", "blinker_cancel", "pedal_brake", "seat_y"] {
+        let mut r = settings_from_text(None);
+        assert_eq!(r["resolution"], json!("auto"));
+        r["resolution"] = json!("1280x800");
+        assert_eq!(settings_from_text(Some(&settings_to_text(&r, None)))["resolution"], json!("1280x800"));
+        assert_eq!(resolution_text("1920 x 1080"), "1920x1080");
+        assert_eq!(resolution_text("huge"), "auto");
+        for k in ["steer_look", "discord_status", "launcher_rest", "camera_collision", "brake_hold", "auto_clutch", "momentary_gears", "ff_enabled", "head_tracking", "collision_objects", "led_mips", "led_glow", "look_sens", "blinker_cancel", "pedal_brake", "seat_y"] {
             assert_eq!(back[k], v[k], "{k}");
         }
         assert!(settings_from_text(None)["discord_status"].as_bool().unwrap());

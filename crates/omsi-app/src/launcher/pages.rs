@@ -252,6 +252,9 @@ fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&Value::Null)
 }
 
+/// The window sizes the settings offer (`resolution`).
+pub(crate) const RESOLUTIONS: &[(&str, &str)] = &[("auto", "Automatic"), ("1280x720", "1280 x 720"), ("1280x800", "1280 x 800 (Steam Deck)"), ("1366x768", "1366 x 768"), ("1600x900", "1600 x 900"), ("1920x1080", "1920 x 1080"), ("1920x1200", "1920 x 1200"), ("2560x1440", "2560 x 1440"), ("3840x2160", "3840 x 2160")];
+
 fn sel_setting(ui: &mut Ui, s: &mut Value, dirty: &mut f32, name: &str, r: Rect, label: &str, key: &str, options: &[(&str, &str)]) {
     ui.label(Rect::new(r.x, r.y, r.w * 0.45, r.h), label);
     let cur = match get(s, key) {
@@ -568,6 +571,9 @@ fn graphics_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, cols: [Rect; 2]) ->
     let left = c.used();
     let mut c = Col::new(ui, cols[1], "Display");
     toggle_setting(ui, s, dirty, c.row(), "Fullscreen", "fullscreen");
+    // (the window's own size in pixels; a Steam Deck's Gaming Mode and other odd screens,
+    // #904 - "Automatic" fits the screen, and fills it under gamescope)
+    sel_setting(ui, s, dirty, "s-res", c.row(), "Window size", "resolution", RESOLUTIONS);
     toggle_setting(ui, s, dirty, c.row(), "V-sync", "vsync");
     sel_setting(ui, s, dirty, "s-fps", c.row(), "Frame limit", "max_fps", &[("0", "Screen refresh rate"), ("30", "30 fps"), ("45", "45 fps"), ("60", "60 fps"), ("120", "120 fps"), ("144", "144 fps"), ("1000", "Unlimited")]);
     // (a Mac has Metal only; elsewhere a driver's Vulkan that misbehaves, or a card without
@@ -852,6 +858,12 @@ fn general_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, c
         let on = cur == name;
         ui.p().rounded(cell, 3.0, if on { ACCENT } else { Color::WHITE.alpha(if h { 0.2 } else { 0.08 }) });
     }
+    // (dragged somewhere else in the game, #940: that place, until a corner is chosen)
+    if let Some(a) = crate::navigator::placed_at(&cur) {
+        let (cw, ch) = (screen.w * 0.5 - 10.0, screen.h * 0.5 - 10.0);
+        let cell = Rect::new(screen.x + 5.0 + a[0] * (screen.w - 10.0 - cw), screen.y + 5.0 + a[1] * (screen.h - 10.0 - ch), cw, ch);
+        ui.p().rounded(cell, 3.0, ACCENT);
+    }
     c.y += 74.0;
     let left = c.used();
     // updates from the GitHub releases (see `crate::updater`)
@@ -922,6 +934,8 @@ fn known_action(a: &str) -> Option<String> {
         ("blinker_right_toggle", "Indicator right (toggle)"),
         ("blinker_off", "Indicators off"),
         ("blinker_warn_toggle", "Hazard lights"),
+        ("gear_up", "Gear up (manual gearbox)"),
+        ("gear_down", "Gear down (manual gearbox)"),
         ("horn", "Horn"),
         ("kw_scheinwerfer_toggle", "Headlights"),
         ("kw_standlicht_toggle", "Sidelights"),
@@ -935,6 +949,11 @@ fn known_action(a: &str) -> Option<String> {
         ("bus_doorfront0", "Front door (leaf 1)"),
         ("bus_doorfront1", "Front door (leaf 2)"),
         ("bus_dooraft", "Release rear doors"),
+        ("door_1", "Door 1 (front), any bus"),
+        ("door_2", "Door 2, any bus"),
+        ("door_3", "Door 3, any bus"),
+        ("door_4", "Door 4, any bus"),
+        ("doors_all", "All doors, any bus"),
         ("ticket_give", "Sell the requested ticket"),
         ("view_set_driver", "Driver's view"),
         ("view_set_passenger", "Passenger view"),
@@ -1304,7 +1323,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
         }
     }
     // the game's own view actions (looking around while held, the cameras, the views)
-    for a in ["gear_up", "gear_down", "view_look_left", "view_look_right", "view_look_up", "view_look_down", "view_reset_direction", "view_interiorcam_plus", "view_interiorcam_minus", "view_toggle_viewpoint", "view_set_driver", "view_set_passenger", "view_set_outside", "sim_pause", "screenshot", "quicksave", "toggel_mouse_ctrl", "toggel_ctrler"] {
+    for a in ["doors_all", "door_4", "door_3", "door_2", "door_1", "gear_up", "gear_down", "view_look_left", "view_look_right", "view_look_up", "view_look_down", "view_reset_direction", "view_interiorcam_plus", "view_interiorcam_minus", "view_toggle_viewpoint", "view_set_driver", "view_set_passenger", "view_set_outside", "sim_pause", "screenshot", "quicksave", "toggel_mouse_ctrl", "toggel_ctrler"] {
         if !actions.iter().any(|x| x == a) {
             actions.insert(1, a.to_string());
         }
@@ -2277,7 +2296,7 @@ mod settings_tests {
         let mut graphics = vec![
             "s-gp-sel", "s-gp-load", "s-gp-del", "s-gp-name", "s-gp-save",
             "s-preset", "s-graphics", "s-msaa", "s-scale", "s-af", "s-shadow", "set-ssao", "set-shadows", "s-casters", "set-detail_textures", "s-led", "s-led-mip", "set-shadow_blobs", "set-reflections", "set-clouds",
-            "set-fullscreen", "set-vsync", "s-fps", "s-view", "s-maxobj", "s-minobj", "s-mirror", "s-mirror-refresh", "s-texmem", "set-texture_compression",
+            "set-fullscreen", "s-res", "set-vsync", "s-fps", "s-view", "s-maxobj", "s-minobj", "s-mirror", "s-mirror-refresh", "s-texmem", "set-texture_compression",
         ];
         if !cfg!(target_os = "macos") {
             graphics.push("s-api");

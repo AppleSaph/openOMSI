@@ -24,6 +24,13 @@ pub(crate) fn find_hof(
             return Some(std::sync::Arc::new(h));
         }
     }
+    // the bus's own depot of the same place under another name (its Spandau 2019 where the
+    // map's buses use Spandau 1986: its displays know its own codes and pictures, #896)
+    let wanted: Vec<&str> = names.iter().map(|n| n.as_str()).collect();
+    if let Some(h) = omsi_vehicle::hof::depot_like(dir, &wanted) {
+        log::info!("using depot file {} (the bus's own of {wanted:?})", h.path.display());
+        return Some(std::sync::Arc::new(h));
+    }
     for n in &names {
         if let Some(h) = omsi_vehicle::hof::depot_anywhere(n) {
             log::info!(
@@ -33,6 +40,13 @@ pub(crate) fn find_hof(
             );
             return Some(std::sync::Arc::new(h));
         }
+    }
+    // a map without a depot of its own: the bus's depot named like the map (#896)
+    let folder = world.map_dir.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    let hints = [world.global.name.as_str(), world.global.friendly_name.as_str(), folder.as_str()];
+    if let Some(h) = omsi_vehicle::hof::depot_like(dir, &hints) {
+        log::info!("using depot file {} (named like the map)", h.path.display());
+        return Some(std::sync::Arc::new(h));
     }
     let p = omsi_vehicle::hof::depot_files(dir).into_iter().next()?;
     log::info!("using depot file {}", p.display());
