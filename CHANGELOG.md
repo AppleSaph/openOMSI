@@ -4,6 +4,52 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.1.850 - 2026-10-02
+
+### Launcher
+- Big installations no longer show an empty launcher for minutes: the maps appear at once and
+  the buses as their folders are read, several folders at a time, with the progress in the
+  status line. A poll no longer starts the whole reading over while it runs (the growing cache
+  changed the content stamp, so a large OMSI folder never finished loading). Depot files are
+  read for their name only, and the search of every vehicle folder for a map's depot runs
+  once per session.
+
+### Driving
+- Mouse steering stays on: the right button looks round without ending it (also in the
+  pause), the cursor goes back to where it steered when the button is let go, and the game
+  starts with mouse steering as it was left, the cursor in the middle of the window. OMSI's
+  right click that ends mouse steering is a setting (Esc > Options > "A right click ends the
+  mouse steering").
+- Door keys of UK buses: on Road-hog123's door script (London Citybus 400, Enviro400s and
+  many more) `bus_doorfront0` opens the door and `bus_doorfront1` closes it, and Shift+1 fired
+  both, so the door never opened. Door key triggers are now tried on the scripts first, and
+  when they undo each other only the one that moves the door is fired.
+
+### People
+- Passengers get off double-deckers again: the once-a-second check for another open door ran
+  every frame, pulling everyone back to the nearest path point, so people coming down from
+  the upper deck stayed on the stairs. People held up face to face in the aisle or on the
+  stairs squeeze past after two seconds.
+- Passengers paying at the cash desk hold the money out to the tray instead of raising the
+  arm up and forward: the arm's reach had its lift and turn the wrong way round.
+- Standing passengers keep their feet on the ground at every tick, as Omsi.exe does, not at
+  the height of their waiting place's object.
+- A long bus station stop gets the waiting places of objects along its whole length.
+
+### Performance
+- People standing still are not skinned and uploaded again every frame (2.6 ms to 0.15 ms a
+  frame for thirty waiting passengers).
+- `OMSI_PROFILE` lists triangles per asset and names the stages of slow people ticks;
+  `OMSI_SKIP_PIPE` and `OMSI_CHECK_GROUND` help measuring.
+
+### Merged pull requests
+- #661 shadow blobs lie on the road under a bridge, and can be switched off; #696 glass found
+  by its texture's alpha (lamps show through every bus's windows); #699 "The game is running"
+  in the launcher; #704, #687, #689, #675, #688 dedicated server administration (`tell`,
+  weather by name, `/status` weather and clock, `POST /admin` from the same machine - refused
+  through a tunnel or proxy); #706, #710 outside camera; #707 16x anisotropic filtering;
+  #711 8x MSAA; #708 a Windows test; #714 changelog.
+
 ## 0.1.810 - 2026-10-02
 
 ### Launcher
