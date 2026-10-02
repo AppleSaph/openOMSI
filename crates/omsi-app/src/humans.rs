@@ -1382,8 +1382,9 @@ pub struct Humans {
     ai_visits: HashMap<u64, (i64, f64)>,
     /// When each bus last had a door open (the passengers' clock).
     last_door_open: HashMap<BusId, f64>,
-    /// Timetable buses to keep at their stop for a few seconds more (for the traffic).
-    holds: Vec<(u64, f32)>,
+    /// Timetable buses to keep at their stop for a few seconds more (for the traffic): the
+    /// bus, the stop it must be serving for it (none: any), the seconds.
+    holds: Vec<(u64, Option<i64>, f32)>,
     /// Door requests for the timetable buses' scripts: (bus, entries, exits).
     ai_requests: Vec<(u64, Vec<bool>, Vec<bool>)>,
     pub tickets: Option<Arc<omsi_content::tickets::TicketPack>>,
@@ -3365,7 +3366,7 @@ impl Humans {
     }
 
     /// Timetable buses to hold at their stop, for the traffic.
-    pub fn take_holds(&mut self) -> Vec<(u64, f32)> {
+    pub fn take_holds(&mut self) -> Vec<(u64, Option<i64>, f32)> {
         std::mem::take(&mut self.holds)
     }
 
