@@ -330,10 +330,18 @@ impl ApplicationHandler for Launcher {
             return;
         }
         // (`OMSI_LAUNCHER_SIZE=WxH`: another window size, for looking at the layout)
-        let (iw, ih) = omsi_cfg::env::var("OMSI_LAUNCHER_SIZE").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?)))).unwrap_or((1440.0, 880.0));
-        let mut attrs = Window::default_attributes().with_title("openOMSI").with_window_icon(crate::startup::window_icon()).with_inner_size(winit::dpi::LogicalSize::new(iw, ih));
+        let asked = omsi_cfg::env::var("OMSI_LAUNCHER_SIZE").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))));
+        let (fit, at) = match asked {
+            Some((iw, ih)) => (winit::dpi::LogicalSize::new(iw, ih), None),
+            None => crate::startup::fit_window(event_loop, 1440.0, 880.0),
+        };
+        let mut attrs = Window::default_attributes().with_title("openOMSI").with_window_icon(crate::startup::window_icon()).with_inner_size(fit);
         if !mobile::mobile() {
-            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(1080.0, 680.0));
+            // (no bigger than the window fitted to the screen: a small one at 150 % has less)
+            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(1080.0f64.min(fit.width), 680.0f64.min(fit.height)));
+            if let Some(at) = at {
+                attrs = attrs.with_position(at);
+            }
         }
         if omsi_cfg::env::var_os("OMSI_BACKGROUND").is_some() {
             attrs = attrs.with_active(false);

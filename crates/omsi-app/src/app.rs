@@ -339,10 +339,14 @@ impl App {
                 )
             })
             .unwrap_or((1600, 900));
+        let (fit, at) = crate::startup::fit_window(event_loop, lw as f64, lh as f64);
         let mut attrs = Window::default_attributes()
             .with_title("openOMSI")
-            .with_inner_size(winit::dpi::LogicalSize::new(lw, lh))
+            .with_inner_size(fit)
             .with_window_icon(crate::startup::window_icon());
+        if let Some(at) = at {
+            attrs = attrs.with_position(at);
+        }
         if self.settings.fullscreen {
             attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         }
