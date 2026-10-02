@@ -246,21 +246,6 @@ impl ApplicationHandler for App {
                 if self.vr_nav_edit.is_some() && (!self.vr_active() || self.view != "driver") {
                     self.finish_vr_nav_edit();
                 }
-                // Refresh cached options when switching between VR and desktop, including
-                // a runtime disconnect while the placement submenu is still open.
-                let vr_nav_available = self.vr_active() && self.player.is_some();
-                let refresh_options = match self.list_kind.as_ref() {
-                    Some(crate::game_lists::ListKind::VrNavigator) => !vr_nav_available,
-                    Some(crate::game_lists::ListKind::Options) => {
-                        let has_vr_nav = self.admin_list.as_ref().is_some_and(|items|
-                            items.iter().any(|(_, action)| action == "vr_navigator"));
-                        has_vr_nav != vr_nav_available
-                    }
-                    _ => false,
-                };
-                if refresh_options {
-                    self.open_list(crate::game_lists::ListKind::Options);
-                }
                 #[cfg(windows)]
                 self.poll_vr_cursor_position();
                 // OMSI's autosave of the last situation: every five minutes of play
@@ -269,7 +254,8 @@ impl ApplicationHandler for App {
                     self.save_last_situation();
                 }
                 // the time of day a script set last frame (the nearer way round the clock)
-                if let Some(t) = self.pending_time.take() {
+                // (not with the real-time sync on: the clock stays the device's)
+                if let Some(t) = self.pending_time.take().filter(|_| !self.real_time_locked()) {
                     let d = (t - self.clock.time + 43_200.0).rem_euclid(86_400.0) - 43_200.0;
                     self.shift_clock(d);
                 }
@@ -403,6 +389,11 @@ impl ApplicationHandler for App {
                 }
                 let dt = raw_dt.min(0.1);
                 self.last = now;
+                // (the cursor over the game menu: a hand over what can be clicked)
+                if self.game_menu.is_some() {
+                    let kind = self.menu_cursor_kind();
+                    self.set_cursor_kind(kind);
+                }
                 self.run_input_script(event_loop);
                 if let Some(m) = self.menu.as_ref() {
                     if let Some(limit) = self.args.exit_after {
@@ -902,7 +893,7 @@ impl ApplicationHandler for App {
                             // Physical head tracking controls the view without an added automatic turn.
                             p.steer_look = if vr_on || tracked.is_some() { 0.0 } else {
                                 crate::player::steering_view_yaw(p.steer_look, p.vehicle.physics.controls.steering, dt,
-                                    self.settings.steer_look && self.view == "driver", self.settings.steer_look_angle, self.settings.steer_look_response)
+                                                                 self.settings.steer_look && self.view == "driver", self.settings.steer_look_angle, self.settings.steer_look_response)
                             };
                             if let Some(t) = tracked {
                                 p.seat += glam::Vec3::new(t.pos[0], -t.pos[2], t.pos[1]).clamp(glam::Vec3::splat(-60.0), glam::Vec3::splat(60.0)) / 100.0;
@@ -1315,6 +1306,10 @@ impl ApplicationHandler for App {
                             if self.chooser.is_none() && was.is_none() {
                                 self.game_menu = None;
                             }
+                        } else {
+                            // (a line of the vehicle or world pages)
+                            self.menu_prev_pause = self.paused;
+                            self.page_action(&c);
                         }
                     }
                 } else {
@@ -1439,9 +1434,15 @@ impl ApplicationHandler for App {
                         };
                         let client = self.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client);
                         if ctrl && shift && dir != 0.0 && !client {
+                            if self.clock_hold == 0.0 && self.real_time_locked() {
+                                // (says once why the clock stays)
+                                self.shift_clock(dir as f64);
+                            }
                             self.clock_hold += dt;
-                            let rate = 900.0 * (1.0 + self.clock_hold * 1.5).min(8.0);
-                            self.shift_clock(dir * rate as f64 * dt as f64);
+                            if !self.real_time_locked() {
+                                let rate = 900.0 * (1.0 + self.clock_hold * 1.5).min(8.0);
+                                self.shift_clock(dir * rate as f64 * dt as f64);
+                            }
                         } else {
                             self.clock_hold = 0.0;
                         }
@@ -1531,14 +1532,21 @@ impl ApplicationHandler for App {
                         cam.pitch = (cam.pitch - 40.0 * dt).max(-89.0);
                     }
                 }
+                // (the METAR sync: the report's weather, in real time)
+                self.tick_metar(dt);
                 if !self.paused {
                     // (the time speed: the settings', or the session's in LAN play)
                     let speed = self.time_speed();
                     self.clock.advance(dt * speed as f32);
+                    // (the real-time sync: the device's date and time, whatever the speed was)
+                    self.sync_real_time();
                     if let Some(t) = self.traffic.as_mut() {
                         t.time_scale = speed;
                     }
                     self.tick_weather(dt * speed as f32);
+                } else if self.weather_blend.is_some() {
+                    // (a preset picked in the paused menu: the change goes over in real time)
+                    self.tick_weather(dt);
                 }
                 let daylight = omsi_sim::Daylight::compute(&self.clock, self.envir.as_ref());
                 if self.lamps_on != Some(daylight.lamps_on) {
@@ -1746,6 +1754,11 @@ impl ApplicationHandler for App {
                 let vr_nav_display = self.vr_nav_display();
                 let vr_active = self.vr_active();
                 // the interface over the picture
+                // (the pages of an open settings window)
+                let menu_tabs = match self.list_kind.as_ref() {
+                    Some(k) if self.chooser.is_some() => crate::game_lists::page_titles(self, k),
+                    _ => None,
+                };
                 if let (true, Some(r), Some(scene)) = (
                     self.world.is_some(),
                     self.renderer.as_ref(),
@@ -1902,6 +1915,13 @@ impl ApplicationHandler for App {
                             || ui.chat.hovered
                             || map_open
                             || (!vr_active && self.navigator.as_ref().is_some_and(|n| n.over_panel(cx, cy)));
+                        let dropdown = self.dropdown.as_ref().filter(|_| self.chooser.is_some()).map(|d| ui::DropdownView {
+                            row: d.row,
+                            items: d.items.iter().map(|x| x.0.as_str()).collect(),
+                            sel: d.sel,
+                            top: d.top,
+                            current: d.current,
+                        });
                         let chooser_list = self.admin_list.as_ref().unwrap_or(&self.vehicle_list);
                         let (chooser_items, chooser_sel): (Vec<(&str, &str)>, Option<usize>) = match self.chooser {
                             Some(sel) => {
@@ -1910,6 +1930,9 @@ impl ApplicationHandler for App {
                             }
                             None => (Vec::new(), None),
                         };
+                        // (the game menu's greyed-out lines: the timetable needs an active route)
+                        let menu_disabled: &[&str] = &[];
+                        let (menu_kind, menu_head, menu_preview) = crate::game_lists::menu_extras(self.list_kind.as_ref(), self.admin_list.as_deref(), chooser_sel, self.schedule.as_ref(), self.clock.time);
                         let frame = ui::Frame {
                             scale,
                             ui_scale: ui::size_factor(h, scale, self.settings.ui_scale, self.settings.ui_scale_window),
@@ -1931,8 +1954,15 @@ impl ApplicationHandler for App {
                                 Some(k) => Some((k, &chooser_items[..])),
                                 None => self.game_menu.map(|k| (k, &menu_lines[..])),
                             },
+                            menu_disabled,
+                            menu_kind,
+                            menu_head,
+                            menu_preview,
+                            pane_first: self.pane_scroll.filter(|p| Some(p.0) == chooser_sel).map(|p| p.1),
+                            menu_tabs,
+                            dropdown,
+                            menu_kbd: self.menu_kbd,
                             menu_top: self.menu_top,
-                            vr_nav_editing: self.vr_nav_edit.is_some(),
                             // (not over the city map, which has the stops and their times: it
                             // covered the map's zoom and close buttons)
                             timetable: (self.timetable && !map_open).then(|| timetable_rows(self.duty.as_ref(), self.player.as_ref().map(|p| p.vehicle.host.tt_delay as f64))).flatten(),
@@ -2156,6 +2186,7 @@ impl ApplicationHandler for App {
                             } else {
                                 Some((*cam, s.config.width as f32 / s.config.height.max(1) as f32))
                             };
+                            self.mirror_budget = (self.mirror_budget + raw_dt.min(0.1) * rate).min(2.5);
                             // (in the cab, and from outside too while the bus is near: its
                             // mirrors are seen from the pavement and stood frozen)
                             let near = self.player.as_ref().zip(self.camera.as_ref()).is_some_and(|(p, c)| (p.vehicle.position - c.position).length() < 12.0);
@@ -2468,6 +2499,7 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        crate::game_lists::flush_settings(false);
         if self.mouse_edge != 0.0 && !self.mouse_drive {
             self.mouse_edge = 0.0;
         }
@@ -2489,6 +2521,7 @@ impl ApplicationHandler for App {
     /// quit signal): the session is written and the LAN peers hear that we left, before
     /// anything else is torn down (Cmd+Q ends the process without returning from the loop).
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        crate::game_lists::flush_settings(true);
         self.finish_session();
         if let Some(lan) = self.lan.take() {
             // dropping the session says goodbye (BYE) to the host or the players
@@ -2588,11 +2621,27 @@ impl App {
         }
         // the game menu takes the clicks while it is open
         if self.game_menu.is_some() {
+            if state == ElementState::Pressed {
+                // (a tap or a click: only what is under the finger or the mouse is lit)
+                self.menu_kbd = false;
+            }
             // Releasing the mouse button finishes scrollbar dragging.
             if state == ElementState::Released {
+                self.menu_drag = None;
                 if self.menu_scroll_drag {
                     self.menu_scroll_drag = false;
                     self.menu_top = self.menu_top.map(f32::round);
+                }
+                return;
+            }
+
+            // an open drop-down takes the click: an entry is chosen, anywhere else closes it
+            if self.dropdown.is_some() {
+                let inside = |r: &[f32; 4]| self.cursor.0 >= r[0] && self.cursor.0 <= r[2] && self.cursor.1 >= r[1] && self.cursor.1 <= r[3];
+                let hit = self.ui.as_ref().and_then(|u| u.dd_rects.iter().position(|r| inside(r)).map(|i| i + u.dd_top));
+                match hit {
+                    Some(i) => self.dropdown_pick(i),
+                    None => self.dropdown = None,
                 }
                 return;
             }
@@ -2614,6 +2663,40 @@ impl App {
                     }
                 }
 
+                // The sidebar of a settings window: a page, or the way back.
+                if self.chooser.is_some() {
+                    let side = self.ui.as_ref().and_then(|u| {
+                        u.menu_side.iter().position(|r| {
+                            self.cursor.0 >= r[0]
+                                && self.cursor.0 <= r[2]
+                                && self.cursor.1 >= r[1]
+                                && self.cursor.1 <= r[3]
+                        })
+                    });
+                    if let Some(i) = side {
+                        self.settings_side_click(i);
+                        return;
+                    }
+                }
+
+                // The timetable beside a line's tours: a stop to start from, or the button.
+                if self.chooser.is_some() {
+                    let pane = self.ui.as_ref().and_then(|u| {
+                        let inside = |r: &[f32; 4]| self.cursor.0 >= r[0] && self.cursor.0 <= r[2] && self.cursor.1 >= r[1] && self.cursor.1 <= r[3];
+                        if u.menu_pane_go.as_ref().is_some_and(inside) {
+                            return Some(usize::MAX);
+                        }
+                        if let Some(j) = u.menu_time.iter().position(inside) {
+                            return Some(usize::MAX - 1 - j);
+                        }
+                        u.menu_pane.iter().position(inside).map(|i| i + u.menu_pane_start)
+                    });
+                    if let Some(i) = pane {
+                        self.tour_pane_click(i);
+                        return;
+                    }
+                }
+
                 // Otherwise check whether a menu row was clicked.
                 let hit = self.ui.as_ref().and_then(|u| {
                     u.menu_rects.iter().position(|r| {
@@ -2625,15 +2708,43 @@ impl App {
                 });
 
                 if let Some(row) = hit {
+                    // (a click on a slider or a stepper sets the value there)
                     let k = row
                         + self
                         .ui
                         .as_ref()
                         .map(|u| u.menu_start)
                         .unwrap_or(0);
+                    let ctl = self.ui.as_ref().and_then(|u| u.menu_ctl.get(row).copied().flatten());
+
+                    // (a greyed-out line cannot be clicked)
+                    if self.menu_item_off(k) {
+                        return;
+                    }
+
+                    if let Some(c) = ctl {
+                        if self.chooser.is_some() && self.cursor.0 >= c[0] && self.cursor.0 <= c[2] {
+                            let fx = ((self.cursor.0 - c[0]) / (c[2] - c[0]).max(1.0)).clamp(0.0, 1.0);
+                            self.chooser = Some(k);
+                            // (a slider is held: it follows the cursor till the button is let go)
+                            if self.list_click(k, fx) {
+                                self.menu_drag = Some(k);
+                            }
+                            return;
+                        }
+                    }
 
                     if self.chooser.is_none() {
                         self.game_menu = Some(k);
+                    }
+
+                    // (a click on a tour shows its stops: the trip starts with the button)
+                    if matches!(self.list_kind, Some(crate::game_lists::ListKind::Tours(..))) && crate::game_lists::tour_at(self, k).is_some() {
+                        self.chooser = Some(k);
+                        if let Some(crate::game_lists::ListKind::Tours(line, _)) = self.list_kind.clone() {
+                            self.list_kind = Some(crate::game_lists::ListKind::Tours(line, None));
+                        }
+                        return;
                     }
 
                     // on the arrows round a line's value: one step down or up; elsewhere on

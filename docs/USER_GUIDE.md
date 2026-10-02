@@ -204,6 +204,7 @@ sun shadow map shades under a vehicle), `navigator`, `ui_opacity` (how much of t
 menu's, the timetable's, the plates under the notes - 0.2 to 1, the texts staying solid; 0.85
 as designed; `navigator_opacity` in older files),
 `navigator_corner` (`bottom-left` default, `bottom-right`, `top-left`, `top-right`),
+`nav_ai` (the other AI vehicles as dots on the navigator and the city map; on by default),
 `boarding`, `detail_textures`, `exact_fare`, `enhanced`, `fullscreen`, `vsync`, `volume`
 and `drive_keys`, plus `render_scale` (`auto` or a fraction: the picture is drawn smaller
 and upscaled), `post_aa` (`fxaa`, the enhanced renderer's, or `off`), `view_distance` (m,

@@ -51,6 +51,7 @@ mod rain;
 mod scene;
 mod schedule;
 mod schedule_paper;
+mod real_time;
 mod settings;
 mod threads;
 mod tiles;
@@ -326,6 +327,11 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
     // a duty starts at its trip, as in OMSI (not at the map's entry point); a joining
     // player's once the host's world is known (below): it was never placed at all, and
     // "Automatic" put it at the map's first entry point, the depot
+    // real-time sync: the game starts at this device's date and time (a joining player's
+    // clock is the host's, a server's is its server.cfg's); a duty does not move it
+    if settings::Settings::load().time_sync && args.lan_join.is_none() && args.server.is_none() && args.offscreen.is_none() {
+        real_time::start_at_now(&mut args);
+    }
     if args.export_glb.is_none() && args.lan_join.is_none() {
         place_on_duty(&mut args);
     }
@@ -383,7 +389,7 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
     // a host's clock runs at its time speed (a server's: its server.cfg)
     if let (Some(l), None) = (lan.as_mut(), server_cfg.as_ref()) {
         if l.role == omsi_net::Role::Host {
-            l.clock_speed = settings.time_speed.clamp(1.0, 30.0);
+            l.clock_speed = if settings.time_sync { 1.0 } else { settings.time_speed.clamp(1.0, 30.0) };
         }
     }
     let mut lan_game = lan::LanGame::default();
@@ -422,6 +428,8 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         chooser: None,
         editor: None,
         vehicle_list: Vec::new(),
+        dropdown: None,
+        vehicle_meta: std::collections::HashMap::new(),
         world: None,
         streamer: None,
         starting: None,
@@ -479,7 +487,7 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         game_menu: None,
         menu_top: None,
         menu_scroll_drag: false,
-        menu_more: false,
+        pane_scroll: None,
         plugin_keys: Vec::new(),
         clock_hold: 0.0,
         pad_look: [false; 4],
@@ -540,8 +548,13 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         career: Default::default(),
         wetness: 0.0,
         cloud_drift: [0.0; 2],
+        menu_edit: None,
+        menu_drag: None,
+        menu_kbd: true,
         weather_blend: None,
         weather_cycle: None,
+        metar_rx: None,
+        metar_next: 0.0,
         cursor_kind: 0,
         settings,
         lan: None,

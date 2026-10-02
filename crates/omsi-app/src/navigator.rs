@@ -267,6 +267,8 @@ pub struct Navigator {
     /// (degrees), how far (m) and the street it turns into.
     /// OMSI 2's route arrows are wanted (see `turn_hint`).
     pub arrows: bool,
+    /// The other (AI) vehicles are drawn on the maps (the `nav_ai` setting).
+    pub show_ai: bool,
     /// How far the panel has faded in (Shift+N fades it in and out rather than cutting).
     shown: f32,
     /// The trip's next stops (place, name, the bus's heading there) and where the bus is,
@@ -362,6 +364,7 @@ impl Navigator {
             time: 0.0,
             next_dist: None,
             arrows: false,
+            show_ai: true,
             shown: if enabled { 1.0 } else { 0.0 },
             stop_spots: Vec::new(),
             bus_at: DVec3::ZERO,
@@ -601,12 +604,12 @@ impl Navigator {
             log::info!("navigator: the route before stop '{}' cannot be reached; led onto the road past it", st.name.trim());
             Some((path, k + 1))
         })
-        .or_else(|| {
-            let k = stop_at?;
-            let hi = (k + 120).min(r.lanes.len());
-            (k + 1 < hi).then_some(())?;
-            way_back(net, f.bus, f.heading, &r.lanes[k + 1..hi], max).map(|(p, j)| (p, k + 1 + j))
-        });
+            .or_else(|| {
+                let k = stop_at?;
+                let hi = (k + 120).min(r.lanes.len());
+                (k + 1 < hi).then_some(())?;
+                way_back(net, f.bus, f.heading, &r.lanes[k + 1..hi], max).map(|(p, j)| (p, k + 1 + j))
+            });
         if let Some((path, join)) = way {
             let rest = r.lanes[join.min(r.lanes.len())..].to_vec();
             log::info!(
@@ -832,7 +835,7 @@ impl Navigator {
             } else {
                 global.as_deref().and_then(|g| g.nearest_lane_near(f.bus, LaneKind::Street)).filter(|l| l.2 < 10.0).and_then(|l| self.street_of(l.0))
             }
-            .map(str::to_string);
+                .map(str::to_string);
         }
         self.first = false;
         if !self.enabled && self.shown < 0.01 {
@@ -989,7 +992,7 @@ impl Navigator {
         }
         let n_traffic = dy.len();
         // the other vehicles: blue dots, as the other drivers in ETS2
-        if let Some(t) = f.traffic {
+        if let Some(t) = f.traffic.filter(|_| self.show_ai) {
             for c in &t.cars {
                 if c.gone || (c.vehicle.position - f.bus).truncate().length() > self.zoom * 3.5 + 150.0 {
                     continue;
@@ -2226,7 +2229,7 @@ impl Navigator {
         let n_bg = bg.len();
         // traffic: blue dots
         let mut dots = Painter::new();
-        if let Some(t) = f.traffic {
+        if let Some(t) = f.traffic.filter(|_| self.show_ai) {
             for car in t.cars.iter().filter(|c| !c.gone) {
                 dots.world_disc(rel(car.vehicle.position), 2.2, 3.4, Color::rgba(8, 8, 8, 0.9));
                 dots.world_disc(rel(car.vehicle.position), 1.5, 2.3, DOT);

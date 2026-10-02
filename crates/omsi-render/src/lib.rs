@@ -957,6 +957,10 @@ pub struct Instance {
     pub object_radius: f32,
     pub detail: f32,
     pub any_distance: bool,
+    /// Drawn only while the camera stands in this area of the ground (world x0, y0, x1, y1):
+    /// a stand-in for far tiles, which OMSI has loaded only around its own tile (see
+    /// `set_near_only`).
+    pub near_only: Option<[f64; 4]>,
     /// Seen only in the mirrors and other views drawn into textures, not in the window's
     /// picture: the driver at the wheel while the player looks from the driver's seat (the
     /// figure would fill the view, but the mirrors show him as OMSI does).
@@ -5432,6 +5436,7 @@ impl Renderer {
             object_radius: 0.0,
             detail: 1.0,
             any_distance: false,
+            near_only: None,
             mirror_only: false,
             omsi_caster: false,
             ordered: false,
@@ -5482,6 +5487,7 @@ impl Renderer {
             object_radius: 0.0,
             detail: 1.0,
             any_distance: false,
+            near_only: None,
             mirror_only: false,
             omsi_caster: false,
             ordered: false,
@@ -5667,6 +5673,12 @@ impl Renderer {
         i.object_radius = radius.max(0.0);
         i.detail = if detail > 0.0 { detail } else { 1.0 };
         i.any_distance = any_distance;
+    }
+
+    /// Draw an instance only while the camera stands in `area` (world x0, y0, x1, y1 on the
+    /// ground; None: wherever it is loaded).
+    pub fn set_near_only(&self, scene: &mut Scene, instance: usize, area: Option<[f64; 4]>) {
+        scene.instances[instance].near_only = area;
     }
 
     /// Change an instance transform (re-uploaded on the next `prepare`).
@@ -7852,6 +7864,12 @@ impl Renderer {
             let m = &scene.meshes[inst.mesh];
             if m.ranges.is_empty() || !inst.visible || (inst.mirror_only && main_view) {
                 return None;
+            }
+            if let Some([x0, y0, x1, y1]) = inst.near_only {
+                let c = camera.position;
+                if c.x < x0 || c.x > x1 || c.y < y0 || c.y > y1 {
+                    return None;
+                }
             }
             // OMSI's `[isshadow]` shadow blobs, switched off (see `RenderOptions::shadow_blobs`)
             if inst.blob && !self.shadow_blobs {

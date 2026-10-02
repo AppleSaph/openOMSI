@@ -2288,19 +2288,35 @@ impl Traffic {
                 while d.s > self.net.lanes[d.lane].length() && guard < 32 {
                     guard += 1;
                     let l = &self.net.lanes[d.lane];
-                    let options: Vec<usize> = l
-                        .next
-                        .iter()
-                        .copied()
-                        .filter(|&n| {
-                            let nl = &self.net.lanes[n];
-                            nl.kind == d.kind && nl.allows(d.ty.def.ai_veh_type) && self.types.iter().find(|t| Arc::ptr_eq(&t.0, &d.ty))
-                                .map(|t| match self.group_uvg[t.3] {
-                                    Some(pool) => nl.pool_density(&self.uvg_defaults, pool),
+                    // the ways a car on the road would take (`AiState::choose_after`): those
+                    // of its group, else those open to cars, else any - only where the
+                    // network ends does it leave the map (filtering by its group alone, the
+                    // trucks of Spandau were gone at the first junction whose turn has no
+                    // `trucks` rule, and hardly one of them ever came into range)
+                    let pool = self.types.iter().find(|t| Arc::ptr_eq(&t.0, &d.ty)).and_then(|t| self.group_uvg[t.3]);
+                    let same_kind = |n: &usize| self.net.lanes[*n].kind == d.kind;
+                    let open = |pooled: bool| -> Vec<usize> {
+                        l.next
+                            .iter()
+                            .copied()
+                            .filter(same_kind)
+                            .filter(|&n| {
+                                let nl = &self.net.lanes[n];
+                                let density = match pool.filter(|_| pooled) {
+                                    Some(p) => nl.pool_density(&self.uvg_defaults, p),
                                     None => nl.density,
-                                }).unwrap_or(nl.density) > 0.0
-                        })
-                        .collect();
+                                };
+                                nl.allows(d.ty.def.ai_veh_type) && density > 0.0
+                            })
+                            .collect()
+                    };
+                    let mut options = if pool.is_some() { open(true) } else { Vec::new() };
+                    if options.is_empty() {
+                        options = open(false);
+                    }
+                    if options.is_empty() {
+                        options = l.next.iter().copied().filter(same_kind).collect();
+                    }
                     if options.is_empty() {
                         gone = true;
                         break;

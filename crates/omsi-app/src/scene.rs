@@ -2162,7 +2162,7 @@ fn probe_tile(
         let mut layers = 0;
         while let Some(z1) = probe.below.filter(|_| layers < 4) {
             layers += 1;
-            match s.drive.probe(lx, ly, z1 - 0.004).below {
+            match s.drive.probe(lx, ly, z1 - 0.0005).below {
                 Some(z2) if z1 - z2 < PAINT_LAYER => probe.below = Some(z2),
                 _ => break,
             }
@@ -6739,18 +6739,8 @@ impl World {
                                         .and_then(|k| strings.get(k))
                                         .cloned()
                                         .unwrap_or_default();
-                                    let (w, h) = (tt.width.max(1) as u32, tt.height.max(1) as u32);
                                     let alpha = text_alpha(o3d_mats, slot, overrides);
-                                    let key = format!(
-                                        "{}|{}|{}x{}|{}|{:?}|{:?}",
-                                        tt.font.to_ascii_lowercase(),
-                                        text,
-                                        w,
-                                        h,
-                                        tt.full_color,
-                                        tt.color,
-                                        alpha
-                                    );
+                                    let key = scenery_text_key(tt, &text, alpha);
                                     if let Some(e) = gpu.text_textures.get_mut(&key) {
                                         e.2 += 1;
                                         let mat = e.1;
@@ -6766,31 +6756,8 @@ impl World {
                                     // drawn as they are: the street name signs that seemed to want
                                     // their text turned by 180° were `.x` meshes whose frames were
                                     // read transposed (upside down), the stop name plates are not
-                                    let rgba = match atlas {
-                                        Some(a) => a.render(
-                                            &text,
-                                            w,
-                                            h,
-                                            tt.full_color,
-                                            [
-                                                tt.color[0] as u8,
-                                                tt.color[1] as u8,
-                                                tt.color[2] as u8,
-                                            ],
-                                        ),
-                                        None => vec![0u8; (w * h * 4) as usize],
-                                    };
-                                    let tex = gpu.add_image(
-                                        renderer,
-                                        scene,
-                                        &Image {
-                                            width: w,
-                                            height: h,
-                                            rgba,
-                                            has_alpha: true,
-                                        },
-                                        true,
-                                    );
+                                    let image = scenery_text_image(tt, atlas, &text);
+                                    let tex = gpu.add_image(renderer, scene, &image, true);
                                     // (lit like the rest of the object: Omsi.exe only swaps
                                     // the slot's texture, a sign does not shine at night)
                                     let mat = renderer.add_material(
@@ -6915,10 +6882,12 @@ impl World {
                         let any_distance = ot.sco.model.no_distance_check
                             || ot.model.no_distance_check
                             || ot.model.meshes.iter().any(|m| m.no_distance_check);
+                        let near_only = stand_in_area(&ot, &xf, pos, (p.tx, p.ty));
                         for inst in all_instances.iter().chain(&lod_instances) {
                             scene.instances[*inst].presurface =
                                 ot.sco.render_type == omsi_scenery::sco::RenderType::PreSurface;
                             renderer.set_object_culling(scene, *inst, radius, detail, any_distance);
+                            renderer.set_near_only(scene, *inst, near_only);
                         }
                     }
                     if ot.sco.crash_mode_pole.is_some() && !ot.sco.no_collision {
@@ -7414,9 +7383,8 @@ impl World {
                     continue;
                 };
                 let text = tt.variable.trim().parse::<usize>().ok().and_then(|k| strings.get(k)).cloned().unwrap_or_default();
-                let (w, h) = (tt.width.max(1) as u32, tt.height.max(1) as u32);
                 let alpha = text_alpha(o3d_mats, slot, overrides);
-                let key = format!("{}|{}|{}x{}|{}|{:?}|{:?}", tt.font.to_ascii_lowercase(), text, w, h, tt.full_color, tt.color, alpha);
+                let key = scenery_text_key(tt, &text, alpha);
                 if let Some(e) = gpu.text_textures.get_mut(&key) {
                     e.2 += 1;
                     let mat = e.1;
@@ -7425,11 +7393,8 @@ impl World {
                     continue;
                 }
                 let atlas = self.fonts.lock().get(&tt.font, &|p| omsi_texture::decode_file(p).ok().map(|i| (i.width, i.height, i.rgba)));
-                let rgba = match atlas {
-                    Some(a) => a.render(&text, w, h, tt.full_color, [tt.color[0] as u8, tt.color[1] as u8, tt.color[2] as u8]),
-                    None => vec![0u8; (w * h * 4) as usize],
-                };
-                let tex = gpu.add_image(renderer, scene, &Image { width: w, height: h, rgba, has_alpha: true }, true);
+                let image = scenery_text_image(tt, atlas, &text);
+                let tex = gpu.add_image(renderer, scene, &image, true);
                 let mat = renderer.add_material(scene, Some(tex), alpha, [1.0; 4], false);
                 let mat = gpu.material(renderer, scene, mat);
                 gpu.text_textures.insert(key.clone(), (tex, mat, 1));
@@ -8222,6 +8187,43 @@ fn fallen_pole(xf: Mat4, push: DVec3) -> Mat4 {
     let dir = glam::Vec3::new(push.x as f32, push.y as f32, 0.0).normalize_or(glam::Vec3::Y);
     let axis = glam::Vec3::Z.cross(dir).normalize_or(glam::Vec3::X);
     Mat4::from_axis_angle(axis, 86f32.to_radians()) * xf
+}
+
+/// How many tiles OMSI keeps loaded around the camera's own: its `[performance_tiledistmax]`,
+/// 1 in the shipped options.cfg and in the presets maps ask for (Chicago Downtown's manual:
+/// "Set neighbor tiles count to 1 or max. 2").
+const OMSI_TILE_DIST: i32 = 1;
+
+/// Where the camera has to stand for a stand-in for far tiles to be drawn: the ground of
+/// the tiles OMSI loads with the one it is on. None for every other object.
+///
+/// OMSI has a tile's objects only while the camera is at most `OMSI_TILE_DIST` tiles away
+/// from it, and maps build on that: Chicago Downtown puts a model of the whole city at Navy
+/// Pier (`LOD_247.sco`, 5.5 km across, its parks and the lake as flat faces 2 m above the
+/// streets) to fill the view beyond the tiles loaded there, with a hole where they are.
+/// openOMSI keeps the tiles of its whole view distance, so the model was there from
+/// Columbus Drive on as well, its grass over the streets, the lower level and the vehicles
+/// on it (#650). A stand-in is told apart by its size: more than twice as wide as all the
+/// tiles OMSI has loaded with it (Chicago's are 3.6 to 8 km, its largest real objects -
+/// Navy Pier, the Merchandise Mart, the road grids of whole tiles - at most 1.25 km), so
+/// the far view keeps every ordinary object.
+fn stand_in_area(ot: &ObjectType, xf: &Mat4, pos: DVec3, tile: (i32, i32)) -> Option<[f64; 4]> {
+    let ts = tile_size();
+    let loaded = (2 * OMSI_TILE_DIST + 1) as f64 * ts;
+    let wide = ot.meshes.iter().any(|(m, _, _)| {
+        let b = mesh_bounds(m, xf, pos);
+        (b[2] - b[0]).max(b[3] - b[1]) > 2.0 * loaded
+    });
+    if !wide {
+        return None;
+    }
+    log::debug!("{} on tile {tile:?} stands in for far tiles: drawn only from the tiles around it", ot.sco.path.display());
+    Some([
+        (tile.0 - OMSI_TILE_DIST) as f64 * ts,
+        (tile.1 - OMSI_TILE_DIST) as f64 * ts,
+        (tile.0 + OMSI_TILE_DIST + 1) as f64 * ts,
+        (tile.1 + OMSI_TILE_DIST + 1) as f64 * ts,
+    ])
 }
 
 /// World bounds (min x, min y, max x, max y) of a mesh placed with `xf` at `origin`.
@@ -9662,6 +9664,38 @@ fn text_alpha(materials: &[omsi_o3d::Material], slot: usize, overrides: &[Materi
     match material_alpha(materials, slot, overrides) {
         AlphaMode::Test => AlphaMode::Test,
         _ => AlphaMode::Blend,
+    }
+}
+
+/// Placement is part of the picture: otherwise a centred sign can lend its cached
+/// texture to a left-aligned one showing the same words.
+fn scenery_text_key(tt: &omsi_model::TextTexture, text: &str, alpha: AlphaMode) -> String {
+    format!(
+        "{}|{}|{}x{}|{}|{:?}|{:?}|{}|{}",
+        tt.font.to_ascii_lowercase(),
+        text,
+        tt.width.max(1),
+        tt.height.max(1),
+        tt.full_color,
+        tt.color,
+        alpha,
+        tt.orientation,
+        tt.grid,
+    )
+}
+
+fn scenery_text_image(
+    tt: &omsi_model::TextTexture,
+    atlas: Option<Arc<omsi_content::font::FontAtlas>>,
+    text: &str,
+) -> Image {
+    // Static and scripted text textures use the placement from their definition.
+    let state = omsi_sim::texttex::TextTextureState::new(tt.clone(), atlas);
+    Image {
+        width: tt.width.max(1) as u32,
+        height: tt.height.max(1) as u32,
+        rgba: state.image(text),
+        has_alpha: true,
     }
 }
 
