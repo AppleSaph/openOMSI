@@ -709,6 +709,8 @@ pub struct Material {
     /// depth, or everything blended behind it is thrown away - which is what punched holes
     /// into the world seen through a window or a mirror.
     pub no_z_write: bool,
+    /// See [`MaterialExtra::depth_guess`].
+    pub depth_guess: bool,
     /// `[matl_noZcheck]`: a decal drawn over the surface it lies on - blended, without
     /// depth write, with the surfaces' depth bias (see the blended draw items).
     pub no_z_check: bool,
@@ -756,6 +758,12 @@ pub struct MaterialExtra {
     pub env_mask: Option<TextureId>,
     /// `[matl_noZwrite]`
     pub no_z_write: bool,
+    /// The slot writes depth in Omsi.exe (blended without `[matl_noZwrite]`) and is left
+    /// out of the depth buffer here only so that what is blended behind it shows (a pane,
+    /// a sticker on a window): in a model drawn in order (`Instance::ordered`) the opaque
+    /// slots after it are drawn before it, or they painted over it where in the original
+    /// its depth hid them (#918).
+    pub depth_guess: bool,
     /// `[matl_noZcheck]`
     pub no_z_check: bool,
     /// `[matl_Zbias]`
@@ -4732,6 +4740,7 @@ impl Renderer {
             color,
             unlit,
             no_z_write,
+            depth_guess,
             no_z_check,
             z_bias,
             nightmap,
@@ -4750,6 +4759,7 @@ impl Renderer {
                 src.color,
                 src.unlit,
                 src.no_z_write,
+                src.depth_guess,
                 src.no_z_check,
                 src.z_bias,
                 src.nightmap,
@@ -4824,6 +4834,7 @@ impl Renderer {
             color,
             unlit,
             no_z_write,
+            depth_guess,
             no_z_check,
             z_bias,
             nightmap,
@@ -5120,6 +5131,7 @@ impl Renderer {
             color,
             unlit,
             no_z_write: extra.no_z_write,
+            depth_guess: extra.depth_guess && extra.no_z_write,
             no_z_check: extra.no_z_check,
             z_bias: extra.z_bias,
             nightmap,
@@ -8343,8 +8355,19 @@ impl Renderer {
                 // sort panics on that, which ended the game)
                 keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)));
                 items.clear();
+                // a model drawn in order: its guessed see-through layers (`depth_guess`)
+                // wait for the opaque slots after them, and for the blended slots of their
+                // own mesh (a plate on the body), up to the next blended slot of another of
+                // its meshes (see `MaterialExtra::depth_guess`)
+                let mut held: Vec<DrawItem> = Vec::new();
+                let mut held_origin: Option<DVec3> = None;
+                let mut held_inst = usize::MAX;
                 for (_, _, i) in keyed {
                     let inst = &scene.instances[i];
+                    if held_origin.is_some_and(|o| o != inst.origin || !inst.ordered) {
+                        items.append(&mut held);
+                        held_origin = None;
+                    }
                     let cull = culls_back_faces(scene, inst);
                     for (ri, (_, _, slot)) in scene.meshes[inst.mesh].ranges.iter().enumerate() {
                         let mat_id = inst.materials.get(*slot as usize).copied().unwrap_or(0);
@@ -8380,7 +8403,7 @@ impl Renderer {
                         } else {
                             PIPE_BLEND
                         };
-                        items.push(DrawItem {
+                        let item = DrawItem {
                             pipe: pipe_code(
                                 kind,
                                 cull,
@@ -8390,9 +8413,20 @@ impl Renderer {
                             range: ri as u32,
                             material: mat_id as u32,
                             entry: inst.base + *slot,
-                        });
+                        };
+                        if inst.ordered && mat.depth_guess && mat.alpha == AlphaMode::Blend && !mat.no_z_check {
+                            held.push(item);
+                            held_origin = Some(inst.origin);
+                            held_inst = i;
+                        } else if inst.ordered && !mat.no_z_check && (mat.alpha != AlphaMode::Blend || (held_inst == i && !mat.no_z_write)) {
+                            items.push(item);
+                        } else {
+                            items.append(&mut held);
+                            items.push(item);
+                        }
                     }
                 }
+                items.append(&mut held);
                 main_draws[1] += items.len();
                 batch_items(scene, &mut items, false, &mut list, &mut main_batches);
             }
@@ -10720,6 +10754,7 @@ impl Renderer {
             color: [1.0; 4],
             unlit: false,
             no_z_write: false,
+            depth_guess: false,
             no_z_check: false,
             z_bias: 0,
             nightmap: None,

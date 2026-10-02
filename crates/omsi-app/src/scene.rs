@@ -9661,6 +9661,7 @@ fn material_extra(
     MaterialExtra {
         env_mask,
         no_z_write: ov.iter().any(|o| o.no_z_write),
+        depth_guess: false,
         // `[matl_noZcheck]` leaves Omsi.exe's depth test on: its draw of the slot (0x7fd6c4)
         // never reads the flag, which only adds a colourless stencil pass marking the panes
         // for the raindrops (0x7c32c4 -> 0x7fc58c, ZENABLE 1, blend ZERO/ONE). Taken as "no
@@ -11762,6 +11763,8 @@ impl World {
                     // not solid shadow casters; letting them into the shadow map paints the
                     // bus shadow with the pane/film texture (the striped triangular artifact).
                     if (transparent_layer_hint || see_through) && alpha == AlphaMode::Blend {
+                        // (written by Omsi.exe unless the model says [matl_noZwrite])
+                        extra.depth_guess = !extra.no_z_write && !dirt_overlay;
                         extra.no_z_write = true;
                     }
                     // Name the pane explicitly for the shader. A plain blended window has
