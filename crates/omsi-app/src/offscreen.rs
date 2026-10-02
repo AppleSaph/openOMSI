@@ -362,6 +362,11 @@ pub(crate) fn run_offscreen(
                 for (from, text) in l.take_commands() {
                     crate::admin::server_command(l, from, &text, &mut srv_admin, &positions);
                 }
+                // a tool on this machine (POST /admin, checked by the gateway): an admin of its own
+                for text in crate::lan::take_local_admin() {
+                    srv_admin.admins.insert(crate::admin::LOCAL_ADMIN);
+                    crate::admin::server_command(l, crate::admin::LOCAL_ADMIN, &format!("admin {text}"), &mut srv_admin, &positions);
+                }
                 // an admin set the time of day: the shift that makes the clock read it
                 if let Some(want) = srv_admin.set_clock.take() {
                     let now = (parse_time(&args.time) + srv_clock + srv_admin.shift).rem_euclid(86400.0);
