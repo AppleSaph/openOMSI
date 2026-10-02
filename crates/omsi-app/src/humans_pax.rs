@@ -1872,6 +1872,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_stop_answers_to_its_label_and_its_timetable_name() {
+        let stop = |alias: &str| PaxStop {
+            name: "Königsrath, Bf. Ausstieg".into(),
+            alias: alias.into(),
+            pos: DVec3::ZERO,
+            heading: 0.0,
+            gather: DVec3::ZERO,
+            spots: Vec::new(),
+            taken: Vec::new(),
+            enter_max: 1.0,
+            enter_min: 0.0,
+            length: 30.0,
+            lane: None,
+            was_near: false,
+            near: false,
+            clock_ms: 0.0,
+            want: 0,
+            factor: 1.0,
+            buses: Vec::new(),
+            dests: Vec::new(),
+            lines: Vec::new(),
+        };
+        let s = stop("Koenigsrath Bf Ausstieg");
+        assert!(s.is_named("Königsrath, Bf. Ausstieg "));
+        assert!(s.is_named("Koenigsrath Bf Ausstieg"), "the timetable's spelling");
+        assert!(!s.is_named("Königsrath, Bf. Pause"));
+        // a stop the timetable does not know: its id, as the riders' destinations then are
+        assert!(stop("4711").is_named("4711"));
+        assert!(!stop("").is_named(""), "no timetable name: no empty match");
+    }
+
+    #[test]
     pub(super) fn routes_follow_the_link_order_and_one_way_links() {
         // 0 - 1 - 2, and 2 -> 0 one way
         let r = build_routes(3, &[(0, 1, false), (1, 2, false), (2, 0, true)]);
