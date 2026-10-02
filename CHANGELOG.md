@@ -4,6 +4,20 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.1.851 - 2026-10-02
+
+### Maps
+- Attached objects (`[attachObj]`) and object labels are read as Omsi.exe reads them. The
+  records of a tile depend on its `[version]`: before version 9 there is no detail level
+  line, before 6 no IDCodes, before 10 an attached object names its parent by its place in
+  the tile instead of its IDCode, before 8 it has no heading, and before 11 a spline has one
+  line linking it to the spline before it instead of both neighbours. Older tiles were read
+  as version 14 ones, so their objects hung on the wrong parents and pieces of road stood
+  in the air. An object's labels are now exactly as many lines as it says (an empty label
+  or one in brackets no longer cuts the rest off), an attachment whose parent is written
+  after it or that hangs on a later object of a spline attachment row is not loaded, as in
+  OMSI.
+
 ## 0.1.850 - 2026-10-02
 
 ### Launcher
