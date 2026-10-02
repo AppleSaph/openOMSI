@@ -1076,6 +1076,7 @@ impl Ui {
     /// The header of the card at (`x`, `y`) of `w` wide: what the list is of, small and in
     /// capitals, the title large under it, a hairline under both. Its text starts where the
     /// text of the lines does. Returns the middle of the header.
+    #[allow(dead_code)]
     fn menu_header(&mut self, r: &Renderer, scene: &mut Scene, x: f32, y: f32, w: f32, header_h: f32, title: &str, sub: &str, s: f32) -> f32 {
         let left = x + (PAD + TEXT_IN) * s;
         // (the game's name in the accent; the list names above are in capitals)
@@ -1201,7 +1202,7 @@ impl Ui {
         self.text.rounded(r, scene, [x - 1.0, y - 1.0, x + w + 1.0, y + h + 1.0], radius + 1.0, BORDER);
         self.text.rounded(r, scene, [x, y, x + w, y + h], radius, PANEL);
         // the header: what the list is of (or the game's name), and the title
-        let (title, sub): (String, String) = match f.menu_head.as_ref() {
+        let (_title, _sub): (String, String) = match f.menu_head.as_ref() {
             Some((t, u)) => (t.clone(), u.clone()),
             None => {
                 let t = if f.paused { "Paused" } else { "Menu" };
@@ -1557,7 +1558,7 @@ impl Ui {
         self.text.rounded(r, scene, [x - 1.0, y - 1.0, x + w + 1.0, y + h + 1.0], radius + 1.0, BORDER);
         self.text.rounded(r, scene, [x, y, x + w, y + h], radius, PANEL);
         // the header: the game's name small, the title large
-        let (title, sub): (String, String) = match f.menu_head.as_ref() {
+        let (_title, _sub): (String, String) = match f.menu_head.as_ref() {
             Some((t, u)) => (t.clone(), u.clone()),
             None => ("Options".to_string(), String::new()),
         };

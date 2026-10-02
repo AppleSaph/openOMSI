@@ -392,6 +392,7 @@ fn ray_triangle(o: Vec3, d: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
 }
 
 /// Where along the ray (origin, unit dir) the first solid scenery object is, up to `max`.
+#[allow(dead_code)]
 pub fn first_hit(world: &World, origin: DVec3, dir: DVec3, max: f64) -> Option<f64> {
     let end = origin + dir * max;
     let (lo, hi) = (origin.min(end), origin.max(end));
