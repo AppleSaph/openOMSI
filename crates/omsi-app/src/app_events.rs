@@ -2499,6 +2499,7 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        crate::game_lists::flush_settings(false);
         if self.mouse_edge != 0.0 && !self.mouse_drive {
             self.mouse_edge = 0.0;
         }
@@ -2520,6 +2521,7 @@ impl ApplicationHandler for App {
     /// quit signal): the session is written and the LAN peers hear that we left, before
     /// anything else is torn down (Cmd+Q ends the process without returning from the loop).
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        crate::game_lists::flush_settings(true);
         self.finish_session();
         if let Some(lan) = self.lan.take() {
             // dropping the session says goodbye (BYE) to the host or the players

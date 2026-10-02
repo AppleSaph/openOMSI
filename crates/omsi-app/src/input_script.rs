@@ -21,6 +21,7 @@ impl App {
     /// Save the personnel file and the session summary (once: every caller ends the game,
     /// and the frames the loop still runs before it stops count no more time).
     pub(crate) fn finish_session(&mut self) {
+        crate::game_lists::flush_settings(true);
         self.exiting = true;
         // (the tiles loaded on the way added to what the map lacks)
         if let Some(w) = self.world.clone() {
@@ -1665,7 +1666,13 @@ impl App {
             return;
         }
         let Some(action) = self.admin_list.as_ref().and_then(|l| l.get(k)).map(|x| x.1.clone()) else { return };
+        let slider = crate::game_lists::is_slider(action.split(' ').next().unwrap_or(""));
+        crate::game_lists::LIST_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
         if let Some(next) = crate::game_lists::run_move(self, &kind, &action, mv) {
+            // (a slider dragged sends the same value many times over: the list stays)
+            if slider && !crate::game_lists::LIST_DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
             self.open_list(next);
             let last = self.admin_list.as_ref().map(|l| l.len().saturating_sub(1)).unwrap_or(0);
             self.chooser = Some(k.min(last));

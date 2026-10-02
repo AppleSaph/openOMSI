@@ -1247,6 +1247,9 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
     }
 }
 
+/// Set by `option_do` when a value really changed (the open list is out of date then).
+pub(crate) static LIST_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Change the setting `verb` (a switch or a slider) as `mv` says; false when it is neither.
 fn option_do(app: &mut App, verb: &str, arg: &str, mv: Move) -> bool {
     // (the weather is the METAR report's while the sync is on)
@@ -1266,6 +1269,7 @@ fn option_do(app: &mut App, verb: &str, arg: &str, mv: Move) -> bool {
                 remember_setting(k, &v);
             }
             sync_live(app);
+            LIST_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         return true;
     }
@@ -1278,6 +1282,7 @@ fn option_do(app: &mut App, verb: &str, arg: &str, mv: Move) -> bool {
                     remember_setting(k, &v);
                 }
                 sync_live(app);
+                LIST_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
         return true;
@@ -1466,9 +1471,20 @@ fn weather_name(app: &App) -> String {
     }
 }
 
+/// The launcher's settings file as the lists show it: read once (until something is
+/// written), with the keys still waiting to be written on top.
 fn settings_file() -> serde_json::Value {
-    let text = std::fs::read_to_string(omsi_launcher_lib::data_dir().join("settings.cfg")).ok();
-    omsi_launcher_lib::settings_from_text(text.as_deref())
+    let mut v = SETTINGS_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(|| {
+            let text = std::fs::read_to_string(omsi_launcher_lib::data_dir().join("settings.cfg")).ok();
+            omsi_launcher_lib::settings_from_text(text.as_deref())
+        })
+        .clone();
+    let pending = PENDING_SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
+    apply_pending(&mut v, &pending.0);
+    v
 }
 
 fn value_text(v: &serde_json::Value) -> String {
@@ -1551,8 +1567,10 @@ fn preset_row(file: &serde_json::Value, name: &str, desc: &str) -> Option<(Strin
 }
 
 fn store_with(app: &mut App, change: impl FnOnce(&mut serde_json::Value)) {
+    flush_settings(true);
     let Ok(mut v) = omsi_launcher_lib::get_settings() else { return };
     change(&mut v);
+    *SETTINGS_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     match omsi_launcher_lib::save_settings(&v) {
         Ok(()) => reload_settings(app),
         Err(e) => log::warn!("settings not saved: {e:#}"),
@@ -1560,6 +1578,7 @@ fn store_with(app: &mut App, change: impl FnOnce(&mut serde_json::Value)) {
 }
 
 fn reload_settings(app: &mut App) {
+    flush_settings(true);
     app.settings = crate::settings::Settings::load();
     crate::ui_language(&app.settings.language);
     sync_live(app);
@@ -1858,9 +1877,22 @@ fn pages_of(app: &App, kind: &ListKind) -> Option<(Vec<Page>, usize)> {
 }
 
 /// The titles of the pages of an open settings window and the one shown.
+///
+/// Asked every frame while a window is open, and building the pages is the work of
+/// all their rows: the answer is kept for a moment.
 pub(crate) fn page_titles(app: &App, kind: &ListKind) -> Option<(Vec<String>, usize)> {
+    thread_local! {
+        static TITLES: std::cell::RefCell<Option<(ListKind, std::time::Instant, (Vec<String>, usize))>> = const { std::cell::RefCell::new(None) };
+    }
+    if let Some(hit) = TITLES.with(|c| {
+        c.borrow().as_ref().filter(|(k, t, _)| k == kind && t.elapsed().as_millis() < 300).map(|(_, _, r)| r.clone())
+    }) {
+        return Some(hit);
+    }
     let (pages, tab) = pages_of(app, kind)?;
-    Some((pages.iter().map(|p| p.0.to_string()).collect(), tab))
+    let r = (pages.iter().map(|p| p.0.to_string()).collect::<Vec<_>>(), tab);
+    TITLES.with(|c| *c.borrow_mut() = Some((kind.clone(), std::time::Instant::now(), r.clone())));
+    Some(r)
 }
 
 /// The time (seconds of the day) a tour starts: its earliest trip's departure.
@@ -1923,22 +1955,58 @@ fn natural(a: &str, b: &str) -> std::cmp::Ordering {
     key(a).cmp(&key(b))
 }
 
+static PENDING_SETTINGS: std::sync::Mutex<(Vec<(String, String)>, Option<std::time::Instant>)> =
+    std::sync::Mutex::new((Vec::new(), None));
+const SETTINGS_FLUSH_MS: u128 = 250;
+static SETTINGS_CACHE: std::sync::Mutex<Option<serde_json::Value>> = std::sync::Mutex::new(None);
+
 /// Write one key of `~/.openomsi/settings.cfg` (the launcher's file; the other lines
-/// stay as they are).
+/// stay as they are). The write is delayed a moment and joined with the ones that follow.
 pub(crate) fn remember_setting(key: &str, value: &str) {
-    let Ok(mut v) = omsi_launcher_lib::get_settings() else { return };
-    let parsed: serde_json::Value = value.parse::<f64>().map(serde_json::Value::from).unwrap_or_else(|_| serde_json::Value::from(value));
-    // a switch goes in as true/false, as the launcher's own values are: written as 1 it
-    // was read as not set and saved back as its default (the pause menu's options were
-    // lost with the next game)
-    let parsed = match (&v[key], &parsed) {
-        (serde_json::Value::Bool(_), serde_json::Value::Number(n)) => serde_json::Value::Bool(n.as_f64().unwrap_or(0.0) > 0.5),
-        _ if key == "time_speed" => serde_json::Value::from(value),
-        _ => parsed,
+    {
+        let mut p = PENDING_SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
+        match p.0.iter_mut().find(|(k, _)| k == key) {
+            Some(e) => e.1 = value.to_string(),
+            None => p.0.push((key.to_string(), value.to_string())),
+        }
+    }
+    flush_settings(false);
+}
+
+/// Write the remembered keys out: all of them when `force`, else only when the last write
+/// is `SETTINGS_FLUSH_MS` ago. Called every frame, before the file is read and on exit.
+pub(crate) fn flush_settings(force: bool) {
+    let pending = {
+        let mut p = PENDING_SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
+        if p.0.is_empty() {
+            return;
+        }
+        if !force && p.1.is_some_and(|t| t.elapsed().as_millis() < SETTINGS_FLUSH_MS) {
+            return;
+        }
+        p.1 = Some(std::time::Instant::now());
+        std::mem::take(&mut p.0)
     };
-    v[key] = parsed;
+    let Ok(mut v) = omsi_launcher_lib::get_settings() else { return };
+    apply_pending(&mut v, &pending);
     if let Err(e) = omsi_launcher_lib::save_settings(&v) {
         log::warn!("settings not saved: {e:#}");
+    }
+    *SETTINGS_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+fn apply_pending(v: &mut serde_json::Value, pending: &[(String, String)]) {
+    for (key, value) in pending {
+        let parsed: serde_json::Value = value.parse::<f64>().map(serde_json::Value::from).unwrap_or_else(|_| serde_json::Value::from(value.as_str()));
+        // a switch goes in as true/false, as the launcher's own values are: written as 1 it
+        // was read as not set and saved back as its default (the pause menu's options were
+        // lost with the next game)
+        let parsed = match (&v[key.as_str()], &parsed) {
+            (serde_json::Value::Bool(_), serde_json::Value::Number(n)) => serde_json::Value::Bool(n.as_f64().unwrap_or(0.0) > 0.5),
+            _ if key == "time_speed" => serde_json::Value::from(value.as_str()),
+            _ => parsed,
+        };
+        v[key.as_str()] = parsed;
     }
 }
 
