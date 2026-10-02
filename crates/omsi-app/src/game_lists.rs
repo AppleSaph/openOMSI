@@ -1527,7 +1527,7 @@ fn same_value(a: &str, b: &str) -> bool {
 fn select_options(key: &str) -> Vec<(&'static str, &'static str)> {
     match key {
         "graphics" => vec![("vanilla", "Vanilla (as OMSI 2)"), ("vanilla_plus", "Vanilla+"), ("enhanced", "Enhanced")],
-        "msaa" => vec![("1", "Off"), ("2", "2x MSAA"), ("4", "4x MSAA")],
+        "msaa" => vec![("1", "Off"), ("2", "2x MSAA"), ("4", "4x MSAA"), ("8", "8x MSAA")],
         "render_scale" => vec![("auto", "Auto"), ("1", "100%"), ("0.85", "85%"), ("0.75", "75%"), ("0.67", "67%"), ("0.5", "50%")],
         "anisotropy" => vec![("1", "Off"), ("2", "2x"), ("4", "4x"), ("8", "8x")],
         "shadow_size" => vec![("1024", "1024"), ("2048", "2048"), ("4096", "4096")],
