@@ -35,5 +35,8 @@ omsi-net = { path = "../omsi-net" }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_SystemInformation"] }
+
 [target.'cfg(not(target_os = "android"))'.dependencies]
 rfd = "0.15"

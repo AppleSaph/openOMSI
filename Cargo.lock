@@ -3342,6 +3342,7 @@ dependencies = [
  "serde_json",
  "sevenz-rust2",
  "unrar-rs",
+ "windows 0.62.2",
  "winresource",
  "zip",
 ]
