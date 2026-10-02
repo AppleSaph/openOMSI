@@ -2997,6 +2997,11 @@ impl App {
         self.mouse_drive = on;
         if !on {
             crate::player::keep_wheel(self.player.as_mut());
+            // the brake the mouse held stays on, as the brake key leaves it (OMSI has one
+            // brake for both): the bus rolled off when the mouse let go of it (#517, #760)
+            if let Some(p) = self.player.as_mut() {
+                p.axes.brake = p.axes.brake.max(self.mouse_pedals.1);
+            }
             #[cfg(windows)]
             self.reset_vr_pointer();
         }
