@@ -1515,6 +1515,8 @@ pub struct Humans {
     claimed: HashMap<u32, f64>,
     /// The host's people waiting at a stop (client): (stop, waiting place).
     mirror_wait: HashMap<u32, (i64, usize)>,
+    /// How the player's bus is driven, for its riders' complaints.
+    comfort: RideComfort,
 }
 
 /// Resolve each map entry directly, including human packs with nested folders.
@@ -1705,6 +1707,7 @@ impl Humans {
             claims_out: Vec::new(),
             claimed: HashMap::new(),
             mirror_wait: HashMap::new(),
+            comfort: RideComfort::default(),
         }
     }
 
@@ -3592,6 +3595,7 @@ impl Humans {
         // the stops: which buses stand at them (sub_61f93c), who waits there (sub_61bf94)
         let at_stops = self.register_buses(&buses, dt);
         self.claim_waiting();
+        self.ride_comfort(dt, bus, &buses, &bus_ix, world);
         if !self.avatar_only {
             self.stops_tick(dt, world, renderer, scene);
         }

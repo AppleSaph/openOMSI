@@ -1475,6 +1475,7 @@ impl VehicleInstance {
             .unwrap_or(0.0);
         self.put(self.v_n_wheel, n_wheel);
         let a = self.physics.accel;
+        self.physics.a_trans = a;
         self.put(self.v_accel[0], a.x);
         self.put(self.v_accel[1], a.y);
         self.put(self.v_accel[2], a.z);
@@ -1706,6 +1707,7 @@ impl VehicleInstance {
         // 9.81 m/s² (the wheels' springs need it), which as `A_Trans_Z` kept checks such
         // as the NEOMAN ECAS's "|A_Trans_Z| < 3 while driving" from ever passing.
         let a = scripts_acceleration(rb.accel_body, rb.orientation);
+        self.physics.a_trans = a;
         self.put(self.v_accel[0], a.x);
         self.put(self.v_accel[1], a.y);
         self.put(self.v_accel[2], a.z);
@@ -2157,6 +2159,7 @@ impl VehicleInstance {
             .unwrap_or(0.0);
         self.put(self.v_n_wheel, n_wheel);
         let a = self.physics.accel;
+        self.physics.a_trans = a;
         self.put(self.v_accel[0], a.x);
         self.put(self.v_accel[1], a.y);
         self.put(self.v_accel[2], a.z);
