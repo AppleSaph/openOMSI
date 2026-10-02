@@ -367,6 +367,20 @@ pub(crate) fn run_offscreen(
                     let now = (parse_time(&args.time) + srv_clock + srv_admin.shift).rem_euclid(86400.0);
                     srv_admin.shift += (want - now + 43_200.0).rem_euclid(86_400.0) - 43_200.0;
                 }
+                if let Some(want) = srv_admin.set_weather.take() {
+                    // only an installed weather (the name came over the network)
+                    let found = omsi_cfg::read_dir_merged("Weather")
+                        .into_iter()
+                        .filter_map(|p| p.file_name().map(|n| format!("Weather/{}", n.to_string_lossy())))
+                        .find(|f| f.eq_ignore_ascii_case(&want));
+                    match found {
+                        Some(f) => {
+                            log::info!("server: weather now {f}");
+                            l.set_weather(&f);
+                        }
+                        None => log::info!("server: weather {want} is not installed"),
+                    }
+                }
                 if std::mem::take(&mut srv_admin.next_weather) {
                     let mut files: Vec<String> = omsi_cfg::read_dir_merged("Weather")
                         .into_iter()
