@@ -260,6 +260,57 @@ pub struct StopBoards {
     pub departures_gen: u64,
 }
 
+/// The material slots of a lamp's mesh switched by its variables: `[alphascale] var`
+/// fades a slot (a lens shown by its alpha rather than by a `[visible]` mesh, as the
+/// Korean maps' signals do, #826) and `[matl_lightmap] tex var` lights it.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct LampSlots {
+    pub count: usize,
+    pub alpha: Vec<(usize, String)>,
+    pub light: Vec<(usize, String)>,
+}
+
+impl LampSlots {
+    /// The `[alphascale]` and `[matl_lightmap]` variables of a mesh's material slots.
+    pub fn of_mesh(o3d_mats: &[omsi_o3d::Material], overrides: &[MaterialDef], count: usize) -> LampSlots {
+        let mut l = LampSlots { count, ..Default::default() };
+        for o in overrides.iter().filter(|o| !o.item) {
+            let Some(slot) = omsi_sim::vehicle::override_slot(o3d_mats, o) else { continue };
+            if let Some(v) = o.alphascale.as_ref().filter(|v| !v.trim().is_empty()) {
+                l.alpha.push((slot, v.trim().to_string()));
+            }
+            if let Some((_, v)) = &o.lightmap {
+                l.light.push((slot, v.trim().to_string()));
+            }
+        }
+        l
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.alpha.is_empty() && self.light.is_empty()
+    }
+
+    /// The slots' alpha and light-map switch from the lamp's variables (`value`: `None`
+    /// for a variable the lamp does not have). Alpha: the variable's value, a slot without
+    /// one opaque as authored. Light map: on from 0.5; a variable the lamp does not have
+    /// (or none at all) leaves it on, as Omsi.exe's stage does with an unregistered one.
+    pub fn values(&self, value: &dyn Fn(&str) -> Option<f32>) -> (Vec<f32>, Vec<f32>) {
+        let mut alpha = vec![1.0; self.count.max(1)];
+        let mut light = vec![1.0; self.count.max(1)];
+        for (slot, v) in &self.alpha {
+            if let (Some(a), Some(x)) = (alpha.get_mut(*slot), value(v)) {
+                *a = x.clamp(0.0, 1.0);
+            }
+        }
+        for (slot, v) in &self.light {
+            if let (Some(l), Some(x)) = (light.get_mut(*slot), (!v.is_empty()).then(|| value(v)).flatten()) {
+                *l = if x >= 0.5 { 1.0 } else { 0.0 };
+            }
+        }
+        (alpha, light)
+    }
+}
+
 /// A placed `[trafficlight]` object: its render instances follow the light state of
 /// light `index` of the crossing `parent`.
 #[derive(Clone)]
@@ -275,6 +326,9 @@ pub struct LightObject {
     pub any_light: bool,
     /// (render instance, `[visible]` condition of that mesh)
     pub instances: Vec<(usize, Option<(String, f32)>)>,
+    /// Per instance (parallel to `instances`) the material slots its lamp variables switch
+    /// besides `[visible]`: see [`LampSlots`].
+    pub slots: Vec<LampSlots>,
     /// Material switches kept with the lamp, updated alongside its visibility.
     pub variants: Vec<(usize, usize, MaterialId, MaterialId, String)>,
     pub pos: DVec3,
@@ -5691,8 +5745,16 @@ impl World {
                         log::info!("{} slot {slot} '{}': tex {} alpha {:?} color {:?} emissive {:?} night {} transmap {:?} envmap {:?} auto_night {}", ot.sco.path.display(), m.texture, tex.is_some(), alpha, color, emissive, night.is_some(), transmap.map(|t| t.1), envmap.map(|e| e.1), t.auto_night);
                     }
                 }
+                // [matl_lightmap]: laid on the light as on a vehicle (a lamp's lens, a lit
+                // shelter or advertising pillar); switched by its variable per placement
+                // (`LampSlots`), on where nothing switches it. (Left out, a signal whose
+                // lenses are lit by their light maps stayed dark, #826.)
+                let light = match slot_ov.iter().find_map(|o| o.lightmap.clone()) {
+                    Some((name, _)) => tex_of(gpu, scene, &name, &mut t),
+                    None => None,
+                };
                 let base = renderer.add_material_extra(
-                    scene, tex, alpha, color, false, transmap, night, None, envmap, emissive, extra,
+                    scene, tex, alpha, color, false, transmap, night, light, envmap, emissive, extra,
                 );
                 let base = gpu.material(renderer, scene, base);
                 t.materials.push(base);
@@ -5729,8 +5791,12 @@ impl World {
                     it_extra.glass |= extra.glass;
                     renderer.address_next.set(address);
                     renderer.light_map_next.set(ot.sco.light_map_mapping);
+                    let it_light = match items.iter().find_map(|o| o.lightmap.clone()) {
+                        Some((name, _)) => tex_of(gpu, scene, &name, &mut t).or(light),
+                        None => light,
+                    };
                     let item = renderer.add_material_extra(
-                        scene, tex, it_alpha, ic, false, transmap, it_night, None, envmap, ie,
+                        scene, tex, it_alpha, ic, false, transmap, it_night, it_light, envmap, ie,
                         it_extra,
                     );
                     let item = gpu.material(renderer, scene, item);
@@ -6477,6 +6543,7 @@ impl World {
                     let draw_pos = scenery_draw_position(pos, ot.sco.surface);
                     let has_lower = !type_lods.is_empty();
                     let mut lamp_instances = Vec::new();
+                    let mut lamp_slots = Vec::new();
                     let mut all_instances = Vec::new();
                     let mut object_variants: Vec<(usize, usize, MaterialId, MaterialId, String)> =
                         Vec::new();
@@ -6684,6 +6751,12 @@ impl World {
                         }
                         if lamp.is_some() {
                             lamp_instances.push((inst, ot.mesh_visible.get(mi).cloned().flatten()));
+                            lamp_slots.push(
+                                ot.meshes
+                                    .get(mi)
+                                    .map(|(_, o3d_mats, overrides)| LampSlots::of_mesh(o3d_mats, overrides, mats.len()))
+                                    .unwrap_or_default(),
+                            );
                         }
                         if type_auto_night && (2..=4).contains(&ot.sco.night_map_mode) {
                             // each house its own hours (OMSI draws them once per object)
@@ -6971,6 +7044,7 @@ impl World {
                             index,
                             any_light,
                             instances: lamp_instances,
+                            slots: lamp_slots,
                             variants: object_variants,
                             pos,
                             script,
@@ -12188,6 +12262,26 @@ mod tests {
 
     /// An LED panel's light map is one white pixel; a flipdot's is a picture with dark
     /// parts (the Krueger's `vmatrix_leer_LM.bmp`), and does not make an LED panel (#413).
+    #[test]
+    fn a_lamps_lenses_follow_its_alphascale_and_light_map_variables() {
+        // three lenses on one mesh, each faded by its colour's variable and lit by its
+        // light map (Cheongsan's signals, #826); a fourth slot switched by nothing
+        let slots = LampSlots {
+            count: 4,
+            alpha: vec![(0, "Red".into()), (1, "Yellow".into()), (2, "Green".into())],
+            light: vec![(0, "Red".into()), (1, "Yellow".into()), (2, "Green".into()), (3, "NoSuchVar".into())],
+        };
+        let state = |v: &str| standard_traffic_lamp(v, true, false, false, false);
+        let (alpha, light) = slots.values(&state);
+        assert_eq!(alpha, vec![1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(light, vec![1.0, 0.0, 0.0, 1.0]);
+        let state = |v: &str| standard_traffic_lamp(v, false, false, true, false);
+        assert_eq!(slots.values(&state), (vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, 1.0, 1.0]));
+        // a light map without a variable is always on
+        let plain = LampSlots { count: 1, alpha: vec![], light: vec![(0, String::new())] };
+        assert_eq!(plain.values(&|_| Some(0.0)).1, vec![1.0]);
+    }
+
     #[test]
     fn only_a_white_light_map_makes_an_led_panel() {
         assert!(is_white_lightmap(&[255, 255, 255, 255]));

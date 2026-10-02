@@ -6686,12 +6686,30 @@ impl Traffic {
                 let v = value(lamp, &lamp.coronas[k].1);
                 lamp.lit[k] = v;
             }
-            for (inst, cond) in &lamp.instances {
+            for (k, (inst, cond)) in lamp.instances.iter().enumerate() {
                 let visible = match cond {
                     Some((var, want)) => (value(lamp, var) - want).abs() < 0.5,
                     None => true,
                 };
-                renderer.set_params(scene, *inst, &[], visible, &[]);
+                // lenses switched by their material instead (`[alphascale]` and
+                // `[matl_lightmap]` on the lamp's variables, #826)
+                match lamp.slots.get(k).filter(|s| !s.is_empty()) {
+                    Some(slots) => {
+                        let known = |v: &str| -> Option<f32> {
+                            let scripted = lamp.script.as_ref().and_then(|script| {
+                                let s = script.lock();
+                                if s.program.frame.is_empty() { None } else { s.var(v) }
+                            });
+                            scripted
+                                .or_else(|| v.trim().parse::<f32>().ok())
+                                .or_else(|| crate::scene::standard_traffic_lamp(v, r, y, g, request))
+                        };
+                        let (alpha, light) = slots.values(&known);
+                        renderer.set_params(scene, *inst, &alpha, visible, &[]);
+                        renderer.set_slot_light(scene, *inst, &light);
+                    }
+                    None => renderer.set_params(scene, *inst, &[], visible, &[]),
+                }
             }
         }
         // A far car's script textures (its destination sign) stay as they are drawn: OMSI
