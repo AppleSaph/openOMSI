@@ -152,6 +152,10 @@ pub(super) struct Pax {
     /// Somebody in the way (+0x6c7: 1 behind, 2 in front facing them, 3 in front going
     /// the same way or busy) and on which sides there is room (+0x6c8, +0x6c9).
     pub block: u8,
+    /// Seconds held up by somebody in front inside a bus, and seconds left passing them
+    /// (see `pax_move`).
+    pub jam: f32,
+    pub squeeze: f32,
     pub free_r: bool,
     pub free_l: bool,
     /// Complaint the bus made them leave with (+0x630).
@@ -212,6 +216,8 @@ impl Pax {
             speed: 0.0,
             walk_speed,
             block: 0,
+            jam: 0.0,
+            squeeze: 0.0,
             free_r: true,
             free_l: true,
             complaint: 0,
@@ -808,8 +814,27 @@ impl Humans {
             _ => {}
         }
         // the people in the way (sub_626860)
-        let (block, free_r, free_l) = if st == 1 || st == 5 { self.pax_blockers(i, buses, bus_ix) } else { (0, true, true) };
+        let (mut block, free_r, free_l) = if st == 1 || st == 5 { self.pax_blockers(i, buses, bus_ix) } else { (0, true, true) };
         let p = self.pax_mut(i).unwrap();
+        // Inside a bus, people going opposite ways along the aisle or the stairs stood face to
+        // face for good (the whole upper deck of a double-decker on its way out, the people
+        // coming up stopped on the stairs): held up for two seconds, they squeeze past for a
+        // second and a half, as the people on the pavements do.
+        if p.inside.is_some() {
+            if p.squeeze > 0.0 {
+                p.squeeze -= dt;
+                block = 0;
+            } else if block == 2 {
+                p.jam += dt;
+                if p.jam > 2.0 {
+                    p.jam = 0.0;
+                    p.squeeze = 1.5;
+                    block = 0;
+                }
+            } else {
+                p.jam = 0.0;
+            }
+        }
         p.st = st;
         p.pt = pt;
         p.link = link;
@@ -1466,8 +1491,12 @@ impl Humans {
                 }
                 return;
             }
-            if p.timer < 0.0 {
-                // standing a second: perhaps another door opened (0x62d6b1)
+            if p.timer < 0.0 && p.st != 5 {
+                // standing a second: perhaps another door opened (0x62d6b1). Once a second:
+                // with the timer left run out, the way was found afresh every frame from the
+                // nearest point, and whoever had left a point was pulled back to it - the
+                // people coming down from the upper deck never got off the stairs.
+                self.pax_mut(i).unwrap().timer = 1.0;
                 let exits = bn.cabin.exit_points();
                 let all = bn.cabin.all_points();
                 let pp = self.pax_mut(i).unwrap();
