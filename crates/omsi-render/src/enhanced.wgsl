@@ -832,12 +832,17 @@ fn shade_enhanced(in: FsIn, puddle_weight: ptr<function, vec2<f32>>, capture: bo
     }
     if (glass) {
         // see-through glass: the reflection is added on top of what shows through, so
-        // the blend keeps it where the glass itself is faint
-        let refl_rgb = reflection * pre;
+        // the blend keeps it where the glass itself is faint - but not where the texture
+        // is not there at all: Omsi.exe leaves the alpha as the texture has it, so a
+        // see-through part of a blended layer (the clear ground of a sticker on the
+        // cab's wall, #861) shows no reflection; made up to a quarter opaque by it, the
+        // whole rectangle of the sticker mirrored the sky
+        let cover = smoothstep(0.0, 0.05, alpha);
+        let refl_rgb = reflection * pre * cover;
         let rl = dot(refl_rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
         // (a pane passes most light: a reflection making it up to 60 % opaque laid a grey
         // veil over the destination display behind the windscreen and the saloon)
-        let a2 = clamp(alpha + (1.0 - alpha) * clamp(rl * 0.25 + fr.g, 0.0, 0.25) * (1.0 - 0.85 * own_pane), alpha, 1.0);
+        let a2 = clamp(alpha + (1.0 - alpha) * clamp(rl * 0.25 + fr.g, 0.0, 0.25) * (1.0 - 0.85 * own_pane) * cover, alpha, 1.0);
         let c = (rgb * alpha + refl_rgb) / max(a2, 1e-3);
         return vec4<f32>(c * aer.a + aer.rgb * pre, a2);
     }
