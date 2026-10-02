@@ -4,6 +4,33 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.1.929 - 2026-10-02
+
+### VR
+- VR navigator settings are restored in the new pause menu
+  [#808](https://github.com/openOMSI-Project/openOMSI/pull/808)
+
+## 0.1.927 - 2026-10-02
+
+### Menu
+- A new in-game menu is implemented, together with real-time and METAR synchronisation.
+  [#679](https://github.com/openOMSI-Project/openOMSI/pull/679)
+
+### Maps
+- Far stand-in models are drawn only from the tiles OMSI loads together with them, so
+  stand-ins no longer appear for tiles that are not part of the loaded set.
+  [#743](https://github.com/openOMSI-Project/openOMSI/pull/743)
+- Scenery sign text is aligned correctly again.
+  [#764](https://github.com/openOMSI-Project/openOMSI/pull/764)
+
+### Input
+- Steering wheel hats are read on Linux, and the list scrolls to the pressed button.
+  [#788](https://github.com/openOMSI-Project/openOMSI/pull/788)
+
+### Physics
+- Wheels no longer jolt when driving over stacked road surfaces.
+  [#757](https://github.com/openOMSI-Project/openOMSI/pull/757)
+
 ## 0.1.851 - 2026-10-02
 
 ### Maps
