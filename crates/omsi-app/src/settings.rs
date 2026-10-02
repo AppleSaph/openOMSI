@@ -72,8 +72,9 @@ pub struct Settings {
     pub ai_unsched_factor: f32,
     /// `[AIMaxCountScheduled]`: timetable vehicles on the road at once (0 = no limit).
     pub ai_max_scheduled: u32,
-    /// `[AIMaxCountParked]`: parked cars placed in the loaded tiles (0 = every space).
-    pub ai_max_parked: u32,
+    /// `[AIMaxCountParked]`: parked cars placed in the loaded tiles (0 = every space, -1 =
+    /// none at all).
+    pub ai_max_parked: i32,
     /// `[no_collision_vehToVeh]` off: the player's bus collides with the traffic.
     pub collision_vehicles: bool,
     /// `[no_collision]` off: the player's bus collides with the map's solid objects.
@@ -414,7 +415,7 @@ impl Settings {
                 "maintenance" | "wear_lifespan" => s.maintenance = v.parse::<u8>().map(|x| x.min(4)).unwrap_or(s.maintenance),
                 "ai_unsched_factor" | "aiunschedfactor" => s.ai_unsched_factor = v.trim_end_matches('%').parse::<f32>().map(|x| (x / 100.0).clamp(0.0, 3.0)).unwrap_or(s.ai_unsched_factor),
                 "ai_max_scheduled" | "aimaxcountscheduled" => s.ai_max_scheduled = v.parse().unwrap_or(s.ai_max_scheduled),
-                "ai_max_parked" | "aimaxcountparked" => s.ai_max_parked = v.parse().unwrap_or(s.ai_max_parked),
+                "ai_max_parked" | "aimaxcountparked" => s.ai_max_parked = v.parse::<i32>().map(|x| x.max(-1)).unwrap_or(s.ai_max_parked),
                 "collision_vehicles" => s.collision_vehicles = b(v),
                 "collision_objects" => s.collision_objects = b(v),
                 "collision_pedestrians" => s.collision_pedestrians = b(v),

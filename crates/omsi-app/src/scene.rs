@@ -1868,9 +1868,9 @@ pub struct World {
     /// overlaps one, and sends the workshop's team out when the bus stands in none.
     pub petrol_stations: Mutex<Vec<omsi_sim::collision::Obb>>,
     /// Parked cars standing in the loaded tiles, and the options' `[AIMaxCountParked]`
-    /// (0 = every space the map fills): past it the spaces stay empty.
+    /// (0 = every space the map fills, -1 = none): past it the spaces stay empty.
     pub parked_live: std::sync::atomic::AtomicUsize,
-    pub parked_max: usize,
+    pub parked_max: i64,
     /// Places that echo (`[triggerbox_new]` + `[triggerbox_setreverb]`: the railway bridges'
     /// underpasses): the box, the reverberation time (s) and the distance (m) over which it
     /// fades in at the box's sides.
@@ -2665,7 +2665,7 @@ impl World {
             light_maps_generation: std::sync::atomic::AtomicU64::new(0),
             light_map_atlas: Mutex::new(None),
             parked_live: std::sync::atomic::AtomicUsize::new(0),
-            parked_max: crate::settings::Settings::load().ai_max_parked as usize,
+            parked_max: crate::settings::Settings::load().ai_max_parked as i64,
             signal_routes,
             particle_objects: Mutex::new(HashMap::new()),
             fonts: Arc::new(Mutex::new(omsi_sim::texttex::FontLibrary::new(root))),
@@ -3923,7 +3923,7 @@ impl World {
         let h = (key as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 33;
         // leave some spaces empty like the original, and all once the options' count of
         // parked cars stands
-        let full = self.parked_max > 0 && self.parked_live.load(std::sync::atomic::Ordering::Relaxed) >= self.parked_max;
+        let full = self.parked_max < 0 || (self.parked_max > 0 && self.parked_live.load(std::sync::atomic::Ordering::Relaxed) as i64 >= self.parked_max);
         if h % 4 == 0 || full {
             stats.lock().empty_spaces += 1;
             return None;
