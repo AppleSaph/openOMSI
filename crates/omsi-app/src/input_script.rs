@@ -3313,6 +3313,9 @@ impl App {
             3
         } else if self.mouse_drive && matches!(self.view.as_str(), "driver" | "outside" | "pax") && self.game_menu.is_none() {
             2
+        } else if self.game_menu.is_some() {
+            // (the game menu's own cursor: not overwritten here, or it flips back and forth)
+            self.menu_cursor_kind()
         } else if self.hover.is_some() || self.hover_hand {
             1
         } else {
