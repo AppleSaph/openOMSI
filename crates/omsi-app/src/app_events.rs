@@ -193,6 +193,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if self.vr_nav_edit.is_some() { return; }
+                // (both physical pixels)
                 if let Some((x, y)) = self.cursor_hidden {
                     if (position.x as f32 - x).abs() + (position.y as f32 - y).abs() > 8.0 {
                         self.cursor_hidden = None;
@@ -643,8 +644,18 @@ impl ApplicationHandler for App {
                 if analog.steering.is_some() && (moved || self.last_ctl_steer.is_none()) {
                     self.last_ctl_steer = analog.steering;
                 }
-                let hide = (moved || actions.iter().any(|a| a.1)) && !self.mouse_drive && self.game_menu.is_none();
-                if hide != self.cursor_hidden.is_some() && (hide || self.game_menu.is_some() || self.mouse_drive) {
+                #[cfg(windows)]
+                let vr_on = self.vr.is_some();
+                #[cfg(not(windows))]
+                let vr_on = false;
+                let needs_mouse = self.mouse_drive
+                    || self.game_menu.is_some()
+                    || self.chooser.is_some()
+                    || self.list_kind.is_some()
+                    || self.navigator.as_ref().is_some_and(|n| n.map_open())
+                    || !matches!(self.view.as_str(), "driver" | "outside" | "pax");
+                let hide = (moved || actions.iter().any(|a| a.1)) && !needs_mouse && !vr_on;
+                if self.vr_nav_edit.is_none() && hide != self.cursor_hidden.is_some() && (hide || needs_mouse) {
                     if let Some(win) = self.window.as_ref() {
                         win.set_cursor_visible(!hide);
                         self.cursor_hidden = hide.then_some(self.cursor);
