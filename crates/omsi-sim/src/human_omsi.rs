@@ -430,15 +430,18 @@ impl OmsiAnim {
             let l44 = flat_arm.length();
             let flat_v = Vec3::new(v.x, 0.0, v.z);
             let l48 = flat_v.length();
-            let l38 = (flat_arm - flat_v).length();
-            let c = ((l44 * l44 + l48 * l48) - l38 * l38) / (2.0 * l44 * l48);
-            let c = if c > 1.0 { 1.0 } else { c };
-            a[14] = if c > -1.0 { 180.0 - c.acos() / DEG } else { 0.0 };
+            // The turn about the shoulder from the arm's own direction to the target's, and the
+            // lift from its height to the target's - signed: taken as the law of cosines' bare
+            // angle (and 180 less it) with the lift the wrong way round, a hand reaching for
+            // the money tray at hip height went up beside the head, the arm stretched out
+            // forward and up (a raised-arm salute at every cash desk)
+            let _ = (l44, l48);
+            a[14] = (flat_v.z.atan2(flat_v.x) - flat_arm.z.atan2(flat_arm.x)) / DEG;
             let l58 = arm.length();
             let l5c = v.length();
             let s1 = (-v.y / l5c).clamp(-1.0, 1.0).asin();
             let s2 = (arm.y / l58).clamp(-1.0, 1.0).asin();
-            a[16] = -(s1 - s2) / DEG;
+            a[16] = (s1 - s2) / DEG;
         } else {
             match kind {
                 2 => {
@@ -613,6 +616,23 @@ mod tests {
         let m = DMat::translation(Vec3::X).mul(&DMat::rot_z(std::f32::consts::FRAC_PI_2));
         let p = m.point(Vec3::ZERO);
         assert!((p - Vec3::new(0.0, 1.0, 0.0)).length() < 1e-6, "{p:?}");
+    }
+
+    #[test]
+    fn the_hand_reaches_down_to_the_cash_desk() {
+        // targets in front of the right shoulder (D3D: x right, y up, z forward), below it as
+        // the money tray and the ticket slot are: the fingers end there, the elbow under the
+        // shoulder - not the arm raised up and out
+        let r = rig();
+        for target in [Vec3::new(0.25, 1.0, 0.4), Vec3::new(0.1, 1.2, 0.45), Vec3::new(0.35, 1.1, 0.2)] {
+            let mut an = OmsiAnim::default();
+            an.advance(&r, &AnimInput { kind: 0, room_height: 50.0, dt_ms: 16.0, reach: Some(target), ..Default::default() });
+            let b = an.bones_d3d(&r);
+            let finger = b[7].point(r.finger);
+            let elbow = b[5].point(r.elbow);
+            assert!((finger - target).length() < 0.05, "{target:?}: the fingers at {finger:?}");
+            assert!(elbow.y < r.shoulder.y, "{target:?}: the elbow at {elbow:?} above the shoulder");
+        }
     }
 
     #[test]
