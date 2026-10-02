@@ -251,7 +251,7 @@ impl App {
             if pressed && !repeat {
                 match code {
                     // OMSI's `toggel_mouse_ctrl` (O): steering and pedals with the mouse
-                    KeyCode::KeyO if !ctrl && !alt && !shift_now => {
+                    KeyCode::KeyO if !ctrl && !alt && !shift_now && self.key_left_free(code, "toggel_mouse_ctrl") => {
                         self.game_action("toggel_mouse_ctrl");
                         return;
                     }
@@ -380,11 +380,13 @@ impl App {
                         self.service_msg = Some((msg, 3.0));
                     }
                 }
+                // (F1-F4 where keyboard.cfg has no view keys; a key the player gave to
+                // something else, or a view key moved elsewhere, leaves them alone, #701)
                 match code {
-                    KeyCode::F1 => self.view = "driver".into(),
-                    KeyCode::F2 => self.view = "pax".into(),
-                    KeyCode::F3 => self.view = "outside".into(),
-                    KeyCode::F4 => {
+                    KeyCode::F1 if self.key_left_free(code, "view_set_driver") => self.view = "driver".into(),
+                    KeyCode::F2 if self.key_left_free(code, "view_set_passenger") => self.view = "pax".into(),
+                    KeyCode::F3 if self.key_left_free(code, "view_set_outside") => self.view = "outside".into(),
+                    KeyCode::F4 if self.key_left_free(code, "view_set_map") => {
                         // the free camera starts where the current view is looking
                         self.view = "free".into();
                         self.ego = false;
@@ -653,6 +655,13 @@ impl App {
         if let Some(p) = self.player.as_mut() {
             p.vehicle.host.clock = self.clock.clone();
         }
+    }
+
+    /// Whether a key the game gives `action` by itself (F1 the driver's view, O the mouse
+    /// steering) is still free for it: neither bound by the player to something of their
+    /// own nor `action` bound to another key in keyboard.cfg.
+    pub(crate) fn key_left_free(&self, code: KeyCode, action: &str) -> bool {
+        key_left_free(keys::dik_code(code), action, &self.own_keys, &self.game_keys)
     }
 
     /// Turn the view by (dx, dy) degrees, as dragging with the right button does: the free
@@ -3338,6 +3347,19 @@ pub(crate) fn chase_orbit_step(yaw: f32, pitch: f32, dx_px: f32, dy_px: f32) -> 
 
 #[cfg(test)]
 mod look_tests {
+    /// F1 given to a door and the driver's view moved to 1 (#701): F1 is not the view any more.
+    #[test]
+    fn a_built_in_view_key_steps_aside_for_the_players_own() {
+        use omsi_content::KeyBinding;
+        let kb = |a: &str, k: i32| KeyBinding { action: a.into(), scan_code: k, modifier: 0 };
+        let none = std::collections::HashSet::new();
+        assert!(super::key_left_free(Some(59), "view_set_driver", &none, &[]));
+        let own: std::collections::HashSet<i32> = [59].into();
+        assert!(!super::key_left_free(Some(59), "view_set_driver", &own, &[]));
+        assert!(!super::key_left_free(Some(59), "view_set_driver", &none, &[kb("view_set_driver", 2)]));
+        assert!(super::key_left_free(Some(59), "view_set_driver", &none, &[kb("view_set_passenger", 60)]));
+    }
+
     #[test]
     fn a_cursor_way_of_78_75_px_turns_by_the_field_of_view() {
         assert!((78.75 * super::look_deg_per_px(60.0) - 60.0).abs() < 1e-4);
@@ -3502,6 +3524,11 @@ pub(crate) const GAME_MENU: [(&str, &str); 11] = [
     ("shot", "Screenshot"),
     ("quit", "End the session"),
 ];
+
+/// `App::key_left_free` for a key's scan code.
+pub(crate) fn key_left_free(scan: Option<i32>, action: &str, own: &std::collections::HashSet<i32>, game: &[omsi_content::KeyBinding]) -> bool {
+    !scan.is_some_and(|s| own.contains(&s)) && !game.iter().any(|b| b.scan_code != 0 && b.action.eq_ignore_ascii_case(action))
+}
 
 /// `App::sync_view_look` for where `self` is borrowed in parts.
 /// See `App::look_key`.

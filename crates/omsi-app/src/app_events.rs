@@ -1454,24 +1454,25 @@ impl ApplicationHandler for App {
                             self.clock_hold = 0.0;
                         }
                     }
-                    // = and - zoom inside the bus (the numpad's are door keys there)
+                    // = and - zoom inside the bus (the numpad's are door keys there), unless
+                    // the player bound them to something of their own (#701)
+                    let zoom_in = self.keys.contains(&KeyCode::Equal) && !self.own_keys.contains(&13);
+                    let zoom_out = self.keys.contains(&KeyCode::Minus) && !self.own_keys.contains(&12);
                     if matches!(self.view.as_str(), "driver" | "pax") {
-                        if self.keys.contains(&KeyCode::Equal) {
+                        if zoom_in {
                             self.zoom_by(3.0 * dt);
                         }
-                        if self.keys.contains(&KeyCode::Minus) {
+                        if zoom_out {
                             self.zoom_by(-3.0 * dt);
                         }
                     }
                     // W/S and the wheel pull the outside camera in and out
                     if self.view == "outside" {
-                        if self.keys.contains(&KeyCode::Equal)
-                            || self.keys.contains(&KeyCode::NumpadAdd)
+                        if zoom_in || self.keys.contains(&KeyCode::NumpadAdd)
                         {
                             self.orbit = (self.orbit - 12.0 * dt).max(ORBIT_MIN);
                         }
-                        if self.keys.contains(&KeyCode::Minus)
-                            || self.keys.contains(&KeyCode::NumpadSubtract)
+                        if zoom_out || self.keys.contains(&KeyCode::NumpadSubtract)
                         {
                             self.orbit = (self.orbit + 12.0 * dt).min(ORBIT_MAX);
                         }
