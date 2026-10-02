@@ -225,7 +225,8 @@ fn render_text(font: &FontVec, text: &str, px: f32, color: [u8; 4]) -> omsi_text
 // ---------------------------------------------------------------------------------------
 // the chat
 
-/// How many lines the chat shows while it is closed, and how many it keeps to scroll back.
+/// How many rows the chat shows (a long line takes several), and how many lines it keeps to
+/// scroll back.
 const CHAT_SHOWN: usize = 8;
 pub const CHAT_KEEP: usize = 200;
 
@@ -493,20 +494,36 @@ impl Ui {
             let width = (460.0 * s).min(f.width * 0.5);
             let open = c.typing.is_some();
             let n = c.lines.len();
-            let shown = CHAT_SHOWN.min(n);
             let end = n.saturating_sub(if open || self.chat.hovered { self.chat.scroll } else { 0 });
-            let start = end.saturating_sub(shown);
             let box_h = lh * CHAT_SHOWN as f32 + lh * 1.6;
             self.chat.rect = [x0 - 6.0 * s, y0 - 6.0 * s, x0 + width, y0 + box_h];
             self.chat.hovered = self.chat.contains(f.cursor.0, f.cursor.1);
             let show_box = open || self.chat.hovered;
-            // the lines, newest at the bottom of the history area
-            let mut y = y0 + lh * (CHAT_SHOWN - (end - start)) as f32;
-            for line in &c.lines[start..end] {
-                let color = if line.starts_with("* ") { [255, 226, 140, 230] } else { [255, 255, 255, 230] };
-                let text = clip_to(&self.text, line, px as f32, width);
+            // the lines, newest at the bottom of the history area; a line too long for the box
+            // goes on in rows under it, indented (the oldest line shown may lose its first rows)
+            let indent = 14.0 * s;
+            let mut rows: Vec<(f32, String, [u8; 4])> = Vec::new();
+            {
+                let tc = &self.text;
+                let measure = |t: &str| tc.width_raw(t, px as f32);
+                let mut i = end;
+                while i > 0 && rows.len() < CHAT_SHOWN {
+                    i -= 1;
+                    let line = &c.lines[i];
+                    let color = if line.starts_with("* ") { [255, 226, 140, 230] } else { [255, 255, 255, 230] };
+                    for (k, t) in wrap_rows(line, width, indent, &measure).into_iter().enumerate().rev() {
+                        if rows.len() == CHAT_SHOWN {
+                            break;
+                        }
+                        rows.push((if k == 0 { 0.0 } else { indent }, t, color));
+                    }
+                }
+                rows.reverse();
+            }
+            let mut y = y0 + lh * (CHAT_SHOWN - rows.len()) as f32;
+            for (dx, text, color) in rows {
                 let l = self.text.label(r, scene, &text, px, color);
-                scene.overlays.push((l.tex, [x0, y, x0 + l.w as f32, y + l.h as f32]));
+                scene.overlays.push((l.tex, [x0 + dx, y, x0 + dx + l.w as f32, y + l.h as f32]));
                 y += lh;
             }
             if show_box {
@@ -1847,6 +1864,40 @@ fn clip_to(tc: &TextCache, text: &str, px: f32, width: f32) -> String {
     head(lo)
 }
 
+/// `text` in rows that fit `width` (as `measure` measures): broken between words, and inside a
+/// word too long for a row. The rows after the first fit `width - indent` (they are drawn
+/// indented, under the first).
+fn wrap_rows(text: &str, width: f32, indent: f32, measure: &impl Fn(&str) -> f32) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let room = |rows: &Vec<String>| if rows.is_empty() { width } else { width - indent };
+    for word in text.split(' ') {
+        let joined = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+        if measure(&joined) <= room(&rows) {
+            cur = joined;
+            continue;
+        }
+        if !cur.is_empty() {
+            rows.push(std::mem::take(&mut cur));
+        }
+        // the word alone, cut where a row is full (a long link, a run of letters)
+        let mut w: Vec<char> = word.chars().collect();
+        while w.len() > 1 && measure(&w.iter().collect::<String>()) > room(&rows) {
+            let mut k = w.len() - 1;
+            while k > 1 && measure(&w[..k].iter().collect::<String>()) > room(&rows) {
+                k -= 1;
+            }
+            rows.push(w[..k].iter().collect());
+            w.drain(..k);
+        }
+        cur = w.into_iter().collect();
+    }
+    if !cur.is_empty() || rows.is_empty() {
+        rows.push(cur);
+    }
+    rows
+}
+
 /// `text` cut at the start to fit (the end of what is being typed stays visible).
 fn clip_left(tc: &TextCache, text: &str, px: f32, width: f32) -> String {
     let mut t: Vec<char> = text.chars().collect();
@@ -1871,6 +1922,27 @@ fn vr_settings_sidebar_step(available: f32, pages: usize, scale: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_chat_line_goes_on_in_rows() {
+        // (10 px a character)
+        let m = |t: &str| t.chars().count() as f32 * 10.0;
+        // fits: one row, as it was
+        assert_eq!(wrap_rows("Anton: hello", 200.0, 20.0, &m), ["Anton: hello"]);
+        assert_eq!(wrap_rows("", 200.0, 20.0, &m), [""]);
+        // between words; the rows after the first are 20 px narrower
+        let rows = wrap_rows("Admin (private): take tour 13/1 at 04:47 from the depot", 200.0, 20.0, &m);
+        assert_eq!(rows, ["Admin (private):", "take tour 13/1 at", "04:47 from the", "depot"]);
+        assert!(rows[0].chars().count() <= 20 && rows[1..].iter().all(|r| r.chars().count() <= 18));
+        // nothing lost: the words come back in order
+        assert_eq!(rows.join(" "), "Admin (private): take tour 13/1 at 04:47 from the depot");
+        // a word longer than a row is cut inside
+        let rows = wrap_rows("x: https://example.org/a/very/long/link", 100.0, 20.0, &m);
+        assert_eq!(rows, ["x:", "https://", "example.", "org/a/ve", "ry/long/", "link"]);
+        assert_eq!(rows.concat(), "x:https://example.org/a/very/long/link");
+        // a box narrower than a character still ends (a character a row)
+        assert_eq!(wrap_rows("abc", 5.0, 0.0, &m), ["a", "b", "c"]);
+    }
 
     #[test]
     fn vr_settings_sidebar_keeps_back_clear() {
