@@ -3319,6 +3319,31 @@ impl Humans {
         }
     }
 
+    /// Who wants a timetable bus to stop, as Omsi.exe asks before it lets one pull in
+    /// (0x7da91f): the AI buses with somebody aboard on the way to a door to get off
+    /// (task 5), and the stops where somebody is waiting for a bus or walking to one
+    /// (tasks 1 to 3).
+    pub fn stop_wishes(&self) -> (HashSet<u64>, HashSet<i64>) {
+        let (mut alighting, mut waiting) = (HashSet::new(), HashSet::new());
+        for p in &self.people {
+            let State::Pax(x) = &p.state else { continue };
+            match x.task {
+                Task::InBusToExit => {
+                    if let Some(BusId::Ai(id)) = x.inside {
+                        alighting.insert(id);
+                    }
+                }
+                Task::WaitingForBus | Task::ToBus | Task::WalkingToBus => {
+                    if let Some(s) = x.stop {
+                        waiting.insert(s);
+                    }
+                }
+                _ => {}
+            }
+        }
+        (alighting, waiting)
+    }
+
     /// Timetable buses to hold at their stop, for the traffic.
     pub fn take_holds(&mut self) -> Vec<(u64, f32)> {
         std::mem::take(&mut self.holds)

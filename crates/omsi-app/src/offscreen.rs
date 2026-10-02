@@ -960,6 +960,8 @@ pub(crate) fn run_offscreen(
                 }
             }
             if let Some(t) = traffic.as_mut() {
+                let (alighting, waiting) = h.stop_wishes();
+                t.set_stop_wishes(alighting, waiting);
                 for (id, secs) in h.take_holds() {
                     t.hold_boarding(id, secs);
                 }

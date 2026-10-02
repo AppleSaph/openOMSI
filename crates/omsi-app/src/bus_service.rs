@@ -77,6 +77,14 @@ pub struct BusService {
     pub terminus: String,
     /// How far the front stop was last frame (m; infinite when not measured yet).
     near_d: f32,
+    /// Whether it serves the front stop, once that is settled (`SKIP_DECIDE`).
+    serve: Option<bool>,
+    /// The trip's last station: always served.
+    pub last_stop: Option<i64>,
+    /// Stops the timetable has it serve in any case, and those it serves when it would be
+    /// more than `EARLY_STOP_SHORT` early (`schedule::TripTimes::kinds`).
+    pub always: Vec<i64>,
+    pub serve_early: Vec<i64>,
 }
 
 /// The side the bus pulls out towards: left (1) from a bay on the right, else right (2).
@@ -111,6 +119,12 @@ const CLOSE_MIN: f32 = 1.5;
 const CLOSE_MAX: f32 = 12.0;
 /// Brake for the stop from this far.
 const STOP_REACH: f32 = 80.0;
+/// This near its stop a timetable bus settles whether it stops there at all (Omsi.exe
+/// 0x7da5b5: 50 m): not when nobody aboard wants to get off and nobody waits there,
+/// unless it is the trip's first or last stop or the bus is more than `EARLY_STOP` early.
+const SKIP_DECIDE: f32 = 50.0;
+const EARLY_STOP: f64 = 120.0;
+const EARLY_STOP_SHORT: f64 = 20.0;
 
 /// What the service needs of the world this frame.
 pub struct Ctx<'a> {
@@ -126,6 +140,9 @@ pub struct Ctx<'a> {
     pub passing: bool,
     /// Where it would swerve to round a car parked at the kerb.
     pub kerb_swerve: Option<f32>,
+    /// Somebody aboard wants to get off at the front stop or somebody waits there (None:
+    /// nobody knows - no passengers run - and every stop is served).
+    pub wanted: Option<bool>,
     pub debug: bool,
 }
 
@@ -143,6 +160,10 @@ impl BusService {
             route_open: false,
             terminus: String::new(),
             near_d: f32::INFINITY,
+            serve: None,
+            last_stop: None,
+            always: Vec::new(),
+            serve_early: Vec::new(),
         }
     }
 
@@ -193,6 +214,7 @@ impl BusService {
     /// A new trip (the tour's next, or the rest of a trip).
     pub fn restart(&mut self, stops: Vec<Stop>, layover: bool) {
         self.near_d = f32::INFINITY;
+        self.serve = None;
         self.stops = stops.into();
         self.phase = Phase::Running;
         self.phase_t = 0.0;
@@ -206,10 +228,22 @@ impl BusService {
         self.phase_t = 0.0;
     }
 
+    /// A stop it serves whoever wants it or not: the trip's first (a layover) and last, the
+    /// ones its timetable says it always serves, and any stop it would reach more than
+    /// `EARLY_STOP` early (`EARLY_STOP_SHORT` at a stop marked for it).
+    fn must_serve(&self, stop: &Stop, day_time: f64) -> bool {
+        let last = (self.stops.len() == 1 && !self.route_open) || self.last_stop == Some(stop.id);
+        let early = stop.depart - day_time;
+        last || self.layover
+            || early > EARLY_STOP
+            || self.always.contains(&stop.id)
+            || (early > EARLY_STOP_SHORT && self.serve_early.contains(&stop.id))
+    }
+
     /// Arrived at the front stop: what now.
     fn arrive(&mut self, ctx: &Ctx, depart: f64, at: (usize, f32)) {
         if omsi_cfg::env::var_os("OMSI_DEBUG_STOPS").is_some() {
-            log::info!("t={:.1}: timetable bus {} serves its stop", ctx.day_time, ctx.id);
+            log::info!("t={:.1}: timetable bus {} serves its stop {:?}", ctx.day_time, ctx.id, self.stops.front().map(|s| s.id));
         }
         let layover = std::mem::take(&mut self.layover);
         let limit = if layover { LAYOVER_WAIT } else { EARLY_WAIT };
@@ -243,6 +277,7 @@ impl BusService {
         let bay = self.stops.front().map(|s| s.bay).unwrap_or(0.0);
         self.stops.pop_front();
         self.near_d = f32::INFINITY;
+        self.serve = None;
         crate::traffic::ibis_to_next_stop(vehicle, self.stops.len());
         let air = ctx.net.lanes[st.lane].kind == LaneKind::Air;
         if self.stops.is_empty() && !self.route_open && !air {
@@ -325,12 +360,12 @@ impl BusService {
                 }
                 here
             }
-            Phase::Running => self.approach(st, ctx),
+            Phase::Running => self.approach(st, vehicle, ctx),
         }
     }
 
     /// Driving: brake for the next stop, pull into its bay.
-    fn approach(&mut self, st: &mut AiState, ctx: &Ctx) -> Option<f32> {
+    fn approach(&mut self, st: &mut AiState, vehicle: &mut VehicleInstance, ctx: &Ctx) -> Option<f32> {
         loop {
             let Some(stop) = self.stops.front().copied() else {
                 if !ctx.passing {
@@ -353,9 +388,28 @@ impl BusService {
                 // behind it already (the route was cut short)
                 self.stops.pop_front();
                 self.near_d = f32::INFINITY;
+                self.serve = None;
                 continue;
             }
             let d = st.route_distance(ctx.net, stop.ri, stop.s);
+            // near enough to see whether anybody wants it (a train keeps to its stations)
+            if self.serve.is_none() && d < SKIP_DECIDE {
+                let rail = ctx.net.lanes.get(st.lane).is_some_and(|l| l.kind == LaneKind::Rail);
+                self.serve = Some(rail || self.must_serve(&stop, ctx.day_time) || ctx.wanted.unwrap_or(true));
+            }
+            if self.serve == Some(false) {
+                if ctx.debug || omsi_cfg::env::var_os("OMSI_DEBUG_STOPS").is_some() {
+                    log::info!("t={:.1}: timetable bus {} passes its stop {}: nobody gets off or on", ctx.day_time, ctx.id, stop.id);
+                }
+                self.stops.pop_front();
+                self.near_d = f32::INFINITY;
+                self.serve = None;
+                crate::traffic::ibis_to_next_stop(vehicle, self.stops.len());
+                if !ctx.passing {
+                    st.lateral_target = ctx.kerb_swerve.unwrap_or(0.0);
+                }
+                continue;
+            }
             // into the bay over the last metres, but only once no junction lies between
             // the bus and its stop: the meeting places of a junction are laid out for
             // vehicles in the middle of their lane. Not where the stop lies too close
@@ -393,6 +447,7 @@ impl BusService {
                 }
                 self.stops.pop_front();
                 self.near_d = f32::INFINITY;
+                self.serve = None;
                 continue;
             }
             if d < STOP_REACH {
@@ -428,6 +483,34 @@ mod tests {
         assert!((s.standing_for(40.0) - 62.0).abs() < 1e-3);
         s.phase = Phase::TripDone;
         assert!(s.standing_for(0.0) > 100.0);
+    }
+
+    #[test]
+    fn only_the_ends_of_the_trip_and_an_early_bus_stop_for_nobody() {
+        let stop = |id: i64, depart: f64| Stop::from_tuple((0, 0.0, 0.0, depart, id, 0.0));
+        let mut s = BusService::new(vec![stop(1, 100.0), stop(2, 200.0), stop(3, 300.0)]);
+        s.last_stop = Some(3);
+        // on time at a stop in the middle: only if somebody wants it
+        assert!(!s.must_serve(&stop(2, 200.0), 150.0));
+        // over two minutes early: it stops and waits
+        assert!(s.must_serve(&stop(2, 200.0), 70.0));
+        // the trip's terminus, and the last stop it knows of with the route complete
+        assert!(s.must_serve(&stop(3, 300.0), 300.0));
+        s.stops = vec![stop(2, 200.0)].into();
+        assert!(s.must_serve(&stop(2, 200.0), 200.0));
+        s.route_open = true;
+        assert!(!s.must_serve(&stop(2, 200.0), 200.0));
+        // its first stop, where it stands out its layover
+        s.layover = true;
+        assert!(s.must_serve(&stop(2, 200.0), 200.0));
+        s.layover = false;
+        // `[profile_otherstopping]` 1/4 (always) and 3 (when early)
+        s.always = vec![2];
+        assert!(s.must_serve(&stop(2, 200.0), 200.0));
+        s.always.clear();
+        s.serve_early = vec![2];
+        assert!(!s.must_serve(&stop(2, 200.0), 190.0));
+        assert!(s.must_serve(&stop(2, 200.0), 170.0));
     }
 
     #[test]

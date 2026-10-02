@@ -550,6 +550,10 @@ pub struct Traffic {
     root: std::path::PathBuf,
     /// Car-frames spent waiting for a red light (statistics).
     pub held_at_red: usize,
+    /// Who wants a timetable bus to stop (`Humans::stop_wishes`): the buses somebody
+    /// aboard wants to get off, the stops where somebody waits. None without passengers:
+    /// every bus then serves every stop.
+    stop_wishes: Option<(hashbrown::HashSet<u64>, hashbrown::HashSet<i64>)>,
     /// Seconds the player's vehicle has been standing.
     player_still: f32,
     /// Time of day (seconds since midnight); light cycles and timetables run on it.
@@ -1201,6 +1205,7 @@ impl Traffic {
             sound_cfgs: HashMap::new(),
             root: root.to_path_buf(),
             held_at_red: 0,
+            stop_wishes: None,
             player_still: 0.0,
             day_time: 0.0,
             time_scale: 1.0,
@@ -5468,7 +5473,11 @@ impl Traffic {
             {
                 let car = &mut self.cars[i];
                 if let Some(service) = car.bus.as_mut() {
+                    let wanted = self.stop_wishes.as_ref().map(|(alighting, waiting)| {
+                        alighting.contains(&car.id) || service.stops.front().is_some_and(|s| waiting.contains(&s.id))
+                    });
                     let ctx = crate::bus_service::Ctx {
+                        wanted,
                         net: &self.net,
                         way: &way,
                         day_time: self.day_time,
@@ -6441,6 +6450,11 @@ impl Traffic {
 
     /// Keep a scheduled bus at its stop for at least `secs` more with the doors open:
     /// passengers are still queueing at a door or stepping in.
+    /// The passengers' wishes for the timetable buses' next stops (see `stop_wishes`).
+    pub fn set_stop_wishes(&mut self, alighting: hashbrown::HashSet<u64>, waiting: hashbrown::HashSet<i64>) {
+        self.stop_wishes = Some((alighting, waiting));
+    }
+
     pub fn hold_boarding(&mut self, id: u64, secs: f32) {
         if let Some(c) = self.cars.iter_mut().find(|c| c.id == id) {
             if let Some(b) = c.bus.as_mut() {
