@@ -40,6 +40,8 @@ The default bindings are:
 | Reset the VR view | Ctrl+Shift+R |
 | Toggle the monitor preview | F7 |
 | Switch between VR and desktop | F8 |
+| Show or hide the VR navigator | Ctrl+Shift+N |
+| Position the VR navigator | Ctrl+Shift+M |
 
 Adjust your seating position while driving through **Esc → Options** using
 **Seat forward**, **Seat back**, **Seat up**, **Seat down**, **Seat right**, or **Seat left**.
@@ -58,3 +60,33 @@ its normal camera control.
 
 The headset runtime controls its own reprojection settings. No runtime debug tool
 setting is needed to enable openOMSI's VR mode.
+
+## VR navigator
+
+The navigator is off by default for buses without saved settings. **Ctrl+Shift+N**
+shows or hides it. **Shift+N** cycles between the map, map with stop list, and off.
+The display stays attached to the bus as you drive and look around.
+
+Press **Ctrl+Shift+M** to position it with the mouse, or open
+**Esc → Options → VR → Navigator position (this bus) → Move and rotate with the mouse...**.
+Opening placement mode also enables the navigator. These controls and the placement
+menu are available only in VR.
+
+| Input in placement mode | Action |
+| --- | --- |
+| Hold left mouse and move | Move the display |
+| Hold right mouse and move | Turn and tilt the display |
+| Shift + right mouse drag | Roll the display sideways |
+| Mouse wheel | Move closer or farther away |
+| Ctrl + mouse wheel | Make the display larger or smaller |
+| R | Reset placement and size, keeping visibility unchanged |
+| Esc or Enter | Save and finish |
+
+The placement menu also offers numeric position, width, rotation, tilt, roll and
+background opacity settings. Placement and visibility are saved separately for
+each bus. Existing saved settings are preserved.
+
+Single-player pauses during placement; multiplayer continues running. Mouse input
+adjusts the navigator instead of operating cockpit controls. Losing window focus
+saves and ends placement. The display is an overlay, so place it in a clear spot:
+cockpit geometry does not hide it.
