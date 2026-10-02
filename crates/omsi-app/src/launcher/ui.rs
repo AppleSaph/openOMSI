@@ -83,6 +83,17 @@ struct Popup {
     picked: Option<usize>,
     /// The scrollbar is being dragged: where in the thumb it was taken.
     drag: Option<f32>,
+    /// Typed while the list is open: only the options with it in their name are shown (a
+    /// map's many entry points, #747).
+    query: String,
+}
+
+impl Popup {
+    /// The options shown (their places in `options`): those with the typed text in them.
+    fn shown(&self) -> Vec<usize> {
+        let q = self.query.to_lowercase();
+        (0..self.options.len()).filter(|&k| q.is_empty() || self.options[k].to_lowercase().contains(&q)).collect()
+    }
 }
 
 /// A calendar dropdown for a date field.
@@ -185,6 +196,35 @@ impl Ui {
         #[cfg(test)]
         self.drawn.clear();
         self.push_layer(Rect::new(0.0, 0.0, size.x, size.y), 0.0);
+        // typing into an open dropdown searches it: the keys are the list's, not the page's
+        if let Some(p) = self.popup.as_mut() {
+            let before = p.query.clone();
+            p.query.extend(self.input.text.chars().filter(|c| !c.is_control()));
+            self.input.text.clear();
+            let mut close = false;
+            self.input.keys.retain(|k| match k {
+                Key::Backspace => {
+                    p.query.pop();
+                    false
+                }
+                Key::Escape => {
+                    close = p.query.is_empty();
+                    p.query.clear();
+                    false
+                }
+                Key::Enter => {
+                    p.picked = p.shown().first().copied();
+                    false
+                }
+                _ => true,
+            });
+            if p.query != before {
+                p.scroll = 0.0;
+            }
+            if close {
+                self.popup = None;
+            }
+        }
         // a click outside the open dropdown closes it (the click does nothing else)
         if self.input.pressed {
             if let Some(p) = &self.popup {
@@ -572,7 +612,7 @@ impl Ui {
             } else if open {
             } else {
                 let sel = (*selected).min(options.len().saturating_sub(1));
-                let mut p = Popup { id, anchor: r, options: options.to_vec(), selected: sel, scroll: 0.0, opened: 0.0, picked: None, drag: None };
+                let mut p = Popup { id, anchor: r, options: options.to_vec(), selected: sel, scroll: 0.0, opened: 0.0, picked: None, drag: None, query: String::new() };
                 // the chosen option in view
                 let row = 34.0;
                 let visible = popup_rect(&p, self.size).h;
@@ -1016,7 +1056,10 @@ impl Ui {
         self.p().rounded(rr, 8.0, Color::rgba(28, 28, 28, e));
         self.p().rounded_border(rr, 8.0, 1.0, Color::WHITE.alpha(0.1 * e));
         let row = 34.0;
-        let content = p.options.len() as f32 * row;
+        let shown = p.shown();
+        // (what was typed, over the options it leaves)
+        let head = if p.query.is_empty() { 0.0 } else { row };
+        let content = shown.len() as f32 * row + head;
         let max = (content - rr.h + 8.0).max(0.0);
         if rr.contains(self.input.mouse) && self.input.wheel.y.abs() > 0.0 {
             p.scroll = (p.scroll - self.input.wheel.y * 40.0).clamp(0.0, max);
@@ -1040,8 +1083,18 @@ impl Ui {
             p.drag = None;
         }
         self.push_clip(rr.inset(4.0), 8.0);
-        for (k, o) in p.options.iter().enumerate() {
-            let y = rr.y + 4.0 + k as f32 * row - p.scroll;
+        if head > 0.0 {
+            let y = rr.y + 4.0 - p.scroll;
+            self.icon("search", Vec2::new(rr.x + 22.0, y + row * 0.5), 16.0, TEXT_DIM);
+            let caret = if (self.time * 2.0) as i64 % 2 == 0 { "|" } else { "" };
+            self.text_in(&format!("{}{caret}", p.query), Rect::new(rr.x + 38.0, y, rr.w - 60.0, row), 13.0, Weight::Medium, TEXT, Align::Left);
+            if shown.is_empty() {
+                self.text_in("Nothing found", Rect::new(rr.x + 14.0, y + row, rr.w - 28.0, row), 13.0, Weight::Regular, TEXT_DIM, Align::Left);
+            }
+        }
+        for (n, &k) in shown.iter().enumerate() {
+            let o = &p.options[k];
+            let y = rr.y + 4.0 + head + n as f32 * row - p.scroll;
             if y + row < rr.y || y > rr.bottom() {
                 continue;
             }
@@ -1335,5 +1388,57 @@ mod tests {
         ui.input.wheel.y = -2.0;
         ui.select("n", field, &mut sel, &options);
         assert!(!ui.wheel_taken());
+    }
+
+    /// Typing into an open dropdown leaves the options with the text in their name; Enter
+    /// takes the first of them, Escape clears the text and then closes the list.
+    #[test]
+    fn typing_into_a_dropdown_searches_it() {
+        let options: Vec<String> = ["Depot", "Bauernhof", "Hauptbahnhof", "Kirche"].iter().map(|s| s.to_string()).collect();
+        let mut ui = Ui::new();
+        let mut sel = 0;
+        let field = Rect::new(20.0, 20.0, 240.0, 30.0);
+        let mut frame = |ui: &mut Ui, sel: &mut usize| {
+            ui.begin(Vec2::new(800.0, 600.0), 1.0, 1.0 / 60.0);
+            let changed = ui.select("n", field, sel, &options);
+            ui.finish();
+            changed
+        };
+        ui.input.mouse = field.center();
+        ui.input.pressed = true;
+        frame(&mut ui, &mut sel);
+        ui.input.released = true;
+        frame(&mut ui, &mut sel);
+        ui.input.mouse = Vec2::new(700.0, 500.0);
+        ui.input.text.push_str("HOF");
+        frame(&mut ui, &mut sel);
+        assert_eq!(ui.popup.as_ref().unwrap().shown(), vec![1, 2]);
+        ui.input.keys.push(Key::Backspace);
+        ui.input.text.push_str("f");
+        frame(&mut ui, &mut sel);
+        ui.input.text.push_str("-x");
+        frame(&mut ui, &mut sel);
+        assert!(ui.popup.as_ref().unwrap().shown().is_empty());
+        ui.input.keys.extend([Key::Backspace, Key::Backspace]);
+        frame(&mut ui, &mut sel);
+        ui.input.keys.push(Key::Enter);
+        assert!(frame(&mut ui, &mut sel), "Enter takes the first match");
+        assert_eq!(sel, 1);
+        assert!(ui.popup.is_none());
+        // Escape: first the text, then the list
+        ui.input.mouse = field.center();
+        ui.input.pressed = true;
+        frame(&mut ui, &mut sel);
+        ui.input.released = true;
+        frame(&mut ui, &mut sel);
+        ui.input.text.push_str("k");
+        frame(&mut ui, &mut sel);
+        ui.input.keys.push(Key::Escape);
+        frame(&mut ui, &mut sel);
+        assert!(ui.popup.as_ref().is_some_and(|p| p.query.is_empty()));
+        ui.input.keys.push(Key::Escape);
+        frame(&mut ui, &mut sel);
+        assert!(ui.popup.is_none());
+        assert_eq!(sel, 1);
     }
 }
