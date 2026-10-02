@@ -394,6 +394,24 @@ fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
     head.lines().skip(1).find_map(|l| l.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case(name)).map(|(_, v)| v.trim()))
 }
 
+/// Where a WebSocket comes from: its peer's address, or - from the loopback, as through a
+/// reverse proxy (Caddy, nginx) or a tunnel on the same machine - the client's address that
+/// proxy forwards (`X-Forwarded-For`'s first entry, `X-Real-IP`, `CF-Connecting-IP`).
+fn client_addr(head: &str, peer: Option<SocketAddr>) -> String {
+    let Some(peer) = peer else { return "?".into() };
+    if peer.ip().is_loopback() {
+        let forwarded = header(head, "cf-connecting-ip")
+            .or_else(|| header(head, "x-forwarded-for").and_then(|v| v.split(',').next()))
+            .or_else(|| header(head, "x-real-ip"))
+            .map(str::trim)
+            .and_then(|v| v.parse::<std::net::IpAddr>().ok());
+        if let Some(ip) = forwarded {
+            return ip.to_string();
+        }
+    }
+    peer.ip().to_string()
+}
+
 /// Compare two secrets in a time that does not tell how much of them matched.
 fn same_secret(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
@@ -504,6 +522,11 @@ fn serve(stream: TcpStream, target: SocketAddr, info: &Mutex<ServerInfo>, stop: 
     let mut ws = tungstenite::accept(stream).map_err(|e| e.to_string())?;
     let udp = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     udp.set_nonblocking(true).map_err(|e| e.to_string())?;
+    // the session sees this player at the socket's 127.0.0.1 address ("joined from
+    // 127.0.0.1:<port>"): say who that is, for a server's operator
+    if let Ok(local) = udp.local_addr() {
+        log::info!("gateway: player WebSocket from {} on {local}", client_addr(&req, peer));
+    }
     ws.get_mut().set_read_timeout(Some(Duration::from_millis(5))).map_err(|e| e.to_string())?;
     connected.fetch_add(1, Ordering::Relaxed);
     let r = pump(&mut ws, &udp, |u, d| u.send_to(d, target).map(|_| ()), stop);
@@ -790,6 +813,21 @@ mod tests {
         assert_eq!(b.players, 2);
         assert_eq!(b.max_players, 16);
         assert!(!b.icon.is_empty());
+    }
+
+    #[test]
+    fn a_websocket_behind_a_proxy_is_told_by_the_forwarded_address() {
+        let local: SocketAddr = "127.0.0.1:50000".parse().unwrap();
+        let far: SocketAddr = "203.0.113.7:50000".parse().unwrap();
+        let req = |h: &str| format!("GET / HTTP/1.1\r\nHost: x\r\n{h}Upgrade: websocket\r\n\r\n");
+        assert_eq!(client_addr(&req("X-Forwarded-For: 198.51.100.4, 10.0.0.1\r\n"), Some(local)), "198.51.100.4");
+        assert_eq!(client_addr(&req("X-Real-IP: 2001:db8::1\r\n"), Some(local)), "2001:db8::1");
+        assert_eq!(client_addr(&req("CF-Connecting-IP: 192.0.2.9\r\nX-Forwarded-For: 198.51.100.4\r\n"), Some(local)), "192.0.2.9");
+        // no proxy: the peer; a header from the internet is not believed
+        assert_eq!(client_addr(&req(""), Some(local)), "127.0.0.1");
+        assert_eq!(client_addr(&req("X-Forwarded-For: 198.51.100.4\r\n"), Some(far)), "203.0.113.7");
+        assert_eq!(client_addr(&req("X-Forwarded-For: not-an-address\r\n"), Some(local)), "127.0.0.1");
+        assert_eq!(client_addr(&req(""), None), "?");
     }
 
     #[test]

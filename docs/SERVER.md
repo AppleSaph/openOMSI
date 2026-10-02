@@ -23,6 +23,10 @@ Players reach it two ways:
 * UDP at `host:port` (a server with a public address, or on the LAN);
 * over a **WebSocket** at its web port (`omsi-net::ws`): every datagram is one binary
   message, the server's gateway gives each WebSocket a UDP socket of its own on 127.0.0.1.
+  The session sees such a player there (`joined from 127.0.0.1:<port>`); the log says who
+  that is (`gateway: player WebSocket from <address> on 127.0.0.1:<port>`), with the
+  address a reverse proxy or tunnel on the machine forwards (`X-Forwarded-For`,
+  `X-Real-IP`, `CF-Connecting-IP`).
   That is what a free Cloudflare quick tunnel carries (`tunnel = 1` starts `cloudflared
   tunnel --url http://127.0.0.1:<web_port>` and prints the `https://….trycloudflare.com`
   address). The same port answers `GET /status` (JSON: name, motd, map, players,
