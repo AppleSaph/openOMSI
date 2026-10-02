@@ -664,9 +664,11 @@ impl ApplicationHandler for App {
                         analog.steering = Some(now + (target - now).clamp(-step, step));
                     }
                 }
-                // (in every view of the bus - driver, outside, passenger - as in OMSI, where
-                // switching the camera leaves the mouse steering on; not on foot or flying)
-                let bus_view = matches!(self.view.as_str(), "driver" | "outside" | "pax");
+                // (in every view of the bus - driver, outside, passenger and the map camera -
+                // as in OMSI, where switching the camera leaves the mouse steering on: its
+                // mouse steering asks only for a player's vehicle, 0x6f4257; not on foot,
+                // #516)
+                let bus_view = self.mouse_steers_in_view();
                 if let (true, Some(s)) = (self.mouse_drive && bus_view && !self.mouse_look
                                               && self.game_menu.is_none(), self.surface.as_ref()) {
                     let (w, h) = (s.config.width as f32, s.config.height as f32);
