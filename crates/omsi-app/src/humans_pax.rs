@@ -743,11 +743,17 @@ impl Humans {
         // the path point walked to is the target
         let mut target = p0.target;
         let mut target_bus = p0.target_bus;
+        // (kept as the target, +0x5bd: waiting short of the point, state 6, goes on facing
+        // it - with the target of before kept instead, a seat or the stop's gather point in
+        // another frame, the people waiting at a shut exit were lifted 40 m up in the bus
+        // and stood stacked there for good, #709)
+        let mut walked_to: Option<DVec3> = None;
         if p0.st == 5 {
             if let (Some(pt), Some(bn)) = (p0.pt, bn_in) {
                 if let Some(q) = bn.cabin.graph.points.get(pt) {
                     target = q.as_dvec3();
                     target_bus = true;
+                    walked_to = Some(target);
                 }
             }
         }
@@ -856,6 +862,10 @@ impl Humans {
             } else {
                 p.jam = 0.0;
             }
+        }
+        if let Some(t) = walked_to {
+            p.target = t;
+            p.target_bus = true;
         }
         p.st = st;
         p.pt = pt;
