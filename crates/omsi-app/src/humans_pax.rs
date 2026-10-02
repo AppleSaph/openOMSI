@@ -612,7 +612,10 @@ impl Humans {
                 self.ai_requests.push((*id, e.clone(), x.clone()));
             }
         }
-        // timetable buses wait while people still get on or off
+        // timetable buses wait while people still get on or off - for somebody on the way
+        // to the gather point only while the bus stands in the stop's box: outside it
+        // nobody walks up to the doors (`Task::ToBus`), and the bus held for them waited
+        // for good
         for bn in buses {
             let BusId::Ai(id) = bn.id else { continue };
             if bn.speed.abs() > 0.5 {
@@ -620,7 +623,12 @@ impl Humans {
             }
             let busy = self.people.iter().any(|p| match &p.state {
                 State::Pax(x) => {
-                    x.bus == Some(bn.id) && (matches!(x.task, Task::WalkingToBus | Task::ToBus) || (x.task == Task::InBusToExit && x.inside == Some(bn.id)))
+                    let coming = match x.task {
+                        Task::WalkingToBus => true,
+                        Task::ToBus => x.stop.is_some_and(|s| self.in_stop_box(s, bn.id)),
+                        _ => false,
+                    };
+                    x.bus == Some(bn.id) && (coming || (x.task == Task::InBusToExit && x.inside == Some(bn.id)))
                 }
                 _ => false,
             });
