@@ -1771,12 +1771,7 @@ impl Player {
     ) -> Camera {
         let def = &self.vehicle.ty.def;
         let c = def.camera_outside_center;
-        let centre = self.vehicle.position
-            + self
-            .vehicle
-            .body_rotation()
-            .transform_point3(Vec3::new(c[0], c[1], c[2]))
-            .as_dvec3();
+        let centre = orbit_pivot(self.vehicle.position, self.vehicle.heading, c);
         let want = dist.clamp(ORBIT_MIN, ORBIT_MAX);
         let back = -cam.forward().as_dvec3().normalize_or_zero();
         if back.length_squared() < 0.5 {
@@ -1911,12 +1906,7 @@ impl Player {
             None => {
                 // outside view: an orbit around the vehicle
                 let c = def.camera_outside_center;
-                let center = self.vehicle.position
-                    + self
-                    .vehicle
-                    .body_rotation()
-                    .transform_point3(Vec3::new(c[0], c[1], c[2]))
-                    .as_dvec3();
+                let center = orbit_pivot(self.vehicle.position, self.vehicle.heading, c);
                 let mut cam = Camera {
                     position: center,
                     yaw: self.vehicle.heading as f32 - 35.0 + look.0,
@@ -1932,6 +1922,16 @@ impl Player {
             }
         }
     }
+}
+
+/// Outside-camera pivot: the `.bus` centre rotated by heading alone. Body pitch
+/// and bank (suspension bounce, cornering roll) would swing the camera if they
+/// reached the pivot; the view only ever yaws with the bus.
+pub(crate) fn orbit_pivot(position: DVec3, heading_deg: f64, center: [f32; 3]) -> DVec3 {
+    position
+        + glam::Mat4::from_rotation_z((-(heading_deg as f32)).to_radians())
+            .transform_point3(Vec3::new(center[0], center[1], center[2]))
+            .as_dvec3()
 }
 
 /// Put a vehicle's meshes where its state says (animations, visibility, lights, the
@@ -2201,6 +2201,25 @@ pub(crate) fn mouse_steering(cursor_x: f32, width: f32, kmh: f32) -> f32 {
 pub(crate) fn mouse_pedal(current: f32, target: f32, k: f32) -> f32 {
     let v = target + (current - target) * k;
     if (v - target).abs() < 1e-4 { target } else { v }
+}
+
+#[cfg(test)]
+mod orbit_pivot_tests {
+    use super::orbit_pivot;
+    use glam::DVec3;
+
+    #[test]
+    fn pivot_yaws_with_the_bus_and_ignores_body_attitude() {
+        // heading 0: the centre passes through unrotated.
+        let p = orbit_pivot(DVec3::new(10.0, 20.0, 5.0), 0.0, [0.0, 0.0, 1.2]);
+        assert!((p.x - 10.0).abs() < 1e-6 && (p.y - 20.0).abs() < 1e-6);
+        assert!((p.z - 6.2).abs() < 1e-6, "{p:?}");
+        // heading 90: the forward offset swings sideways, height untouched
+        // (a body_rotation pivot would also tilt it with pitch/bank).
+        let q = orbit_pivot(DVec3::ZERO, 90.0, [1.0, 2.0, 1.2]);
+        assert!((q.x - 2.0).abs() < 1e-5 && (q.y + 1.0).abs() < 1e-5, "{q:?}");
+        assert!((q.z - 1.2).abs() < 1e-6, "{q:?}");
+    }
 }
 
 #[cfg(test)]
