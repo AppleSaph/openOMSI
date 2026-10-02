@@ -5134,8 +5134,10 @@ mod tests {
         assert_eq!(picked.len(), 3);
         assert!(Arc::ptr_eq(&picked[0], &picked[1]));
         assert!(Arc::ptr_eq(&picked[1], &picked[2]));
-        // (case-blind: a case-insensitive disk keeps the list's own spelling)
-        let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+        // (case-blind: a case-insensitive disk keeps the list's own spelling; and
+        // separator-blind: on Windows `nested` keeps the slashes it was joined with, while
+        // the resolved path is built with backslashes)
+        let lower = |p: &Path| p.to_string_lossy().to_lowercase().replace('\\', "/");
         assert!(picked.iter().all(|t| lower(&t.def.path).starts_with(&lower(&nested))));
         assert!(map_human_types(&root, &["Humans/Missing/None.hum".into()]).is_empty());
         std::fs::remove_dir_all(root).unwrap();
