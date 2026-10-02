@@ -1676,7 +1676,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
         let (k, val) = (setting_key(k), val.trim());
         let b = |x: &str| matches!(x.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes");
         match k.as_str() {
-            "anisotropy" => v[&k] = json!(val.parse::<i64>().unwrap_or(8).clamp(1, 8)),
+            "anisotropy" => v[&k] = json!(val.parse::<i64>().unwrap_or(8).clamp(1, 16)),
             "msaa" | "shadow_size" => v[&k] = json!(val.parse::<i64>().unwrap_or(0)),
             "ui_opacity" | "volume" | "vol_ai" | "vol_scenery" | "min_obj_size" => v[&k] = json!(val.parse::<f64>().unwrap_or(0.0)),
             "pax_density" => v[&k] = json!(val.trim_end_matches('%').parse::<f64>().map(|x| if x > 5.0 { x / 100.0 } else { x }).unwrap_or(1.0)),
@@ -1792,7 +1792,7 @@ pub fn option_presets() -> Vec<(String, Value)> {
         v["min_obj_size"] = json!(o.f32("performance_minobjsize", 0.013) as f64);
         v["max_obj_dist"] = json!((o.f32("performance_maxobjdist", 900.0).round() as i64).to_string());
         if let Some(af) = o.values.get("texfilter").and_then(|x| x.get(1)).and_then(|x| x.parse::<i64>().ok()) {
-            v["anisotropy"] = json!(af.clamp(1, 8));
+            v["anisotropy"] = json!(af.clamp(1, 16));
         }
         let mem = o.f32("texmemlimit", 0.0);
         if mem > 0.0 {
@@ -2465,6 +2465,15 @@ mod tests {
         assert_eq!(v["mirror_size"], 0);
         let text = settings_to_text(&v, None);
         assert!(text.lines().any(|l| l == "mirror_size=0"), "{text}");
+    }
+
+    #[test]
+    fn sixteen_x_anisotropy_survives_the_launcher() {
+        let v = settings_from_text(Some("anisotropy=16\n"));
+        assert_eq!(v["anisotropy"], 16);
+        let text = settings_to_text(&v, None);
+        assert!(text.lines().any(|l| l == "anisotropy=16"), "{text}");
+        assert_eq!(settings_from_text(Some("anisotropy=32\n"))["anisotropy"], 16);
     }
 
     #[test]

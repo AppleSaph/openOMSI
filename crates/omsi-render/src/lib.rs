@@ -1742,10 +1742,11 @@ impl Renderer {
         let options = RenderOptions {
             msaa,
             shadow_size,
-            // (at most 8x: at 16x the sharper mip the filter picks far down a road let the
-            // dashes of a lane line alias into two blurred streaks running apart like an
-            // arrow - one line near, two further off, seen on every long straight)
-            anisotropy: options.anisotropy.clamp(1, 8),
+            // (16x was held at 8x once, for lane-line dashes far down a road seen to alias
+            // into two streaks running apart like an arrow; Spandau's Heerstrasse at 8x and
+            // 16x showed none of it - 16x kept the far dashes narrow where 8x smeared them
+            // sideways - so 16x is the player's choice again, 8x the default)
+            anisotropy: options.anisotropy.clamp(1, 16),
             ..options
         };
         let bc = device
