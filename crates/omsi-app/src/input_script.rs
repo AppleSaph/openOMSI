@@ -3207,10 +3207,13 @@ impl App {
             return true;
         }
         match (self.player.as_ref(), self.camera.as_ref()) {
+            // (every part of an articulated bus: a door button of the rear section is in
+            // reach standing by that section, however far the front one is - #715)
             (Some(p), Some(c)) => {
-                let bb = p.vehicle.ty.def.bounding_box.unwrap_or([2.5, 12.0, 3.0, 0.0, 0.0, 1.5]);
-                let reach = (bb[0].max(bb[1]) as f64) * 0.5 + 3.0;
-                (c.position - p.vehicle.position).length() < reach
+                let v = &p.vehicle;
+                std::iter::once((v.position, v.heading, v.ty.def.bounding_box))
+                    .chain(v.trailers.iter().map(|t| (t.position, t.heading, t.ty.def.bounding_box)))
+                    .any(|(at, heading, bb)| part_in_reach(c.position, at, heading, bb))
             }
             _ => false,
         }
@@ -3560,5 +3563,35 @@ pub(crate) fn swap_view_look(look: &mut (f32, f32), looks: &mut std::collections
             looks.insert(old, *look);
         }
         *look = looks.get(view).copied().unwrap_or((0.0, 0.0));
+    }
+}
+
+/// A part of a vehicle (its origin, heading in degrees and `[boundingbox]`) is in reach of
+/// a person standing at `eye`: within 3 m of the box's half length round its centre.
+fn part_in_reach(eye: glam::DVec3, at: glam::DVec3, heading: f64, bb: Option<[f32; 6]>) -> bool {
+    let bb = bb.unwrap_or([2.5, 12.0, 3.0, 0.0, 0.0, 1.5]);
+    let h = heading.to_radians();
+    let (fwd, right) = (glam::DVec2::new(h.sin(), h.cos()), glam::DVec2::new(h.cos(), -h.sin()));
+    let centre = at + (right * bb[3] as f64 + fwd * bb[4] as f64).extend(bb[5] as f64);
+    let reach = (bb[0].max(bb[1]) as f64) * 0.5 + 3.0;
+    (eye - centre).length() < reach
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use super::part_in_reach;
+    use glam::DVec3;
+
+    /// Standing by the rear section of an articulated bus, 17 m behind the front part's
+    /// origin: out of the front part's reach, in the rear one's.
+    #[test]
+    fn the_rear_section_is_reached_by_its_own_box() {
+        let front = [2.5, 11.0, 3.0, 0.0, -3.0, 1.5];
+        let rear = [2.5, 7.0, 3.0, 0.0, -3.5, 1.5];
+        let eye = DVec3::new(2.0, -17.0, 1.7);
+        assert!(!part_in_reach(eye, DVec3::ZERO, 0.0, Some(front)));
+        assert!(part_in_reach(eye, DVec3::new(0.0, -12.0, 0.0), 0.0, Some(rear)));
+        // (the box's centre turns with the part: heading 180, the rear is ahead)
+        assert!(part_in_reach(DVec3::new(-2.0, 17.0, 1.7), DVec3::new(0.0, 12.0, 0.0), 180.0, Some(rear)));
     }
 }
