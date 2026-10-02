@@ -3414,7 +3414,7 @@ impl App {
     }
 
     pub(crate) fn update_hover(&mut self) {
-        if self.vr_nav_edit.is_some() {
+        if self.vr_nav_edit.is_some() || self.cursor_hidden.is_some() {
             self.hover = None;
             self.hover_part = None;
             self.hover_hand = false;
