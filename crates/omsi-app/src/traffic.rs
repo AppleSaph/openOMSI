@@ -3032,6 +3032,13 @@ impl Traffic {
                 let gap = os - s - o.rear - me.front;
                 gap > 2.0 + (me.speed - o.speed).max(0.0) * 1.5
             } else {
+                // behind and standing for this car already (it keeps behind it): it lets it
+                // in. Counted as in the way, the bus waiting at the end of its lane to move
+                // over and the car stopped behind it for that bus waited on each other for
+                // good, and the street behind with them (Spandau's Klosterstrasse).
+                if o.speed < 0.3 && self.cars[j].lead_info.is_some_and(|(id, _)| id == self.cars[i].id) {
+                    return true;
+                }
                 // behind: the other driver keeps a time gap and brakes gently
                 let gap = s - os - me.rear - o.front;
                 gap > 2.0
