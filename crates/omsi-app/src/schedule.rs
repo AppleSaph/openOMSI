@@ -1692,15 +1692,20 @@ impl Schedule {
     /// at the stop wants one of these targets and boards a bus whose terminus is among its
     /// termini (0x61c33c); the names compare exactly.
     pub fn stop_targets(&self) -> HashMap<i64, Vec<(String, HashSet<String>)>> {
-        let name_of = |id: i64| {
-            self.data
-                .bus_stops
-                .iter()
-                .find(|b| b.object_id == id)
-                .map(|b| b.name.trim().to_string())
-                .unwrap_or_else(|| id.to_string())
-        };
+        let names = self.stop_names();
+        let name_of = |id: i64| names.get(&id).cloned().unwrap_or_else(|| id.to_string());
         station_targets(self.data.trips.iter().map(|t| (trip_stations(t), t.terminus.trim().to_string())), name_of)
+    }
+
+    /// The name each bus stop object has in the timetable (`Busstops.cfg`, the first entry
+    /// of an object id): what [`Schedule::stop_targets`] calls it. The map object's own
+    /// label can read otherwise (renamed in the editor, another code page than the tiles').
+    pub fn stop_names(&self) -> HashMap<i64, String> {
+        let mut names = HashMap::new();
+        for b in &self.data.bus_stops {
+            names.entry(b.object_id).or_insert_with(|| b.name.trim().to_string());
+        }
+        names
     }
 
     pub fn pending(&self) -> usize {

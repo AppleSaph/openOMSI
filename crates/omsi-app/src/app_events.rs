@@ -1110,6 +1110,7 @@ impl ApplicationHandler for App {
                     // (the riders leave a bus the driver has walked away from)
                     if h.stop_targets.is_none() {
                         h.stop_targets = self.schedule.as_ref().map(|s| s.stop_targets());
+                        h.stop_names = self.schedule.as_ref().map(|s| s.stop_names());
                         if let Some(t) = &h.stop_targets {
                             log::info!("people: {} bus stops with timetable targets", t.len());
                         }

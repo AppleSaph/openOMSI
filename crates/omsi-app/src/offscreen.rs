@@ -175,6 +175,7 @@ pub(crate) fn run_offscreen(
             * settings.pax_density;
         h.time_of_day = parse_time(&args.time);
         h.stop_targets = schedule.as_ref().map(|s| s.stop_targets());
+        h.stop_names = schedule.as_ref().map(|s| s.stop_names());
         h.populate(&world, &renderer, &mut scene, center);
         if let Some(p) = player.as_ref() {
             if args.riders > 0 {
