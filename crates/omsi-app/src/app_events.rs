@@ -1476,7 +1476,10 @@ impl ApplicationHandler for App {
                             self.orbit = (self.orbit + 12.0 * dt).min(ORBIT_MAX);
                         }
                     }
-                    if self.keys.contains(&KeyCode::Home) {
+                    // Home held recentres the view - unless keyboard.cfg gives it a job (the
+                    // stock file makes it the ticket desk camera, which this then turned
+                    // straight ahead again whenever it was switched to, #733)
+                    if self.keys.contains(&KeyCode::Home) && !self.game_keys.iter().any(|b| Some(b.scan_code) == crate::keys::dik_code(KeyCode::Home)) {
                         self.look = (0.0, 0.0);
                         self.orbit = ORBIT_DEFAULT;
                         self.view_zoom.remove(&self.view);
