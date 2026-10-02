@@ -1208,7 +1208,6 @@ impl Ui {
                 (t.to_string(), String::new())
             }
         };
-        let head_cy = self.menu_header(r, scene, x, y, list_w, header_h, &title, &sub, s);
         // the scroll bar: where the lines shown lie in the whole menu
         let scrolls = nl > rows;
         if scrolls {
@@ -1223,8 +1222,6 @@ impl Ui {
             self.text.rounded(r, scene, thumb, 1.5 * s, ACCENT);
             // (a wider grip than the drawn thumb: three pixels are hard to hit)
             self.menu_scroll_thumb = Some([thumb[0] - 6.0 * s, thumb[1], thumb[2] + 6.0 * s, thumb[3]]);
-            let more = omsi_ui::tr("{} of {}").replacen("{}", &(sel_l + 1).to_string(), 1).replacen("{}", &nl.to_string(), 1);
-            self.put_right(r, scene, &more, (12.0 * s) as u32, MUTED, list_r - pad - tin, head_cy);
         }
         // (the line under the mouse is the one lit; the keyboard's choice only while the
         // mouse is off the lines - both lit at once read as two choices)
@@ -1564,7 +1561,6 @@ impl Ui {
             Some((t, u)) => (t.clone(), u.clone()),
             None => ("Options".to_string(), String::new()),
         };
-        let head_cy = self.menu_header(r, scene, x, y, w, header_h, &title, &sub, s);
         let over = |rect: [f32; 4]| f.cursor.0 >= rect[0] && f.cursor.0 <= rect[2] && f.cursor.1 >= rect[1] && f.cursor.1 <= rect[3];
         // the sidebar: the pages, and the way back at its foot
         if side_w > 0.0 {
@@ -1628,8 +1624,6 @@ impl Ui {
             let thumb = [track[0], t0, track[2], t1];
             self.text.rounded(r, scene, thumb, 1.5 * s, ACCENT);
             self.menu_scroll_thumb = Some([thumb[0] - 6.0 * s, thumb[1], thumb[2] + 6.0 * s, thumb[3]]);
-            let more = omsi_ui::tr("{} of {}").replacen("{}", &(sel + 1).to_string(), 1).replacen("{}", &items.len().to_string(), 1);
-            self.put_right(r, scene, &more, (12.0 * s) as u32, MUTED, x + w - pad - tin, head_cy);
         }
         // the rows
         let any_hovered = over([x + side_w, y + header_h, x + w, y + h]);
