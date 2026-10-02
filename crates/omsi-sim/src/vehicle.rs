@@ -3090,8 +3090,17 @@ impl TrailerPart {
         } else {
             Vec3::new(0.0, -4.0, 0.3)
         });
-        // the pivot axle: the one farthest from the coupled end
-        let axle_long = if reversed {
+        // the line the part turns about: its own `[rot_pnt_long]` where a road part names
+        // one (Omsi.exe runs every section as a body of its own on the same wheel physics,
+        // each axle steered towards the turning centre on that line), else the axle
+        // farthest from the coupled end. A rear section whose axle steers (the Van Hool
+        // AG300's, set ahead of its axle) followed it as if it were a fixed one (#322);
+        // the stock GN92's line is its axle, a semitrailer's the middle of its axle group,
+        // and rail cars name none.
+        let turning_line = (ty.def.rot_pnt_long != 0.0 && !ty.def.axles.is_empty()).then_some(ty.def.rot_pnt_long);
+        let axle_long = if let Some(r) = turning_line {
+            r
+        } else if reversed {
             let a = ty.def.axles.iter().map(|a| a.long).fold(f32::MIN, f32::max);
             if a == f32::MIN {
                 0.5
@@ -4065,6 +4074,28 @@ mod tests {
             let alpha = v.var("articulation_0_alpha").unwrap();
             assert!((alpha.abs() - 52.5).abs() < 1e-3, "alpha {alpha} at heading {h}");
         }
+    }
+
+    /// A rear section turns about its own `[rot_pnt_long]` line: the stock GN92's is its
+    /// axle; one set ahead of the axle (a steered rear axle, #322) is where it turns.
+    #[test]
+    fn rear_section_turns_about_its_rot_pnt_long() {
+        let root = omsi_cfg::env::var_os("OMSI_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("../../../OMSI 2 Original"));
+        let bus = root.join("Vehicles/MAN_NL_NG/MAN_GN92_main.bus");
+        let trail = root.join("Vehicles/MAN_NL_NG/MAN_GN92_trail.bus");
+        if !bus.exists() || !trail.exists() {
+            eprintln!("skipped: no {}", bus.display());
+            return;
+        }
+        let ty = Arc::new(VehicleType::load(&root, &bus).expect("GN92"));
+        let mut tt = VehicleType::load(&root, &trail).expect("GN92 trail");
+        let stock = TrailerPart::new(Arc::new(VehicleType::load(&root, &trail).unwrap()), &ty, &ty.program, 2);
+        assert!((stock.pivot_length() - (4.169 + 0.387)).abs() < 1e-3, "{}", stock.pivot_length());
+        tt.def.rot_pnt_long = 1.0;
+        let steered = TrailerPart::new(Arc::new(tt), &ty, &ty.program, 2);
+        assert!((steered.pivot_length() - (4.169 - 1.0)).abs() < 1e-3, "{}", steered.pivot_length());
     }
 
     /// The rear section of an articulated bus on a viaduct stays on the deck: one frame with
