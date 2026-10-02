@@ -234,6 +234,8 @@ pub(crate) struct Devices {
     hid: Option<crate::mac_hid::MacHid>,
     #[cfg(target_os = "macos")]
     hid_axes: Vec<(String, Vec<(u32, f32)>)>,
+    #[cfg(target_os = "linux")]
+    hats: Vec<(String, [i8; 8])>,
 }
 
 impl Devices {
@@ -258,6 +260,8 @@ impl Devices {
             hid: crate::mac_hid::MacHid::new(),
             #[cfg(target_os = "macos")]
             hid_axes: Vec::new(),
+            #[cfg(target_os = "linux")]
+            hats: Vec::new(),
         }
     }
 
@@ -343,6 +347,36 @@ impl Devices {
                         if use_gilrs_buttons(di, is_system_gamepad(pad.name(), is_di(&pad))) => {
                         if let Some(n) = button_number(&pad, code) {
                             out.push((pad.name().to_string(), n, matches!(ev.event, EventType::ButtonPressed(..))));
+                        }
+                    }
+                    #[cfg(target_os = "linux")]
+                    EventType::AxisChanged(_, value, code) if code.into_u32() >> 16 == 3 && (0x10..0x18).contains(&(code.into_u32() & 0xFFFF)) => {
+                        let axis = (code.into_u32() & 0xFFFF) as usize - 0x10;
+                        let name = pad.name().to_string();
+                        let k = match self.hats.iter().position(|(n, _)| *n == name) {
+                            Some(k) => k,
+                            None => {
+                                self.hats.push((name.clone(), [0; 8]));
+                                self.hats.len() - 1
+                            }
+                        };
+                        let now = if value > 0.5 { 1 } else if value < -0.5 { -1 } else { 0 };
+                        let was = std::mem::replace(&mut self.hats[k].1[axis], now);
+                        let (hat, y) = (axis / 2, axis % 2 == 1);
+                        let dir = |v: i8| match (y, v) {
+                            (true, -1) => Some(0),
+                            (false, 1) => Some(1),
+                            (true, 1) => Some(2),
+                            (false, -1) => Some(3),
+                            _ => None,
+                        };
+                        if was != now {
+                            if let Some(d) = dir(was) {
+                                out.push((name.clone(), HAT_BUTTONS + hat * 4 + d, false));
+                            }
+                            if let Some(d) = dir(now) {
+                                out.push((name, HAT_BUTTONS + hat * 4 + d, true));
+                            }
                         }
                     }
                     _ => {}
