@@ -10,9 +10,14 @@ pub(crate) fn load_weather(args: &Args) -> omsi_content::weather::Weather {
         .filter(|w| !crate::weather_cycle::is_cycle(Some(w)))
         .unwrap_or_else(|| "Weather/#CAVOK.owt".into());
     // OMSI 2's current weather: `metar:<ICAO>` fetches the airport's report
-    let loaded = match rel.strip_prefix("metar:").or_else(|| rel.strip_prefix("METAR:")) {
-        Some(icao) => Ok(fetch_metar(icao.trim())),
-        None => omsi_content::weather::Weather::load(&omsi_cfg::resolve_path(&args.root, &rel)),
+    let loaded = if rel.starts_with(REPORT) {
+        // a report the host or server tells (see `report_wire`): its values, no download
+        Ok(from_report(&rel).unwrap_or_else(|| omsi_content::weather::from_metar("", "CAVOK")))
+    } else {
+        match rel.strip_prefix("metar:").or_else(|| rel.strip_prefix("METAR:")) {
+            Some(icao) => Ok(fetch_metar(icao.trim())),
+            None => omsi_content::weather::Weather::load(&omsi_cfg::resolve_path(&args.root, &rel)),
+        }
     };
     match loaded {
         Ok(w) => {
@@ -434,6 +439,42 @@ pub(crate) fn try_metar(icao: &str) -> Option<omsi_content::weather::Weather> {
     let t = text?;
     log::info!("current weather at {icao}: {t}");
     let mut w = omsi_content::weather::from_metar(&icao, &t);
+    w.path = std::path::PathBuf::from(format!("metar:{icao}"));
+    Some(w)
+}
+
+/// The start of a weather text that carries a METAR report's values (not a file, not a
+/// download): what a host or server with the METAR sync tells the players, who make the
+/// weather from it themselves and need no sync of their own.
+pub(crate) const REPORT: &str = "metar-report:";
+
+/// `w` (made from a METAR report) as the text the session tells the players: the station and
+/// the report up to its forecast, which `from_metar` does not read either.
+pub(crate) fn report_wire(w: &omsi_content::weather::Weather) -> Option<String> {
+    let path = w.path.to_string_lossy();
+    let icao = path.strip_prefix("metar:")?;
+    let mut raw: Vec<&str> = Vec::new();
+    for t in w.description.split_whitespace() {
+        if matches!(t.trim_end_matches('='), "TEMPO" | "BECMG" | "NOSIG" | "RMK" | "PROB30" | "PROB40") {
+            break;
+        }
+        raw.push(t);
+    }
+    let raw = raw.join(" ");
+    if icao.is_empty() || raw.is_empty() {
+        return None;
+    }
+    // (the network's weather field holds 260 characters)
+    Some(format!("{REPORT}{icao} {raw}").chars().take(250).collect())
+}
+
+/// The weather of a text made by `report_wire`.
+pub(crate) fn from_report(s: &str) -> Option<omsi_content::weather::Weather> {
+    let (icao, raw) = s.trim().strip_prefix(REPORT)?.split_once(' ')?;
+    if !(3..=5).contains(&icao.len()) || !icao.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let mut w = omsi_content::weather::from_metar(icao, raw);
     w.path = std::path::PathBuf::from(format!("metar:{icao}"));
     Some(w)
 }

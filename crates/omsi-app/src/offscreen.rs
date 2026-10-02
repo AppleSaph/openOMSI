@@ -346,6 +346,17 @@ pub(crate) fn run_offscreen(
     // a dedicated server's administration and clock (see `admin`)
     let mut srv_admin = crate::admin::ServerAdmin::default();
     let mut srv_clock = 0.0f64;
+    // the METAR sync of a dedicated server: the report is downloaded in the background (at
+    // once, then every ten minutes) and its values are told to the players
+    let srv_metar: Option<String> = if server { crate::server::SERVER_METAR.get().cloned().flatten() } else { None };
+    let mut srv_metar_due = std::time::Instant::now();
+    let mut srv_metar_rx: Option<std::sync::mpsc::Receiver<Option<omsi_content::weather::Weather>>> = None;
+    // (the weather's name on the status page)
+    let mut srv_weather_name = if weather.path.to_string_lossy().starts_with("metar:") {
+        weather.name.clone()
+    } else {
+        weather.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
+    };
     if let (true, Some((pw, speed))) = (server, crate::server::SERVER_ADMIN.get()) {
         srv_admin.password = pw.clone();
         if let Some(l) = lan_off.as_mut() {
@@ -366,6 +377,40 @@ pub(crate) fn run_offscreen(
                     }
                 }
             }
+            if let (Some(icao), Some(l)) = (srv_metar.as_ref(), lan_off.as_mut()) {
+                if srv_metar_rx.is_some() {
+                    let got = srv_metar_rx.as_ref().map(|rx| rx.try_recv());
+                    match got {
+                        Some(Ok(report)) => {
+                            srv_metar_rx = None;
+                            // (a failed download is tried again in a minute)
+                            let wait = if report.is_some() { 600 } else { 60 };
+                            srv_metar_due = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+                            if let Some(w) = report {
+                                if let Some(wire) = crate::weather_setup::report_wire(&w) {
+                                    if wire != l.weather() {
+                                        log::info!("server: weather now the METAR report of {icao}: {wire}");
+                                        l.set_weather(&wire);
+                                    }
+                                    srv_weather_name = w.name.clone();
+                                }
+                            }
+                        }
+                        Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                            srv_metar_rx = None;
+                            srv_metar_due = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                        }
+                        _ => {}
+                    }
+                } else if std::time::Instant::now() >= srv_metar_due {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    srv_metar_rx = Some(rx);
+                    let icao = icao.clone();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(crate::weather_setup::try_metar(&icao));
+                    });
+                }
+            }
             if let Some(l) = lan_off.as_mut() {
                 let positions = |id: u32| remotes_off.remotes.get(&id).map(|r| (r.vehicle().position, r.vehicle().heading));
                 srv_admin.prune(l);
@@ -377,7 +422,8 @@ pub(crate) fn run_offscreen(
                     let now = (parse_time(&args.time) + srv_clock + srv_admin.shift).rem_euclid(86400.0);
                     srv_admin.shift += (want - now + 43_200.0).rem_euclid(86_400.0) - 43_200.0;
                 }
-                if std::mem::take(&mut srv_admin.next_weather) {
+                // (the weather follows the METAR report: no next weather for the admins)
+                if std::mem::take(&mut srv_admin.next_weather) && srv_metar.is_none() {
                     let mut files: Vec<String> = omsi_cfg::read_dir_merged("Weather")
                         .into_iter()
                         .filter(|p| p.extension().map(|e| e.eq_ignore_ascii_case("owt")).unwrap_or(false))
@@ -399,7 +445,7 @@ pub(crate) fn run_offscreen(
             }
             if i % 30 == 0 {
                 if let Some(l) = lan_off.as_ref() {
-                    crate::server::tick_status(l, parse_time(&args.time) + srv_clock + srv_admin.shift, weather.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default().as_str());
+                    crate::server::tick_status(l, parse_time(&args.time) + srv_clock + srv_admin.shift, srv_weather_name.as_str());
                 }
             }
             if lan_off.is_none() {

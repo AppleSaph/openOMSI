@@ -2528,6 +2528,7 @@ impl App {
     /// The METAR sync: with it on, the report is downloaded in the background (at once, then
     /// every ten minutes) and the weather goes over to it; `dt` is real seconds.
     pub(crate) fn tick_metar(&mut self, dt: f32) {
+        self.share_start_metar();
         if !self.metar_locked() {
             self.metar_rx = None;
             self.metar_next = 0.0;
@@ -2560,10 +2561,24 @@ impl App {
         });
     }
 
+    /// A host that started on `metar:<ICAO>` tells the players the report's values as soon as
+    /// they are there (they cannot download it by the station's name: only the host syncs).
+    fn share_start_metar(&mut self) {
+        let Some(l) = self.lan.as_mut().filter(|l| l.role == omsi_net::Role::Host) else { return };
+        if !l.weather().to_ascii_lowercase().starts_with("metar:") {
+            return;
+        }
+        if let Some(wire) = self.weather.as_ref().and_then(crate::weather_setup::report_wire) {
+            l.set_weather(&wire);
+        }
+    }
+
     /// Go over to the weather of a METAR report that came in.
     fn apply_metar(&mut self, to: omsi_content::weather::Weather) {
         self.metar_next = 600.0;
         let file = to.path.to_string_lossy().to_string();
+        // (what the players are told: the report's values, which they make the weather from)
+        let wire = crate::weather_setup::report_wire(&to).unwrap_or_else(|| file.clone());
         let name = to.name.clone();
         let from = self.weather.clone().unwrap_or_default();
         crate::scene::SNOW_WEATHER.store(to.snow, std::sync::atomic::Ordering::Relaxed);
@@ -2572,7 +2587,7 @@ impl App {
         self.weather_cycle = None;
         self.weather_blend = Some(crate::weather_cycle::Blend::new(from, to, 60.0));
         if let Some(l) = self.lan.as_mut().filter(|l| l.role == omsi_net::Role::Host) {
-            l.set_weather(&file);
+            l.set_weather(&wire);
         }
         log::info!("weather: METAR sync, going over to {file} ({name})");
         self.service_msg = Some((format!("Weather: {name}"), 4.0));

@@ -1176,6 +1176,12 @@ fn weather_name(app: &App) -> String {
     if app.weather.as_ref().is_some_and(|w| w.name == CUSTOM_WEATHER) {
         return CUSTOM_WEATHER.to_string();
     }
+    // a METAR report's weather
+    if app.args.weather.as_deref().is_some_and(|p| p.starts_with(crate::weather_setup::REPORT)) {
+        if let Some(n) = app.weather.as_ref().map(|w| w.name.trim().to_string()).filter(|n| !n.is_empty()) {
+            return n;
+        }
+    }
     match app.args.weather.as_deref() {
         Some(p) => {
             let p = p.replace('\\', "/");
