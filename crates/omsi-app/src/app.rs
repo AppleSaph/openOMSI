@@ -145,6 +145,8 @@ pub(crate) struct App {
     pub(crate) discord_t: f32,
     /// Head tracking (Settings → head tracking), started with the first frame that wants it.
     pub(crate) headtrack: Option<crate::headtrack::HeadTracker>,
+    /// When head tracking last failed to start (tried again a few seconds later).
+    pub(crate) headtrack_failed: Option<std::time::Instant>,
     /// Steering wheels, pedals, joysticks and gamepads (`Inputs/gamectrler.cfg`).
     pub(crate) controllers: Option<crate::controllers::Controllers>,
     /// OMSI's mouse control (`toggel_mouse_ctrl`, O): the cursor's place steers (across) and
@@ -337,10 +339,14 @@ impl App {
                 )
             })
             .unwrap_or((1600, 900));
+        let (fit, at) = crate::startup::fit_window(event_loop, lw as f64, lh as f64);
         let mut attrs = Window::default_attributes()
             .with_title("openOMSI")
-            .with_inner_size(winit::dpi::LogicalSize::new(lw, lh))
+            .with_inner_size(fit)
             .with_window_icon(crate::startup::window_icon());
+        if let Some(at) = at {
+            attrs = attrs.with_position(at);
+        }
         if self.settings.fullscreen {
             attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         }
@@ -765,6 +771,7 @@ impl App {
                 }
             })
             .unwrap_or_default();
+        let mut reconfigure = false;
         if let (Some(ui), Some(s), Some(win)) = (
             self.ui.as_mut(),
             self.surface.as_ref(),
@@ -783,8 +790,14 @@ impl App {
                 "",
                 done as f32 / total.max(1) as f32,
             );
+            let acquired = s.surface.get_current_texture();
+            // a swapchain that no longer fits the window (Vulkan says so after the switch
+            // to full screen, without a resize event) is made again, as the game's own
+            // frames do: left as it was, every later frame of the loading screen failed
+            // the same way and its picture stood still until the map was there (#776)
+            reconfigure = matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost);
             if let wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) = s.surface.get_current_texture()
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) = acquired
             {
                 let view = frame.texture.create_view(&Default::default());
                 // the tiles loaded so far stay out of the picture: the camera looks at nothing
@@ -819,6 +832,12 @@ impl App {
             win.request_redraw();
         } else {
             self.renderer = Some(renderer);
+        }
+        if reconfigure {
+            if let (Some(s), Some(r), Some(win)) = (self.surface.as_mut(), self.renderer.as_ref(), self.window.as_ref()) {
+                let size = win.inner_size();
+                s.resize(r, size.width, size.height);
+            }
         }
         self.scene = Some(scene);
         self.starting = Some(cam);

@@ -175,6 +175,7 @@ pub(crate) fn run_offscreen(
             * settings.pax_density;
         h.time_of_day = parse_time(&args.time);
         h.stop_targets = schedule.as_ref().map(|s| s.stop_targets());
+        h.stop_names = schedule.as_ref().map(|s| s.stop_names());
         h.populate(&world, &renderer, &mut scene, center);
         if let Some(p) = player.as_ref() {
             if args.riders > 0 {
@@ -2432,7 +2433,7 @@ pub(crate) fn run_offscreen(
                 camera.position,
                 Vec3::ZERO,
                 &mut scene,
-                &lighting.inside.into_iter().collect::<Vec<_>>(),
+                &player_ref.as_ref().or(player.as_ref()).map(|p| rain::vehicle_boxes(&p.vehicle)).unwrap_or_default(),
             );
         }
         // a moving player's wheels through the puddles the enhanced renderer paints on wet

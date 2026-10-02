@@ -289,6 +289,33 @@ pub const BUILD: &str = env!("OMSI_BUILD");
 /// The release version, `MAJOR.MINOR.COMMIT` (see `build.rs` and docs/VERSIONING.md).
 pub const VERSION: &str = env!("OPENOMSI_VERSION");
 
+/// A window of `w` x `h` points made to fit the screen it opens on, and placed in its
+/// middle: 1600 x 900 points at 125 % are 2000 x 1125 pixels, wider than a 1920 screen, and
+/// the window opened partly off it (#771). Where the system tells no screen (Wayland), the
+/// size as asked and no place.
+pub(crate) fn fit_window(event_loop: &winit::event_loop::ActiveEventLoop, w: f64, h: f64) -> (winit::dpi::LogicalSize<f64>, Option<winit::dpi::PhysicalPosition<i32>>) {
+    let Some(m) = event_loop.primary_monitor().or_else(|| event_loop.available_monitors().next()) else {
+        return (winit::dpi::LogicalSize::new(w, h), None);
+    };
+    let (screen, scale) = (m.size(), m.scale_factor().max(0.5));
+    let ((lw, lh), (x, y)) = fit_rect((w, h), (screen.width as f64, screen.height as f64), scale);
+    let at = winit::dpi::PhysicalPosition::new(m.position().x + x, m.position().y + y);
+    (winit::dpi::LogicalSize::new(lw, lh), Some(at))
+}
+
+/// `want` points fitted into a screen of `screen` pixels at `scale` (the size kept to 90 %
+/// of its width and 85 % of its height - a title bar and a task bar take some - with the
+/// shape kept), and where it starts for the screen's middle (pixels).
+pub(crate) fn fit_rect(want: (f64, f64), screen: (f64, f64), scale: f64) -> ((f64, f64), (i32, i32)) {
+    let (sw, sh) = (screen.0 / scale, screen.1 / scale);
+    let k = (sw * 0.9 / want.0).min(sh * 0.85 / want.1).min(1.0);
+    let (w, h) = ((want.0 * k).round(), (want.1 * k).round());
+    let x = ((screen.0 - w * scale) * 0.5).max(0.0) as i32;
+    // (a little above the middle: the title bar sits over the window's top)
+    let y = ((screen.1 - h * scale) * 0.4).max(0.0) as i32;
+    ((w, h), (x, y))
+}
+
 /// The application icon for the window (Windows and Linux; macOS takes the bundle's).
 pub(crate) fn window_icon() -> Option<winit::window::Icon> {
     static PNG: &[u8] = include_bytes!("../../../assets/icons/app/openomsi-256.png");
@@ -367,5 +394,21 @@ mod own_key_tests {
         }
         assert!(super::own_bindings(root, 0).is_empty());
         assert!(super::own_bindings(root, omsi_content::input::KEY_SHIFT).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    #[test]
+    fn the_window_fits_a_small_screen_and_sits_in_its_middle() {
+        // 1920 x 1200 at 125 %: 1600 x 900 points would be 2000 px wide
+        let ((w, h), (x, y)) = super::fit_rect((1600.0, 900.0), (1920.0, 1200.0), 1.25);
+        assert!(w * 1.25 <= 1920.0 * 0.9 + 1.0 && h * 1.25 <= 1200.0 * 0.85 + 1.0, "{w} x {h}");
+        assert!(((w / h) - 16.0 / 9.0).abs() < 0.01);
+        assert!((x as f64 - (1920.0 - w * 1.25) / 2.0).abs() <= 1.0);
+        assert!(y > 0);
+        // a big screen keeps the size asked for
+        let ((w, h), _) = super::fit_rect((1600.0, 900.0), (3840.0, 2160.0), 1.5);
+        assert_eq!((w, h), (1600.0, 900.0));
     }
 }

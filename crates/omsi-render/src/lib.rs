@@ -7324,7 +7324,12 @@ impl Renderer {
         // shader, 12.7 ms of GPU time for one 256-pixel mirror against 5.8 ms for the whole
         // window; plainly shaded it is 0.6 ms, and a mirror's small picture shows no
         // difference worth that. `OMSI_MIRROR_ENHANCED=1` draws them enhanced again.
-        let enhanced_frame = lighting.enhanced && self.hdr_pass.is_some() && omsi_cfg::env::var_os("OMSI_NO_ENHANCED").is_none() && (with_overlays || omsi_cfg::env::var_os("OMSI_MIRROR_ENHANCED").is_some());
+        // The headset's eyes are the real picture as much as the window is (#784: VR showed
+        // the plain graphics with Enhanced on); the first eye is the one that moves the
+        // exposure, the sky cube and the frame clock on, as the window does without VR.
+        let xr_view = projection.is_some();
+        let lead_view = with_overlays || (xr_view && !second_eye);
+        let enhanced_frame = lighting.enhanced && self.hdr_pass.is_some() && omsi_cfg::env::var_os("OMSI_NO_ENHANCED").is_none() && (with_overlays || xr_view || omsi_cfg::env::var_os("OMSI_MIRROR_ENHANCED").is_some());
         // the mirrors are drawn by the same path as the window (their picture graded with
         // the window's exposure, see the post passes)
         let enhanced = enhanced_frame;
@@ -7335,7 +7340,7 @@ impl Renderer {
         let ao_on = with_overlays && self.options.ssao && self.ssao_pipeline.is_some() && omsi_cfg::env::var_os("OMSI_NO_AO").is_none();
         // the enhanced path's shading is costly: the depth prepass keeps it to the visible
         // surface (without multisampling, see `share_depth`)
-        let prepass_on = ao_on || (enhanced && with_overlays);
+        let prepass_on = ao_on || (enhanced && (with_overlays || xr_view));
         if prepass_on && self.ensure_ao(width, height) {
             // a new AO texture: the camera bind group must point at it
             scene.dirty = true;
@@ -7351,7 +7356,7 @@ impl Renderer {
                 .last_frame
                 .map(|t| (now - t).as_secs_f32())
                 .unwrap_or(0.0);
-            if with_overlays {
+            if lead_view {
                 self.last_frame = Some(now);
             }
             dt
@@ -7632,7 +7637,7 @@ impl Renderer {
         // (a mirror takes the window's light - its own call would move the exposure on -
         // unless it comes before the window's first frame)
         let probe_redraw = enhanced
-            && (with_overlays || self.sky_state.is_none())
+            && (lead_view || self.sky_state.is_none())
             && self.prepare_enhanced(lighting, cam_rel, ro, dt);
         let puddles_wanted = enhanced
             && with_overlays
@@ -7844,7 +7849,7 @@ impl Renderer {
         // (the main view's last picture, for the hysteresis; the headset's eyes are main
         // views too: without their previous draw list small meshes and LODs blinked at
         // their thresholds while the head turned)
-        let main_view = with_overlays || projection.is_some();
+        let main_view = with_overlays || xr_view;
         let mut drawn_before = if main_view {
             std::mem::take(&mut *self.cull_drawn.borrow_mut())
         } else {
@@ -8569,7 +8574,7 @@ impl Renderer {
         }
         // --- the enhanced sky cube: a face a frame (all six the first time and for a new
         // sky), drawn in the window's frame only
-        if enhanced && (with_overlays || probe_redraw) {
+        if enhanced && (lead_view || probe_redraw) {
             if let (Some(probe), Some(sky_bg)) = (self.probe.as_mut(), scene.sky_bind_group.as_ref()) {
                 // (face, round, the old picture's share): a whole new cube is every round
                 // of every face averaged; afterwards one face a frame, blended in
@@ -8585,7 +8590,7 @@ impl Renderer {
                     // old place
                     let round = (probe.cube_round / 6) % SKY_CUBE_ROUNDS;
                     (0..6).map(|f| (f, round, 0.0)).collect()
-                } else if (probe.cube_wait >= SKY_CUBE_EVERY && !redraw_near) || probe.cube_wait >= SKY_CUBE_EVERY * 2 || !with_overlays {
+                } else if (probe.cube_wait >= SKY_CUBE_EVERY && !redraw_near) || probe.cube_wait >= SKY_CUBE_EVERY * 2 || !lead_view {
                     // (on a frame that keeps the near shadow map: the two costliest
                     // occasional passes never fall on the same frame)
                     vec![(probe.cube_next, (probe.cube_round / 6) % SKY_CUBE_ROUNDS, SKY_CUBE_HISTORY)]
@@ -8693,7 +8698,7 @@ impl Renderer {
         // central Spandau with 4x MSAA).
         let msaa_prepass = enhanced
             && !has_presurface
-            && with_overlays
+            && (with_overlays || xr_view)
             && !single
             && prepass_on
             && omsi_cfg::env::var_os("OMSI_NO_MSAA_PREPASS").is_none();
@@ -8981,7 +8986,7 @@ impl Renderer {
                 // the exposure: meter the smallest level, move the adapted value towards it
                 // (the window's picture only: a mirror is graded with the window's exposure,
                 // as the eye that looks into it is adapted to the street)
-                if with_overlays {
+                if lead_view {
                     post_pass(
                         &mut encoder,
                         &self.meter_view,

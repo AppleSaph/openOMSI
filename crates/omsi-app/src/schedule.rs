@@ -189,6 +189,34 @@ impl TripTimes {
 /// The stations a trip calls at: its `[station_typ2]` objects, or the objects of the older
 /// `[station]` records the trains, the ferry and the U-Bahn of Spandau still use (their first
 /// line is the object id).
+/// The station targets of [`Schedule::stop_targets`] from the trips' stops and termini.
+/// A stop is never a target of itself or of another stop of the same name (the platforms
+/// of one station, the first and last stop of a circular line): somebody waiting there who
+/// drew it got in, found the bus at their stop and got straight off again, over and over,
+/// every one of them adding another pedestrian (#795).
+fn station_targets(trips: impl Iterator<Item = (Vec<i64>, String)>, name_of: impl Fn(i64) -> String) -> HashMap<i64, Vec<(String, HashSet<String>)>> {
+    let mut named: HashMap<i64, Vec<(String, HashSet<String>)>> = HashMap::new();
+    for (stations, terminus) in trips {
+        for (k, from) in stations.iter().enumerate() {
+            let here = name_of(*from);
+            let targets = named.entry(*from).or_default();
+            for to in &stations[k + 1..] {
+                let to = name_of(*to);
+                if to == here {
+                    continue;
+                }
+                match targets.iter_mut().find(|t| t.0 == to) {
+                    Some(t) => {
+                        t.1.insert(terminus.clone());
+                    }
+                    None => targets.push((to, HashSet::from_iter([terminus.clone()]))),
+                }
+            }
+        }
+    }
+    named
+}
+
 fn trip_stations(trip: &omsi_timetable::Trip) -> Vec<i64> {
     if !trip.stations.is_empty() {
         return trip.stations.clone();
@@ -1664,32 +1692,20 @@ impl Schedule {
     /// at the stop wants one of these targets and boards a bus whose terminus is among its
     /// termini (0x61c33c); the names compare exactly.
     pub fn stop_targets(&self) -> HashMap<i64, Vec<(String, HashSet<String>)>> {
-        let name_of = |id: i64| {
-            self.data
-                .bus_stops
-                .iter()
-                .find(|b| b.object_id == id)
-                .map(|b| b.name.trim().to_string())
-                .unwrap_or_else(|| id.to_string())
-        };
-        let mut named: HashMap<i64, Vec<(String, HashSet<String>)>> = HashMap::new();
-        for trip in &self.data.trips {
-            let stations = trip_stations(trip);
-            let terminus = trip.terminus.trim().to_string();
-            for (k, from) in stations.iter().enumerate() {
-                let targets = named.entry(*from).or_default();
-                for to in &stations[k + 1..] {
-                    let to = name_of(*to);
-                    match targets.iter_mut().find(|t| t.0 == to) {
-                        Some(t) => {
-                            t.1.insert(terminus.clone());
-                        }
-                        None => targets.push((to, HashSet::from_iter([terminus.clone()]))),
-                    }
-                }
-            }
+        let names = self.stop_names();
+        let name_of = |id: i64| names.get(&id).cloned().unwrap_or_else(|| id.to_string());
+        station_targets(self.data.trips.iter().map(|t| (trip_stations(t), t.terminus.trim().to_string())), name_of)
+    }
+
+    /// The name each bus stop object has in the timetable (`Busstops.cfg`, the first entry
+    /// of an object id): what [`Schedule::stop_targets`] calls it. The map object's own
+    /// label can read otherwise (renamed in the editor, another code page than the tiles').
+    pub fn stop_names(&self) -> HashMap<i64, String> {
+        let mut names = HashMap::new();
+        for b in &self.data.bus_stops {
+            names.entry(b.object_id).or_insert_with(|| b.name.trim().to_string());
         }
-        named
+        names
     }
 
     pub fn pending(&self) -> usize {
@@ -3342,6 +3358,9 @@ pub struct PlayerDuty {
     pub tour: String,
     pub trips: Vec<PlannedTrip>,
     pub trip_index: usize,
+    /// Where `trips` begins in the tour: a picked trip is a duty of its own, and a saved
+    /// situation counts the trip under way from the tour's first.
+    pub first_trip: usize,
     /// Next stop to serve on the current trip.
     pub next_stop: usize,
     /// True while the bus stands at the next stop.
@@ -3683,10 +3702,10 @@ impl Schedule {
         };
         // A picked trip is the duty, one way to its terminus, as a trip chosen in OMSI is;
         // the rest of the tour only with `--whole-tour`.
-        let (trips, trip_index) = if trip.is_some() && !whole_tour {
-            (vec![trips[trip_index].clone()], 0)
+        let (trips, trip_index, first_trip) = if trip.is_some() && !whole_tour {
+            (vec![trips[trip_index].clone()], 0, trip_index)
         } else {
-            (trips, trip_index)
+            (trips, trip_index, 0)
         };
         // the AI leaves the player what the player drives: the tour, or just the one trip
         self.player_departure = (trips.len() == 1 && trip.is_some() && !whole_tour).then(|| trips[0].departure);
@@ -3710,6 +3729,7 @@ impl Schedule {
             tour: tour_name,
             trips,
             trip_index,
+            first_trip,
             next_stop: 0,
             at_stop: false,
             arrived_late: None,
@@ -4492,6 +4512,23 @@ mod tests {
     /// The row OMSI's AI bus is given: the first whose ident is the destination, whatever
     /// the codes' order; of equally loose matches the first as well.
     #[test]
+    fn a_stop_is_no_target_of_itself() {
+        // a circular line: from A round to A; B has two platforms of one name
+        let names = |id: i64| match id {
+            1 => "A".to_string(),
+            2 | 3 => "B".to_string(),
+            _ => "C".to_string(),
+        };
+        let t = station_targets([(vec![1, 2, 4, 3, 1], "A".to_string())].into_iter(), names);
+        let of = |id: i64| t[&id].iter().map(|x| x.0.as_str()).collect::<Vec<_>>();
+        assert_eq!(of(1), ["B", "C"]);
+        assert_eq!(of(2), ["C", "A"]);
+        assert_eq!(of(4), ["B", "A"]);
+        assert_eq!(of(3), ["A"]);
+        assert!(t[&1].iter().all(|x| x.1.contains("A")));
+    }
+
+    #[test]
     fn a_terminus_is_the_first_row_of_its_name() {
         let t = |code: i32, id: &str, s: &[&str]| omsi_vehicle::hof::Terminus { code, texture_id: id.into(), terminus_stop: Some(id.into()), all_exit: false, strings: s.iter().map(|x| x.to_string()).collect() };
         let hof = omsi_vehicle::Hof { termini: vec![t(0, "Depot", &[]), t(3, "61-Other", &["61-MaoFangChang"]), t(4, "61-Third", &[]), t(1, "61-MaoFangChang", &["61-MaoFangChang"]), t(2, "Wickenberg Nord", &[])], ..Default::default() };
@@ -4782,7 +4819,7 @@ mod tests {
     #[test]
     fn a_page_can_go_back_to_an_earlier_stop() {
         let trip = planned(0.0, &[(0.0, 0.0, 0.0), (100.0, 60.0, 60.0), (500.0, 120.0, 120.0), (1000.0, 200.0, 200.0)]);
-        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![trip], trip_index: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
+        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![trip], trip_index: 0, first_trip: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
         assert!(d.skip_to(2));
         assert_eq!(d.next_stop, 2);
         // back one stop: due again
@@ -4814,7 +4851,7 @@ mod tests {
             }
         }
         trip.set_dirs();
-        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![trip], trip_index: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
+        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![trip], trip_index: 0, first_trip: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
         // at stop 0, then leaving east
         d.advance(glam::DVec3::new(0.0, 0.0, 0.0), 0.0);
         d.advance(glam::DVec3::new(60.0, 0.0, 0.0), 30.0);
@@ -4868,6 +4905,7 @@ mod tests {
             tour: "3".into(),
             trips,
             trip_index: 1,
+            first_trip: 0,
             next_stop: 0,
             at_stop: false,
             arrived_late: None,
@@ -4917,6 +4955,7 @@ mod tests {
             tour: "3".into(),
             trips,
             trip_index: 0,
+            first_trip: 0,
             next_stop: 0,
             at_stop: false,
             arrived_late: None,
@@ -4957,6 +4996,7 @@ mod tests {
             tour: "1".into(),
             trips: vec![service, passenger],
             trip_index: 0,
+            first_trip: 0,
             next_stop: 1,
             at_stop: false,
             arrived_late: None,

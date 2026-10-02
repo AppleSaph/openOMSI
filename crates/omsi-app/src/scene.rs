@@ -9663,6 +9663,13 @@ fn alpha_mode(a: i32) -> AlphaMode {
     }
 }
 
+/// Whether a vehicle's `[useTextTexture]` slot is a display (`MaterialExtra::display`): one
+/// that has a light of its own, a light map or a night map (a destination matrix, a
+/// counter lit with the dashboard), not lettering on the body.
+fn text_is_display(lightmap: bool, night: bool) -> bool {
+    lightmap || night
+}
+
 /// How a `[texttexture]` shows on its slot: alpha tested where the slot's `[matl_alpha]` is 1
 /// (the stock route helpers, `routearrows_busstop.sco`: blended, the empty part of the text
 /// wrote depth and cut away whatever was drawn behind it later - a bus beside the stop lost
@@ -10166,16 +10173,21 @@ impl Look {
             ..DynTex::default()
         };
         if let Some(t) = d.text.and_then(|i| text.get(i).copied().flatten()) {
+            // lit as the slot's own material is, as `instantiate_vehicle` makes a text slot
+            // that is not switched: drawn unlit, a switched slot's fleet number or plate
+            // shone at full brightness at night (#698)
+            let mut extra = l.extra;
+            extra.display = text_is_display(l.lightmap.is_some(), l.night.is_some());
+            extra.screen = true;
             return Look {
                 diffuse: Some(t),
                 alpha: AlphaMode::Blend,
                 color: [1.0; 4],
                 emissive: [0.0; 3],
-                unlit: true,
+                unlit: false,
                 transmap: None,
-                night: None,
-                lightmap: None,
                 envmap: None,
+                extra,
                 ..l
             };
         }
@@ -11150,8 +11162,12 @@ impl World {
                     // It keeps the slot's light and night maps: a destination matrix or a
                     // dashboard counter is lit by them ([matl_lightmap] lights_stand,
                     // elec_busbar_main), and without them it stayed dark at night.
+                    // Only a slot with a light of its own is a display that glows a little in
+                    // the enhanced picture: a fleet number or a number plate on the body
+                    // (the EN92's `D_wagennummer.tga`, blended, neither light nor night map)
+                    // glowed in the dark with it, where OMSI lights it as the paint (#698).
                     let mut extra = d.extra;
-                    extra.display = d.lightmap.is_some() || d.night.is_some() || d.alpha == AlphaMode::Blend;
+                    extra.display = text_is_display(d.lightmap.is_some(), d.night.is_some());
                     // (the bus's own screen: no glow halo, no FXAA over its letters)
                     extra.screen = true;
                     let m = renderer.add_material_extra(

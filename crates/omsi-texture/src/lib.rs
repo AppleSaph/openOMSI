@@ -130,8 +130,9 @@ pub fn decode_bytes(bytes: &[u8], path: &Path) -> Result<Image, TextureError> {
         Ok(img) => img,
         // D3DX reads what GDI would: a palette bitmap that counts more colours than its bit
         // depth holds (the A21's and the Urbino's 4-bit `LCD-Innenanzeige.bmp` says 17) is
-        // read with the colours it can use
-        Err(e) if format == image::ImageFormat::Bmp => match bmp_clamped_palette(bytes) {
+        // read with the colours it can use, and a 24-bit one that says BI_BITFIELDS (sky
+        // packs' `Texture\skybox\night01.bmp`) as the plain 24-bit bitmap it is
+        Err(e) if format == image::ImageFormat::Bmp => match bmp_clamped_palette(bytes).or_else(|| bmp24_bitfields(bytes)) {
             Some(fixed) => image::load_from_memory_with_format(&fixed, format).map_err(|e| TextureError::Decode(path.to_path_buf(), e.to_string()))?,
             None => return Err(TextureError::Decode(path.to_path_buf(), e.to_string())),
         },
@@ -164,6 +165,21 @@ fn bmp_clamped_palette(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut out = bytes.to_vec();
     out[46..50].copy_from_slice(&used.min(max).to_le_bytes());
     out[50..54].copy_from_slice(&important.min(max).to_le_bytes());
+    Some(out)
+}
+
+/// A copy of a 24-bit bitmap that says `BI_BITFIELDS` (3) with its compression set to
+/// `BI_RGB`: bit fields mean nothing at 24 bits, and D3DX reads the pixels as B8G8R8 where
+/// the `image` crate refuses the file. The masks after a 40-byte header stay where they are
+/// (the pixel offset already points past them). None when the bitmap is not one of those.
+fn bmp24_bitfields(bytes: &[u8]) -> Option<Vec<u8>> {
+    let bits = bytes.get(28..30).map(|b| u16::from_le_bytes([b[0], b[1]]))?;
+    let compression = bytes.get(30..34).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))?;
+    if bits != 24 || compression != 3 {
+        return None;
+    }
+    let mut out = bytes.to_vec();
+    out[30..34].copy_from_slice(&0u32.to_le_bytes());
     Some(out)
 }
 
@@ -645,6 +661,32 @@ mod tests {
         let img = decode_bytes(&bmp32([[1, 2, 3, 0]; 4]), Path::new("x.bmp")).unwrap();
         assert!(!img.has_alpha);
         assert!(img.rgba.chunks_exact(4).all(|p| p[3] == 255));
+    }
+
+    /// A 24-bit bitmap that says BI_BITFIELDS, with its three masks after the header, reads
+    /// as a plain 24-bit one (a sky pack's `night01.bmp`).
+    #[test]
+    fn bmp24_with_bitfields() {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"BM");
+        b.extend_from_slice(&(66u32 + 16).to_le_bytes());
+        b.extend_from_slice(&[0; 4]);
+        b.extend_from_slice(&66u32.to_le_bytes());
+        b.extend_from_slice(&40u32.to_le_bytes());
+        b.extend_from_slice(&2i32.to_le_bytes());
+        b.extend_from_slice(&2i32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&24u16.to_le_bytes());
+        b.extend_from_slice(&3u32.to_le_bytes());
+        b.extend_from_slice(&[0; 20]);
+        for m in [0x00ff_0000u32, 0x0000_ff00, 0x0000_00ff] {
+            b.extend_from_slice(&m.to_le_bytes());
+        }
+        // two rows of two BGR pixels, each padded to four bytes, bottom-up
+        b.extend_from_slice(&[1, 2, 3, 4, 5, 6, 0, 0, 7, 8, 9, 10, 11, 12, 0, 0]);
+        let img = decode_bytes(&b, Path::new("night01.bmp")).unwrap();
+        assert_eq!((img.width, img.height), (2, 2));
+        assert_eq!(&img.rgba[..8], &[9, 8, 7, 255, 12, 11, 10, 255]);
     }
 
     /// A TGA named `.png` (NEOMAN's `W_Bader_KR498_disp.png`, a 24-bit RLE TGA) decodes as TGA.

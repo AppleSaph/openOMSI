@@ -4673,11 +4673,7 @@ impl Traffic {
         let behind = half_len as f64 + ((-speed).max(0.0) * horizon) as f64;
         let wide = (half_w + half_width + 0.35) as f64;
         let margin = PLAYER_BOX_MARGIN as f64;
-        let inside = |p: DVec3| {
-            let rel = p.truncate() - centre.truncate();
-            let (x, y) = (rel.dot(right), rel.dot(fwd));
-            x.abs() <= wide && y <= ahead + margin && y >= -behind - margin
-        };
+        let inside = |p: DVec3| in_player_box(p, centre, fwd, right, wide, ahead + margin, behind + margin);
         let look = (st.speed * st.speed / (2.0 * st.decel) + st.speed * 2.0 + 15.0)
             .clamp(15.0, look_ahead(st.speed));
         let mut d = 0.0f32;
@@ -5617,12 +5613,13 @@ impl Traffic {
                                 car.id
                             );
                         }
-                    } else if st.route.is_empty() && self.net.lanes[st.lane].kind != LaneKind::Air {
-                        // a dead end: stop before it (an aircraft flies on)
-                        let at = end - 0.5;
-                        stop_at = Some(stop_at.map(|x| x.min(at)).unwrap_or(at));
-                        car.gone = true;
                     } else if st.route.is_empty() {
+                        // a dead end (the map's edge, the end of a street spline): Omsi.exe
+                        // drives on at speed and deletes the car the frame it runs out of
+                        // road (0x71dc9c finds no next segment, 0x6fe3fc deletes it), and
+                        // `drive` takes it off there. Braking for the end, the cars stopped
+                        // there one by one and those behind queued into a stop-and-go (an
+                        // aircraft flies on in any case)
                         car.gone = true;
                     }
                 }
@@ -5713,6 +5710,9 @@ impl Traffic {
                 log::info!("t={:.2} car {}: v {:.2} lane {} s {:.1}/{:.1} upcoming {:?} bend {:.2} desired {:.2} lead {:?} stop {:?} why {:?}", self.time, car.id, car.state.speed, car.state.lane, car.state.s, self.net.lanes[car.state.lane].length(), up, car.state.curve_speed(&self.net), car.state.desired_accel(&self.net, lead_now, stop_at), lead_now.map(|l| l.gap), stop_at.map(|x| x - car.state.front), car.why);
             }
             if !car.state.drive(&self.net, dt, lead_now, stop_at) {
+                if debug {
+                    log::info!("t={:.1}: car {} ran out of road at {:.1} m/s: taken off", self.time, car.id, car.state.speed);
+                }
                 remove.push(i);
                 continue;
             }
@@ -6134,11 +6134,13 @@ impl Traffic {
                             ss.add_part(*i, omsi_audio::SoundSet::new_exterior(audio, &part.chosen_for(&number), dir));
                         }
                         ss.master = crate::sound_gain(&crate::SOUND_AI);
+                        c.vehicle.host.snapshot_triggers = ss.curve_triggers().into_iter().collect();
                         c.sounds = Some(ss);
                     }
                 }
             }
             let fired: Vec<String> = std::mem::take(&mut c.vehicle.host.fired_triggers);
+            let fired_vars: Vec<(String, Vec<f32>)> = std::mem::take(&mut c.vehicle.host.fired_trigger_vars);
             let fired_files: Vec<(String, String)> =
                 std::mem::take(&mut c.vehicle.host.fired_file_triggers);
             c.vehicle.host.street_cond = street_cond;
@@ -6147,7 +6149,11 @@ impl Traffic {
                 ss.set_muffled(muffled);
                 let xf = c.vehicle.world_transform();
                 let v = &c.vehicle;
-                ss.update(audio, &|n| v.var(n), &xf, &fired);
+                let at_fire = |t: &str, n: &str| -> Option<f32> {
+                    let vals = &fired_vars.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(t))?.1;
+                    v.var_slot(n).and_then(|i| vals.get(i).copied())
+                };
+                ss.update_fired(audio, &|n| v.var(n), &xf, &fired, &at_fire);
                 ss.update_parts(
                     audio,
                     &|n| v.var(n),
@@ -7104,6 +7110,16 @@ fn road_scale(near_density: &[f32]) -> f32 {
     road * mean.clamp(0.0, 2.0)
 }
 
+/// Whether the point `p` of a car's way lies in the player's box round `centre` (`wide` to
+/// either side, `ahead` in front and `behind` behind it) - on the same level only: a bus
+/// under a bridge held up the traffic on the bridge above it (#753). 4 m, as for the other
+/// vehicles' bodies.
+fn in_player_box(p: DVec3, centre: DVec3, fwd: DVec2, right: DVec2, wide: f64, ahead: f64, behind: f64) -> bool {
+    let rel = p.truncate() - centre.truncate();
+    let (x, y) = (rel.dot(right), rel.dot(fwd));
+    x.abs() <= wide && y <= ahead && y >= -behind && (p.z - centre.z).abs() < 4.0
+}
+
 #[cfg(test)]
 mod road_scale_tests {
     use super::road_scale;
@@ -7183,6 +7199,19 @@ mod group_density_tests {
     /// Berlin-Spandau's `unsched_vehgroups.txt`: NormalCars 1, Trucks 0, Commercials 1,
     /// Ambulance 1, GDRCars 0.
     const SPANDAU: [i32; 5] = [1, 0, 1, 1, 0];
+
+    #[test]
+    fn a_bus_under_a_bridge_is_not_in_the_way_on_it() {
+        use super::in_player_box;
+        use glam::DVec3;
+        let (c, f, r) = (DVec3::new(0.0, 0.0, 32.0), DVec2::new(0.0, 1.0), DVec2::new(1.0, 0.0));
+        // the road through the bus's box, on its level and on a bridge 5.4 m above it
+        assert!(in_player_box(DVec3::new(0.5, 3.0, 32.3), c, f, r, 2.5, 6.0, 6.0));
+        assert!(!in_player_box(DVec3::new(0.5, 3.0, 37.4), c, f, r, 2.5, 6.0, 6.0));
+        assert!(!in_player_box(DVec3::new(0.5, 3.0, 26.0), c, f, r, 2.5, 6.0, 6.0));
+        // beside it
+        assert!(!in_player_box(DVec3::new(3.5, 3.0, 32.0), c, f, r, 2.5, 6.0, 6.0));
+    }
 
     #[test]
     fn a_following_bus_is_no_bus_in_the_way() {

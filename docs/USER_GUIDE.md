@@ -103,7 +103,8 @@ the keyboard, and Shift+right-drag zooms - this is OMSI's `[altView]` mode, the 
 (up: the outside camera backs away, the view inside widens up to the seat's own) and only the
 wheel button turns the view; each view keeps its own
 direction (turning the outside camera leaves the driver's head where it was), **Space** looks
-ahead again in every view (OMSI's `view_reset_all_directions`), Home recentres the view shown.
+ahead again in every view (OMSI's `view_reset_all_directions`), Home recentres the view shown
+where keyboard.cfg does not make it the ticket desk camera.
 The mouse wheel (and **=** / **-**, a pinch on a phone) zooms: outside the camera comes closer,
 inside the bus the view narrows, as in OMSI; **Ctrl**+wheel outside narrows the view instead
 (a telephoto, the camera stays where it is). F1-F4 driver / passenger / outside / map (free) camera, F5-F8 the destination

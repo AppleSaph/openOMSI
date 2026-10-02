@@ -60,20 +60,21 @@ pub(crate) fn setup_sky(
     envir: Option<&omsi_content::Envir>,
     weather: Option<&omsi_content::weather::Weather>,
 ) {
-    let names = envir.map(|e| e.sky_textures.clone()).unwrap_or_else(|| {
-        [
-            "Texture\\himmel01.bmp".into(),
-            "Texture\\himmel04.bmp".into(),
-            "Texture\\himmel05.bmp".into(),
-        ]
-    });
+    const STOCK: [&str; 3] = ["Texture\\himmel01.bmp", "Texture\\himmel04.bmp", "Texture\\himmel05.bmp"];
+    let names = envir.map(|e| e.sky_textures.clone()).unwrap_or_else(|| STOCK.map(String::from));
     let mut ids = Vec::new();
-    for n in &names {
+    for (n, stock) in names.iter().zip(STOCK) {
         let p = omsi_cfg::resolve_path(&args.root, n);
-        match omsi_texture::decode_file(&p) {
+        // a sky pack's picture that cannot be read leaves the stock one in its place: giving
+        // up here took the clouds with it, whatever the weather (#749)
+        let img = omsi_texture::decode_file(&p).or_else(|e| {
+            log::warn!("sky texture {}: {e}", p.display());
+            omsi_texture::decode_file(&omsi_cfg::resolve_path(&args.root, stock))
+        });
+        match img {
             Ok(img) => ids.push(renderer.add_texture(scene, &img, false)),
             Err(e) => {
-                log::warn!("sky texture {}: {e}", p.display());
+                log::warn!("sky texture {stock}: {e}");
                 return;
             }
         }
