@@ -907,6 +907,7 @@ fn toggle_now(app: &App, id: &str) -> Option<bool> {
     let s = &app.settings;
     Some(match id {
         "navigator" => app.navigator.as_ref().is_some_and(|n| n.enabled),
+        "nav_ai" => app.navigator.as_ref().map_or(s.nav_ai, |n| n.show_ai),
         "shadows" => s.shadows,
         "head" => s.head_movement,
         "cam_smooth" => s.driverview_smooth,
@@ -940,6 +941,13 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
             }
             app.settings.navigator = on;
             Some(("navigator", bit))
+        }
+        "nav_ai" => {
+            if let Some(n) = app.navigator.as_mut() {
+                n.show_ai = on;
+            }
+            app.settings.nav_ai = on;
+            Some(("nav_ai", bit))
         }
         "shadows" => {
             app.settings.shadows = on;
@@ -1234,6 +1242,7 @@ fn options_pages(app: &App) -> Vec<Page> {
     let cm = |v: f32| format!("{:+.0} cm", v * 100.0);
     let game: Vec<(String, String)> = vec![
         switch_row(app, "navigator", "Navigator", "Enables/Disables the Minimap"),
+        switch_row(app, "nav_ai", "AI vehicles on the map", "Shows/hides the other (AI) vehicles on the Minimap and the city map"),
         switch_row(app, "get_up", "Ability to get up (Ctrl+Shift+G)", "Allows you to get out of the car and explore the world"),
         switch_row(app, "coll_objects", "Collisions with objects", "Enables/disables collisions with objects such as buildings, streetlights, etc."),
         switch_row(app, "coll_vehicles", "Collisions with vehicles", "Enables/Disables Collisions with Other Vehicles"),
