@@ -818,6 +818,8 @@ pub struct AiFrame {
 }
 
 pub struct VehicleInstance {
+    /// `A_Trans_*` taken over OMSI's frames (see [`OmsiFrames`]).
+    a_trans: OmsiFrames,
     pub ty: Arc<VehicleType>,
     pub state: State,
     pub vm: Vm,
@@ -1116,6 +1118,7 @@ impl VehicleInstance {
             offs.iter().sum::<f32>() / offs.len().max(1) as f32
         };
         VehicleInstance {
+            a_trans: OmsiFrames::default(),
             particles: ParticleSet::new(ty.model.particle_systems(), std::ptr::addr_of!(host) as u64 ^ 0x9e37_79b9),
             light_fade: Vec::new(),
             v_springfactor,
@@ -1706,7 +1709,8 @@ impl VehicleInstance {
         // accelerometer reads, so 0 standing or cruising. `accel_body` carries gravity's
         // 9.81 m/s² (the wheels' springs need it), which as `A_Trans_Z` kept checks such
         // as the NEOMAN ECAS's "|A_Trans_Z| < 3 while driving" from ever passing.
-        let a = scripts_acceleration(rb.accel_body, rb.orientation);
+        // (over OMSI's frames: the rattle scripts take its change from one frame to the next)
+        let a = self.a_trans.push(scripts_acceleration(rb.accel_body, rb.orientation), dt);
         self.physics.a_trans = a;
         self.put(self.v_accel[0], a.x);
         self.put(self.v_accel[1], a.y);
@@ -3034,6 +3038,43 @@ pub struct TrailerPart {
     pub text_textures: Vec<crate::texttex::TextTextureState>,
 }
 
+/// OMSI's frames, a thirtieth of a second (`[maxFPS]` 30 in its options.cfg and every option
+/// preset but one): `A_Trans_*` is the body's velocity change over one of them (0x7d5124),
+/// and the stock rattle scripts (`klappern.osc`: `Klappern_Vol` follows how much |A_Trans|
+/// changes from one frame to the next) were tuned on that. Taken over this game's frames -
+/// 60 to 150 a second - the change from frame to frame was a half to a fifth of OMSI's for
+/// the same jolt, and the buses kept quiet on rough roads (#772, #886). The value is the
+/// mean over each thirtieth, held until the next one is complete.
+#[derive(Debug, Clone, Copy, Default)]
+struct OmsiFrames {
+    sum: Vec3,
+    t: f32,
+    out: Vec3,
+}
+
+impl OmsiFrames {
+    const FRAME: f32 = 1.0 / 30.0;
+
+    fn push(&mut self, a: Vec3, dt: f32) -> Vec3 {
+        if !(dt > 0.0) || !a.is_finite() {
+            return self.out;
+        }
+        // (a frame as long as OMSI's or longer is one of OMSI's)
+        if dt >= Self::FRAME * 0.99 {
+            *self = OmsiFrames { out: a, ..Default::default() };
+            return a;
+        }
+        self.sum += a * dt;
+        self.t += dt;
+        if self.t >= Self::FRAME * 0.99 {
+            self.out = self.sum / self.t;
+            self.sum = Vec3::ZERO;
+            self.t = 0.0;
+        }
+        self.out
+    }
+}
+
 /// The body-frame acceleration the scripts see as `A_Trans_*` (Omsi.exe 0x7d5124: the
 /// velocity's change over the frame, rotated into the body): `accel_body`, the specific force
 /// an accelerometer would read, less gravity's share in the body frame.
@@ -4092,6 +4133,30 @@ mod tests {
             let alpha = v.var("articulation_0_alpha").unwrap();
             assert!((alpha.abs() - 52.5).abs() < 1e-3, "alpha {alpha} at heading {h}");
         }
+    }
+
+    /// The stock rattle (`klappern.osc`) as loud at 144 frames a second as at OMSI's 30.
+    #[test]
+    fn a_jolt_rattles_alike_at_any_frame_rate() {
+        fn rattle(fps: f32) -> f32 {
+            let dt = 1.0 / fps;
+            let (mut frames, mut last, mut vol, mut peak) = (super::OmsiFrames::default(), 0.0f32, 0.0f32, 0.0f32);
+            for i in 0..(fps as usize) {
+                let t = i as f32 * dt;
+                // a 6 Hz pitching after a bump, 0.5 m/s² along the bus
+                let a = Vec3::new(0.0, 0.5 * (t * 6.0 * std::f32::consts::TAU).sin() * (-t * 3.0).exp(), 0.0);
+                let a = frames.push(a, dt);
+                let m = (a.x * a.x + a.y * a.y + 0.01 * a.z * a.z).sqrt();
+                vol = ((m - last) * 1.0).max(vol * (-dt).exp()).min(1.0);
+                last = m;
+                peak = peak.max(vol);
+            }
+            peak
+        }
+        let (omsi, fast) = (rattle(30.0), rattle(144.0));
+        // (taken frame by frame, 144 a second rattled at 0.3 of OMSI's)
+        assert!(omsi > 0.2 && omsi < 0.9, "{omsi}");
+        assert!(fast > 0.6 * omsi && fast < 1.4 * omsi, "30 fps {omsi}, 144 fps {fast}");
     }
 
     /// `A_Trans_*` are the body's acceleration without gravity, as in Omsi.exe: 0 for a bus
