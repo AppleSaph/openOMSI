@@ -429,6 +429,9 @@ fn weather_file_ok(file: &str) -> bool {
     f.starts_with("weather/") && f.ends_with(".owt") && !f.contains("..") && f.matches('/').count() == 1
 }
 
+/// Who the commands of the web gateway's `POST /admin` come from: no player has this id.
+pub(crate) const LOCAL_ADMIN: u32 = u32::MAX;
+
 /// A command a player sent the dedicated server.
 pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &mut ServerAdmin, positions: &dyn Fn(u32) -> Option<(glam::DVec3, f64)>) {
     let (verb, arg) = text.split_once(' ').unwrap_or((text, ""));

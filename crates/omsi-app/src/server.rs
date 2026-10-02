@@ -153,6 +153,8 @@ pub(crate) fn info_of(cfg: &ServerCfg) -> omsi_net::ws::ServerInfo {
         reached_at: String::new(),
         players_public: cfg.share_positions,
         player_list: Vec::new(),
+        local_admin_password: cfg.admin_password.clone(),
+        ..Default::default()
     }
 }
 

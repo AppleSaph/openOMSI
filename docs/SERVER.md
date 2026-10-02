@@ -27,7 +27,13 @@ Players reach it two ways:
   tunnel --url http://127.0.0.1:<web_port>` and prints the `https://….trycloudflare.com`
   address). The same port answers `GET /status` (JSON: name, motd, map, players,
   max_players, time, weather, version, protocol) and `GET /icon.png`, which the launcher's
-  Multiplayer → Servers list shows. With `share_positions = 1` it also answers
+  Multiplayer → Servers list shows. With an `admin_password` it also takes `POST /admin`
+  from the machine itself: one admin command a line (`clock 30600`, `weather set
+  Weather/#CAVOK.owt`, `say …`, `kick 3`, as the Administration menu sends them), the
+  password in `X-Admin-Password`; five wrong ones in two minutes close it for a while. A
+  tool beside the server (a dispatch page, a script) administers it that way without
+  joining. A reverse proxy on the same machine connects from 127.0.0.1 as well: do not let
+  it pass `/admin` on. With `share_positions = 1` it also answers
   `GET /players`: a JSON array of the players (`id`, `name`, `bus`, `line`, `destination`,
   `tour`, `x`/`y` in world metres east/north, `heading` in degrees clockwise from north,
   `speed_kmh`, `on_foot` and `aboard` - a player on foot is where it walks (even with its
