@@ -1783,6 +1783,9 @@ pub(crate) fn run_offscreen(
             }
         }
         vehicle_camera(&player, &mut camera);
+        // the driver at the wheel, as the window has him every frame (not posed, he was
+        // not drawn - or stood in the aisle in the file's T-pose)
+        player.sync_driver(&renderer, &mut scene, 1.0 / 30.0, settings.driver, args.view == "driver");
         player_ref = Some(player);
     }
     if let Some(mut h) = humans_off.take() {
