@@ -17,6 +17,16 @@ fn indicator_toggle_action(state: &mut u8, lever: Option<u8>, want: u8) -> &'sta
     }
 }
 
+/// The indicator lever to put back after a frame of the script (None: leave it): where
+/// the settings keep an indicator on (`cancel` off), the script turning it off by itself
+/// in its frame - a bus whose indicator cancels after a turn, on a phone's wheel after a
+/// second or two (#451) - is undone. The player's own keys and clicks run as triggers
+/// between the frames, so they still turn it off.
+fn kept_indicator(cancel: bool, before: Option<f32>, after: Option<f32>) -> Option<f32> {
+    let (before, after) = (before?.round(), after?.round());
+    (!cancel && (before == 1.0 || before == 2.0) && after == 0.0).then_some(before)
+}
+
 pub(crate) fn steering_view_yaw(current: f32, steering: f32, dt: f32, enabled: bool, angle: f32, response: f32) -> f32 {
     let target = if enabled { steering.clamp(-1.0, 1.0) * angle.clamp(0.0, 60.0) } else { 0.0 };
     current + (target - current) * (1.0 - (-dt.max(0.0) / response.clamp(0.05, 1.0)).exp())
@@ -128,6 +138,9 @@ pub(crate) struct Player {
     /// (real OMSI's Z/X/C and Shift+numpad 4/6/5 are toggles, not one-shot "set" buttons):
     /// 0 = nothing, 1 = left, 2 = right, 3 = hazard.
     pub(crate) blinker_key_state: u8,
+    /// The settings' "Indicators cancel themselves" (`blinker_cancel`): off, the script's
+    /// own cancelling after a turn is undone (#451).
+    pub(crate) blinker_cancel: bool,
 }
 
 // Putting a bus into service (Shift+U, `--autostart`) is `omsi_sim::startup`: it presses
@@ -1274,7 +1287,11 @@ impl Player {
                 _ => self.axes.steering,
             },
         });
+        let lever = self.vehicle.var("lights_sw_blinker");
         self.vehicle.update(dt);
+        if let Some(keep) = kept_indicator(self.blinker_cancel, lever, self.vehicle.var("lights_sw_blinker")) {
+            self.vehicle.set_var("lights_sw_blinker", keep);
+        }
         // OMSI_SUSP_TRACE_WINDOW=<csv>: each wheel's travel every frame of a window run
         // (the offscreen run has OMSI_SUSP_TRACE)
         if let Some(path) = omsi_cfg::env::var_os("OMSI_SUSP_TRACE_WINDOW") {
@@ -2258,6 +2275,23 @@ pub(crate) fn mouse_steering(cursor_x: f32, width: f32, kmh: f32) -> f32 {
 pub(crate) fn mouse_pedal(current: f32, target: f32, k: f32) -> f32 {
     let v = target + (current - target) * k;
     if (v - target).abs() < 1e-4 { target } else { v }
+}
+
+#[cfg(test)]
+mod kept_indicator_tests {
+    use super::kept_indicator;
+
+    #[test]
+    fn a_kept_indicator_is_put_back_when_the_script_cancels_it() {
+        // the script's own cancelling stands by default
+        assert_eq!(kept_indicator(true, Some(1.0), Some(0.0)), None);
+        // kept: left and right come back, the hazard lever and a change of side stay
+        assert_eq!(kept_indicator(false, Some(1.0), Some(0.0)), Some(1.0));
+        assert_eq!(kept_indicator(false, Some(2.0), Some(0.0)), Some(2.0));
+        assert_eq!(kept_indicator(false, Some(1.0), Some(2.0)), None);
+        assert_eq!(kept_indicator(false, Some(0.0), Some(0.0)), None);
+        assert_eq!(kept_indicator(false, None, Some(0.0)), None);
+    }
 }
 
 #[cfg(test)]

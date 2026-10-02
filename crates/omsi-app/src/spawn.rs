@@ -450,6 +450,7 @@ pub(crate) fn spawn_player(
         ibis_background: false,
         arm: Default::default(),
         blinker_key_state: 0,
+        blinker_cancel: crate::settings::Settings::load().blinker_cancel,
     };
     for _ in 0..3 {
         p.vehicle.update(1.0 / 30.0);

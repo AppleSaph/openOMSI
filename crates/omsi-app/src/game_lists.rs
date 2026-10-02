@@ -1019,6 +1019,7 @@ fn toggle_now(app: &App, id: &str) -> Option<bool> {
         "coll_vehicles" => s.collision_vehicles,
         "mouse" => app.mouse_drive,
         "mouse_right" => s.mouse_right_off,
+        "blinker_cancel" => s.blinker_cancel,
         "fps" => s.show_fps,
         "get_up" => s.get_up,
         "time_sync" => s.time_sync,
@@ -1123,6 +1124,13 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
             app.mouse_steer = (app.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
             app.mouse_pedals = app.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
             None
+        }
+        "blinker_cancel" => {
+            app.settings.blinker_cancel = on;
+            if let Some(p) = app.player.as_mut() {
+                p.blinker_cancel = on;
+            }
+            Some(("blinker_cancel", bit))
         }
         "mouse_right" => {
             app.settings.mouse_right_off = on;
@@ -1798,6 +1806,7 @@ fn options_pages(app: &App) -> Vec<Page> {
         slider_row(app, "wheel_lock", "Full lock at", "How far the wheel turns for the vehicle's full lock", &|v| if v < 45.0 { "OMSI".to_string() } else { format!("{v:.0}°") }),
         slider_row(app, "pedal_t", "Throttle pedal strength", "Adjust how strongly pedal input affects the throttle", &|v| format!("x{v}")),
         slider_row(app, "pedal_b", "Brake pedal strength", "Adjust how strongly pedal input affects the brake", &|v| format!("x{v}")),
+        switch_row(app, "blinker_cancel", "Indicators cancel themselves", "The bus's script turns the indicator off after a turn; off: it stays on until you turn it off"),
         switch_row(app, "brake_hold", "Keyboard brake stays on", "Keep the brake applied until the throttle is pressed"),
         switch_row(app, "auto_clutch", "Automatic clutch", "Automatically operate the clutch for you"),
         switch_row(app, "momentary_gears", "Hold manual gear buttons (release returns to neutral)", later),
