@@ -2398,10 +2398,7 @@ impl ApplicationHandler for App {
                         if omsi_cfg::env::var_os("OMSI_PROFILE_GPU").is_some() {
                             // wait for the GPU here, so that its time shows as a stage of its own
                             let __t = Instant::now();
-                            let _ = r.device.poll(wgpu::PollType::Wait {
-                                submission_index: None,
-                                timeout: None,
-                            });
+                            let _ = omsi_render::wait_gpu(&r.device, None);
                             *self.profile.entry("gpu").or_default() += __t.elapsed().as_secs_f64();
                         }
                         let __t = Instant::now();
@@ -2414,10 +2411,7 @@ impl ApplicationHandler for App {
                                 frame.present();
                             }
                             None => {
-                                let _ = r.device.poll(wgpu::PollType::Wait {
-                                    submission_index: None,
-                                    timeout: None,
-                                });
+                                let _ = omsi_render::wait_gpu(&r.device, None);
                             }
                         }
                         *self.profile.entry("present").or_default() += __t.elapsed().as_secs_f64();

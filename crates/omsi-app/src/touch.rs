@@ -1040,7 +1040,7 @@ impl Touch {
         enc.copy_texture_to_buffer(tex.as_image_copy(), wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: None } }, wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
         r.queue.submit([enc.finish()]);
         buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        r.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        omsi_render::wait_gpu(&r.device, None).ok();
         let data = buf.slice(..).get_mapped_range();
         let mut out = vec![0u8; (w * h * 4) as usize];
         for y in 0..h as usize {

@@ -1161,6 +1161,41 @@ pub static ADAPTER_TEXTURE_MB: std::sync::atomic::AtomicU64 = std::sync::atomic:
 /// The device runs on OpenGL (set in `Renderer::new`).
 static GL_BACKEND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Whether the device draws on OpenGL (known once a renderer is made).
+pub fn gl_backend() -> bool {
+    GL_BACKEND.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Wait until the GPU has done `submission` (None: everything submitted so far).
+///
+/// On OpenGL wgpu holds the one GL context for the whole of a wait, and every other thread
+/// that wants it meanwhile (a worker making a bus's textures, the poll thread) gives up after
+/// a second with a panic - "Could not lock adapter context. This is most-likely a deadlock."
+/// (wgpu-hal's WGL lock; #843: a slow chip took longer than that for a frame). There the
+/// wait is made of short ones, and the context is free between them.
+pub fn wait_gpu(device: &wgpu::Device, submission: Option<wgpu::SubmissionIndex>) -> Result<(), wgpu::PollError> {
+    if !gl_backend() {
+        return device.poll(wgpu::PollType::Wait { submission_index: submission, timeout: None }).map(|_| ());
+    }
+    loop {
+        match device.poll(wgpu::PollType::Wait { submission_index: submission.clone(), timeout: Some(GL_WAIT_SLICE) }) {
+            Err(wgpu::PollError::Timeout) => std::thread::yield_now(),
+            r => return r.map(|_| ()),
+        }
+    }
+}
+
+/// The longest a single wait for the GPU holds the GL context (see [`wait_gpu`]).
+const GL_WAIT_SLICE: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// On OpenGL, the GPU work of worker threads (textures and meshes of a bus made while the
+/// world loads) goes one thread at a time: a dozen of them queueing for the GL context left
+/// the last one waiting past wgpu's one second (#843). Elsewhere the device takes them all.
+fn gl_worker_turn() -> Option<std::sync::MutexGuard<'static, ()>> {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    gl_backend().then(|| TURN.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// The card's own memory in MB where the system tells it: Windows, through DXGI, for
 /// whichever backend draws (wgpu does not say).
 fn dedicated_vram_mb(info: &wgpu::AdapterInfo) -> Option<u64> {
@@ -9342,12 +9377,7 @@ impl Renderer {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(idx),
-                timeout: None,
-            })
-            .map_err(|e| anyhow!("poll: {e:?}"))?;
+        wait_gpu(&self.device, Some(idx)).map_err(|e| anyhow!("poll: {e:?}"))?;
         rx.recv()
             .context("map")?
             .map_err(|e| anyhow!("map: {e:?}"))?;
@@ -9435,6 +9465,7 @@ pub struct PreparedMesh(GpuMesh);
 
 /// Make a mesh's GPU buffers on any thread (the device takes calls from all of them).
 pub fn prepare_mesh(device: &wgpu::Device, queue: &wgpu::Queue, data: &MeshData) -> PreparedMesh {
+    let _turn = gl_worker_turn();
     PreparedMesh(make_mesh(device, queue, data))
 }
 
@@ -9459,6 +9490,7 @@ pub fn prepare_texture(
     if let Some(small) = fit_texture(data, device.limits().max_texture_dimension_2d) {
         return prepare_texture(device, queue, &small);
     }
+    let _turn = gl_worker_turn();
     use omsi_texture::PixelFormat;
     let format = match data.format {
         PixelFormat::Rgba8 => wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -10324,9 +10356,12 @@ impl DevicePoller {
         let thread = std::thread::Builder::new()
             .name("omsi-gpu-poll".into())
             .spawn(move || {
+                // (on OpenGL every poll takes the GL context from the thread drawing, see
+                // `wait_gpu`: a few times a frame is plenty there)
+                let pause = std::time::Duration::from_millis(if gl_backend() { 5 } else { 1 });
                 while !flag.load(std::sync::atomic::Ordering::Relaxed) {
                     let _ = device.poll(wgpu::PollType::Poll);
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    std::thread::sleep(pause);
                 }
             })
             .ok()?;
