@@ -2406,15 +2406,13 @@ impl Humans {
         }
     }
 
-    /// A person put at a free waiting place of stop `id` (sub_626044) with a destination
-    /// drawn from the stop's (sub_61baa8); they settle there as task 6 does.
-    fn spawn_waiting(&mut self, world: &World, renderer: &Renderer, scene: &mut Scene, id: i64) -> Option<usize> {
-        let k = self.take_spot(id)?;
-        let sp = self.stops[&id].spots[k].clone();
-        // the destination: by weight; none when the weights leave the draw over
+    /// A destination drawn from stop `id`'s (sub_61baa8): by weight; none when the weights
+    /// leave the draw over. Also the stop's line record it matched.
+    fn draw_dest(&mut self, id: i64) -> (Option<String>, Option<usize>) {
         let mut r = self.rand_f() as f32;
         let mut dest: Option<String> = None;
-        for (n, w) in &self.stops[&id].dests {
+        let Some(stop) = self.stops.get(&id) else { return (None, None) };
+        for (n, w) in &stop.dests {
             if r <= 0.0 {
                 break;
             }
@@ -2423,7 +2421,16 @@ impl Humans {
                 dest = Some(n.clone());
             }
         }
-        let line = dest.as_ref().and_then(|d| self.stops[&id].lines.iter().position(|(n, _)| n.trim() == d.trim()));
+        let line = dest.as_ref().and_then(|d| stop.lines.iter().position(|(n, _)| n.trim() == d.trim()));
+        (dest, line)
+    }
+
+    /// A person put at a free waiting place of stop `id` (sub_626044) with a destination
+    /// drawn from the stop's (sub_61baa8); they settle there as task 6 does.
+    fn spawn_waiting(&mut self, world: &World, renderer: &Renderer, scene: &mut Scene, id: i64) -> Option<usize> {
+        let k = self.take_spot(id)?;
+        let sp = self.stops[&id].spots[k].clone();
+        let (dest, line) = self.draw_dest(id);
         let walk = 1.1 + (self.rand_f() as f32 * 2.0 - 1.0) * 0.2;
         let mut pax = Pax::new(walk);
         pax.stop = Some(id);
@@ -5135,6 +5142,13 @@ impl Humans {
         let mut pax = Pax::new(walk);
         pax.task = Task::WaitingForBus;
         pax.stop = Some(stop);
+        // what a waiting person of ours has (sub_626044 and task 6): a destination drawn
+        // from the stop (both sides load the same map) and a distance to ride without one;
+        // with neither they would get off again at once (#813)
+        let (dest, line) = self.draw_dest(stop);
+        pax.dest = dest;
+        pax.line = line;
+        pax.ride_km = self.rand_f() as f32 * 19.0 + 1.0;
         pax.pos = self.people[i].position;
         pax.yaw = self.people[i].heading.to_radians();
         if let Some(sp) = sp {
