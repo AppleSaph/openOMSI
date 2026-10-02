@@ -47,6 +47,9 @@ fn render_scale_step(fps: f32, slow_frame_wait_share: f32) -> f32 {
 
 use super::*;
 
+/// How fast a stick turns the head, fully pushed (degrees a second, see `Analog::look`).
+const LOOK_STICK_DEG_S: f32 = 120.0;
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.resumed_impl(event_loop);
@@ -700,6 +703,12 @@ impl ApplicationHandler for App {
                 // goes. For a second after mouse steering is switched on the wheel eases
                 // towards the cursor (a half-life of the time that is left), then follows it.
                 let mut analog = analog;
+                // the head turned by a stick or an axis set up for it (#454), at up to
+                // 120 degrees a second, in the views of the bus, on foot and flying
+                if analog.look != [0.0, 0.0] && self.game_menu.is_none() && self.chooser.is_none() && !self.paused {
+                    let k = LOOK_STICK_DEG_S * dt * self.settings.look_sens;
+                    self.look_by(analog.look[0] * k, analog.look[1] * k);
+                }
                 // a gamepad's stick: a target the wheel turns towards at a hand's pace (the
                 // whole lock in 1.2 s), not the wheel's place itself (#200)
                 if analog.stick {
