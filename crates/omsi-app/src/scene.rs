@@ -4744,7 +4744,15 @@ impl World {
                     radius: shape.radius(),
                 });
             }
-            let lamp = if ot.sco.is_traffic_light {
+            // (OMSI hands `TrafficLightPhase` to any child of a crossing whose first string
+            // names one of its lights, `[trafficlight]` or not - see `names_traffic_light`;
+            // a mod lamp without the keyword sat at its "off" picture, blinking yellow.
+            // Objects with textures of their own to choose stay ordinary objects.)
+            let child_lamp = o.lamp_parent.is_some_and(|p| index.traffic_light_parents.contains(&p))
+                && crate::tiles::names_traffic_light(&o.extra)
+                && ot.dynamic_textures.is_empty()
+                && !ot.meshes.iter().any(|(_, _, ov)| ov.iter().any(|m| !m.item && m.freetex.is_some()));
+            let lamp = if ot.sco.is_traffic_light || child_lamp {
                 let named = o.extra.first().map(|s| s.trim()).filter(|s| !s.is_empty());
                 let index = named.map(|s| omsi_cfg::parse_f64(s) as usize).unwrap_or(0);
                 if omsi_cfg::env::var_os("OMSI_DEBUG_LAMPS").is_some() {

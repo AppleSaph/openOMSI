@@ -48,7 +48,9 @@ pub struct MapIndex {
     /// Every object and spline file the map names (as written, lower case), with the number
     /// of records naming it and one tile that does.
     pub files: HashMap<String, (usize, (i32, i32))>,
-    /// Crossing ids with placed `[trafficlight]` objects, including signals on other tiles.
+    /// Crossing ids whose light program runs: placed `[trafficlight]` objects name them, or
+    /// a child of any kind names one of their lights (`names_traffic_light`), including
+    /// children on other tiles.
     pub traffic_light_parents: HashSet<i64>,
     /// Tile → the world rectangle (x0, y0, x1, y1) its tile square and its splines (with
     /// room for their width) cover.
@@ -112,11 +114,35 @@ pub fn stop_side(strings: &[String]) -> f32 {
     strings.get(5).map(|s| s.trim()).and_then(|s| s.parse::<f64>().ok()).filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 2.0) as f32).unwrap_or(0.0)
 }
 
+/// Does a child of a crossing name one of its lights? OMSI's `RefreshAmpelParenting`
+/// (0x77d460) switches a crossing's light program on for every object whose `[varparent]`
+/// is that crossing and whose first string is a light index (`StrToInt` >= 0) - whatever
+/// kind of object it is: it never asks for `[trafficlight]`. A mod's lamp without that
+/// keyword (a copy of a lamp with its own script) still runs its junction, and the lamp
+/// shows that light.
+pub fn names_traffic_light(strings: &[String]) -> bool {
+    strings.first().and_then(|s| s.trim().parse::<i64>().ok()).is_some_and(|i| i >= 0)
+}
+
 fn traffic_light_parents(tile: &Tile, mut is_signal: impl FnMut(&str) -> bool) -> HashSet<i64> {
+    light_children(tile)
+        .filter_map(|(file, _, parent)| is_signal(file).then_some(parent))
+        .collect()
+}
+
+/// Every child of another object in a tile: (file, strings, parent id).
+fn light_children(tile: &Tile) -> impl Iterator<Item = (&str, &[String], i64)> {
     tile.objects.iter().chain(&tile.attach_objects)
-        .filter_map(|o| o.var_parent.or(o.parent_id).map(|parent| (o.file.as_str(), parent)))
-        .chain(tile.spline_attachments.iter().filter_map(|a| a.var_parent.map(|parent| (a.file.as_str(), parent))))
-        .filter_map(|(file, parent)| is_signal(file).then_some(parent))
+        .filter_map(|o| o.var_parent.or(o.parent_id).map(|parent| (o.file.as_str(), o.extra.as_slice(), parent)))
+        .chain(tile.spline_attachments.iter().filter_map(|a| a.var_parent.map(|parent| (a.file.as_str(), a.strings.as_slice(), parent))))
+}
+
+/// The parents a tile's children name a light of (`names_traffic_light`), whatever the
+/// children are: whether the parent is a crossing with a light program is settled once
+/// the whole map is read (it may stand on another tile).
+fn light_naming_parents(tile: &Tile) -> HashSet<i64> {
+    light_children(tile)
+        .filter_map(|(_, strings, parent)| names_traffic_light(strings).then_some(parent))
         .collect()
 }
 
@@ -132,7 +158,11 @@ impl MapIndex {
         type RowParts = (Vec<((usize, i64), i64, f64, f64)>, Vec<((usize, i64), i64, usize)>);
         let t0 = std::time::Instant::now();
         let signal_types = parking_lot::Mutex::new(HashMap::new());
-        let parts: Vec<Option<(MapIndex, RowParts)>> = tiles
+        // (per tile: the parents its children name a light of, and its objects' files - the
+        // objects by id, the files once each - to tell afterwards which of those parents
+        // are crossings with a light program)
+        type LightParts = (HashSet<i64>, Vec<(i64, u32)>, Vec<String>);
+        let parts: Vec<Option<(MapIndex, RowParts, LightParts)>> = tiles
             .par_iter()
             .map(|(gi, tx, ty, path)| {
                 let tile = read_tile(path, chrono_dirs)?;
@@ -150,6 +180,20 @@ impl MapIndex {
                         }
                     })
                 });
+                let lights: LightParts = {
+                    let named = light_naming_parents(&tile);
+                    let mut names: Vec<String> = Vec::new();
+                    let mut by_name: HashMap<&str, u32> = HashMap::new();
+                    let mut ids = Vec::with_capacity(tile.objects.len());
+                    for o in &tile.objects {
+                        let k = *by_name.entry(o.file.as_str()).or_insert_with(|| {
+                            names.push(o.file.clone());
+                            names.len() as u32 - 1
+                        });
+                        ids.push((o.id, k));
+                    }
+                    (named, ids, names)
+                };
                 let mut rows: RowParts = Default::default();
                 for s in tile.splines.iter().filter(|s| !s.deleted) {
                     let map_chain_offset = if tile.version >= 11 || tile.version == 0 {
@@ -215,14 +259,33 @@ impl MapIndex {
                     part.objects.entry(a.id).or_insert(((*tx, *ty), first.pose.pos, [first.pose.heading(), 0.0, 0.0]));
                 }
                 part.tiles_read = 1;
-                Some((part, rows))
+                Some((part, rows, lights))
             })
             .collect();
         let mut index = MapIndex::default();
         let mut rows: RowParts = Default::default();
+        let named: HashSet<i64> = parts.iter().flatten().flat_map(|p| p.2 .0.iter().copied()).collect();
+        let mut programs: HashMap<String, bool> = HashMap::new();
+        for (_, ids, names) in parts.iter().flatten().map(|p| &p.2) {
+            for &(id, k) in ids {
+                if !named.contains(&id) || index.traffic_light_parents.contains(&id) {
+                    continue;
+                }
+                let file = &names[k as usize];
+                let key = file.replace('/', "\\").to_ascii_lowercase();
+                let has = *programs.entry(key).or_insert_with(|| {
+                    omsi_scenery::SceneryObject::load(&omsi_cfg::resolve_path(root, file))
+                        .map(|sco| !sco.traffic_lights.is_empty())
+                        .unwrap_or(false)
+                });
+                if has {
+                    index.traffic_light_parents.insert(id);
+                }
+            }
+        }
         for p in parts {
             match p {
-                Some((p, (r, q))) => {
+                Some((p, (r, q), _)) => {
                     index.splines.extend(p.splines);
                     for (id, v) in p.objects {
                         if let Some(prev) = index.objects.get(&id).filter(|prev| prev.0 != v.0) {
@@ -1006,6 +1069,31 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(traffic_light_parents(&tile, |file| file == "signal.sco"), [10, 30, 50, 60].into_iter().collect());
+    }
+
+    #[test]
+    fn a_child_naming_a_light_counts_whatever_its_type() {
+        // (OMSI's RefreshAmpelParenting reads the light index, not the object's kind)
+        let object = |file: &str, parent, strings: &[&str]| omsi_map::MapObject {
+            file: file.into(),
+            var_parent: Some(parent),
+            extra: strings.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        let tile = Tile {
+            objects: vec![
+                object("mod_lamp.sco", 10, &["2"]),
+                object("mod_lamp.sco", 20, &[" 0 "]),
+                object("display.sco", 30, &["", ""]),
+                object("sign.sco", 40, &["-1"]),
+                object("sign.sco", 50, &["Hbf"]),
+                object("sign.sco", 60, &[]),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(light_naming_parents(&tile), [10, 20].into_iter().collect());
+        assert!(traffic_light_parents(&tile, |_| false).is_empty());
+        assert!(names_traffic_light(&["3".into()]) && !names_traffic_light(&["x".into()]));
     }
 
     #[test]
