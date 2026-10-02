@@ -157,6 +157,10 @@ struct Seat {
     seated: bool,
     /// The `[passpos]`'s seat height (+0x20; 0: a standing place).
     height: f32,
+    /// Its number for the scripts (`GetHumanCountOnSeat`): Omsi.exe's place in the file
+    /// among the `[passpos]` and `[drivpos]`, the sections behind counted on after those
+    /// in front (0x7d39a4 asks the next one for a number past its own places).
+    omsi_seat: usize,
 }
 
 /// What passengers need to know about one vehicle type's cabin.
@@ -191,6 +195,21 @@ struct Cabin {
     money_point: Option<Vec3>,
     money_var: Option<(Vec3, [f32; 2])>,
     change_point: Option<Vec3>,
+}
+
+/// The people on each seat by the scripts' numbers (`Seat::omsi_seat`, the `[drivpos]`
+/// counted with the `[passpos]`), from the places (indices into `seats`) taken by people
+/// sitting there. (Counted by the `[passpos]` alone, every seat of a cabin with the
+/// driver's place first was one off: a tip-up seat folded down under the next one.)
+fn seat_numbers(seats: &[Seat], sitting: impl Iterator<Item = usize>) -> Vec<u32> {
+    let n = seats.iter().map(|s| s.omsi_seat + 1).max().unwrap_or(0);
+    let mut out = vec![0u32; n];
+    for k in sitting {
+        if let Some(c) = seats.get(k).and_then(|s| out.get_mut(s.omsi_seat)) {
+            *c += 1;
+        }
+    }
+    out
 }
 
 /// A section of an articulated bus in its cabin's unfolded frame.
@@ -251,7 +270,9 @@ impl Cabin {
         // (merged path point or -1, sells tickets, {withbutton}, half width of the section)
         let mut entry_points: Vec<(i32, bool, bool, f32)> = Vec::new();
         let mut exit_points: Vec<(i32, f32)> = Vec::new();
-        let mut places: Vec<(omsi_vehicle::cabin::PassPos, Vec3)> = Vec::new();
+        let mut places: Vec<(omsi_vehicle::cabin::PassPos, Vec3, usize)> = Vec::new();
+        // (the script seat numbers of the sections in front)
+        let mut seat_base = 0usize;
         let mut cabin_parts: Vec<CabinPart> = Vec::new();
         // the point of the section in front that leads on to the next one
         let mut rear_link: Option<usize> = None;
@@ -328,7 +349,8 @@ impl Cabin {
                     .map(|e| (shift(e.path_point), !e.no_ticket_sale, e.with_button, half)),
             );
             exit_points.extend(cab.exits.iter().map(|e| (shift(*e), half)));
-            places.extend(cab.pass_positions.iter().map(|p| (p.clone(), *offset)));
+            places.extend(cab.pass_positions.iter().map(|p| (p.clone(), *offset, seat_base + p.file_index)));
+            seat_base += cab.pass_positions.len() + cab.driver_positions.len();
             cabin_parts.push(CabinPart {
                 offset: *offset,
                 joint_y: *joint_y,
@@ -439,7 +461,7 @@ impl Cabin {
         });
         let seats = places
             .iter()
-            .map(|(p, offset)| {
+            .map(|(p, offset, omsi_seat)| {
                 let pos = Vec3::from(p.pos) + *offset;
                 let seated = p.height > 0.01;
                 let floor = if seated {
@@ -458,6 +480,7 @@ impl Cabin {
                     rot: p.rot,
                     seated,
                     height: p.height,
+                    omsi_seat: *omsi_seat,
                 }
             })
             .collect();
@@ -3328,17 +3351,11 @@ impl Humans {
         let Some(cabin) = self.player_cabin.as_ref() else {
             return Vec::new();
         };
-        let mut out = vec![0u32; cabin.seats.len()];
-        for p in &self.people {
-            if let State::Pax(x) = &p.state {
-                if let (Some(BusId::Player), Task::SittingInBus, Some(seat)) = (x.inside, x.task, x.seat) {
-                    if let Some(c) = out.get_mut(seat) {
-                        *c += 1;
-                    }
-                }
-            }
-        }
-        out
+        let sitting = self.people.iter().filter_map(|p| match &p.state {
+            State::Pax(x) if x.inside == Some(BusId::Player) && x.task == Task::SittingInBus => x.seat,
+            _ => None,
+        });
+        seat_numbers(&cabin.seats, sitting)
     }
 
     /// How many people stand on each `paths.cfg` link inside the player's bus, for the
@@ -5254,6 +5271,15 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn seats_counted_by_the_scripts_numbers() {
+        let seat = |omsi_seat: usize| Seat { pos: Vec3::ZERO, floor: Vec3::ZERO, rot: 0.0, seated: true, height: 0.45, omsi_seat };
+        // the driver's place is seat 0, a second section's numbers follow the first's
+        let seats = [seat(1), seat(2), seat(4), seat(6)];
+        assert_eq!(seat_numbers(&seats, [0, 2, 2, 3].into_iter()), [0, 1, 0, 0, 2, 0, 1]);
+        assert!(seat_numbers(&[], [0].into_iter()).is_empty());
     }
 
     #[test]

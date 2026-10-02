@@ -13,6 +13,10 @@ pub struct PassPos {
     /// the file, `[passpos]` or `[drivpos]`, has 0 1 2 3, every later one those of the seat
     /// before it, and an `[illumination_interior]` sets those of the seat written last.
     pub illumination: [i32; 4],
+    /// Where it stands in Omsi.exe's one list of `[passpos]` and `[drivpos]` (file order):
+    /// the seat number scripts ask `GetHumanCountOnSeat` about (0x7d39a4) - with the
+    /// driver's place first, as most cabins have it, the first `[passpos]` is seat 1.
+    pub file_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -104,7 +108,8 @@ impl PassengerCabin {
                         Some((false, i)) => c.pass_positions[i].illumination,
                         None => [0, 1, 2, 3],
                     };
-                    let p = PassPos { pos, height, rot, illumination };
+                    let file_index = c.pass_positions.len() + c.driver_positions.len();
+                    let p = PassPos { pos, height, rot, illumination, file_index };
                     if k == "passpos" {
                         c.pass_positions.push(p);
                         last = Some((false, c.pass_positions.len() - 1));
@@ -148,5 +153,15 @@ mod tests {
         assert_eq!(c.pass_positions[2].illumination, [6, 7, 8, 9]);
         let c = PassengerCabin::parse(&CfgFile::from_str("passengercabin.cfg", "[passpos]\n0\n0\n1\n0.5\n0\n"));
         assert_eq!(c.pass_positions[0].illumination, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn seats_are_numbered_with_the_drivers_place() {
+        let text = "[drivpos]\n-0.8\n4.5\n1.0\n0.5\n0\n\n[passpos]\n0.5\n2\n1\n0.5\n0\n\n\
+                    [passpos]\n0.5\n1\n1\n0.5\n0\n\n[drivpos]\n0.8\n4.5\n1.0\n0.5\n0\n\n[passpos]\n0.5\n0\n1\n0.5\n0\n";
+        let c = PassengerCabin::parse(&CfgFile::from_str("passengercabin.cfg", text));
+        let seats: Vec<usize> = c.pass_positions.iter().map(|p| p.file_index).collect();
+        assert_eq!(seats, [1, 2, 4]);
+        assert_eq!(c.driver_positions.iter().map(|p| p.file_index).collect::<Vec<_>>(), [0, 3]);
     }
 }
