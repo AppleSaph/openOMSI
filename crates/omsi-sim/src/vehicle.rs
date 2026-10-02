@@ -1695,9 +1695,15 @@ impl VehicleInstance {
             .map(|w| w.rpm)
             .unwrap_or(0.0);
         self.put(self.v_n_wheel, n_wheel);
-        self.put(self.v_accel[0], rb.accel_body.x);
-        self.put(self.v_accel[1], rb.accel_body.y);
-        self.put(self.v_accel[2], rb.accel_body.z);
+        // `A_Trans_*` as Omsi.exe has them (0x7d5124): the change of the body's velocity
+        // over the frame, turned into the body frame - its acceleration, not what an
+        // accelerometer reads, so 0 standing or cruising. `accel_body` carries gravity's
+        // 9.81 m/s² (the wheels' springs need it), which as `A_Trans_Z` kept checks such
+        // as the NEOMAN ECAS's "|A_Trans_Z| < 3 while driving" from ever passing.
+        let a = scripts_acceleration(rb.accel_body, rb.orientation);
+        self.put(self.v_accel[0], a.x);
+        self.put(self.v_accel[1], a.y);
+        self.put(self.v_accel[2], a.z);
         for (ai, axle) in self.v_wheels.clone().iter().enumerate() {
             for (si, w) in axle.iter().enumerate() {
                 if let Some(rw) = rb.wheels.get(ai * 2 + si) {
@@ -3030,6 +3036,13 @@ pub struct TrailerPart {
     pub text_textures: Vec<crate::texttex::TextTextureState>,
 }
 
+/// The body-frame acceleration the scripts see as `A_Trans_*` (Omsi.exe 0x7d5124: the
+/// velocity's change over the frame, rotated into the body): `accel_body`, the specific force
+/// an accelerometer would read, less gravity's share in the body frame.
+fn scripts_acceleration(accel_body: Vec3, orientation: Quat) -> Vec3 {
+    accel_body - orientation.inverse().mul_vec3(Vec3::new(0.0, 0.0, 9.81))
+}
+
 impl TrailerPart {
     /// Pitch (degrees, nose up), eased axle height and the track point it stands on (for
     /// the `OMSI_DEBUG_TRAILERS` trace).
@@ -4074,6 +4087,22 @@ mod tests {
             let alpha = v.var("articulation_0_alpha").unwrap();
             assert!((alpha.abs() - 52.5).abs() < 1e-3, "alpha {alpha} at heading {h}");
         }
+    }
+
+    /// `A_Trans_*` are the body's acceleration without gravity, as in Omsi.exe: 0 for a bus
+    /// standing still, on the level or on a grade, and the braking's deceleration alone.
+    #[test]
+    fn scripts_acceleration_leaves_gravity_out() {
+        let level = super::scripts_acceleration(Vec3::new(0.0, 0.0, 9.81), Quat::IDENTITY);
+        assert!(level.length() < 1e-4, "{level}");
+        // standing nose up on a 10 % grade: the accelerometer reads gravity's share along it
+        let rot = Quat::from_rotation_x(0.1f32.atan());
+        let reading = rot.inverse().mul_vec3(Vec3::new(0.0, 0.0, 9.81));
+        let grade = super::scripts_acceleration(reading, rot);
+        assert!(grade.length() < 1e-4, "{grade}");
+        // braking at 3 m/s² on the level
+        let braking = super::scripts_acceleration(Vec3::new(0.0, -3.0, 9.81), Quat::IDENTITY);
+        assert!((braking - Vec3::new(0.0, -3.0, 0.0)).length() < 1e-4, "{braking}");
     }
 
     /// A rear section turns about its own `[rot_pnt_long]` line: the stock GN92's is its
