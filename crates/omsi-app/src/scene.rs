@@ -5567,7 +5567,7 @@ impl World {
                     )
                 })
                 .map(|i| renderer.add_texture(scene, &i, true));
-            renderer.add_material_all(
+            renderer.add_material_extra(
                 scene,
                 Some(tex),
                 AlphaMode::Blend,
@@ -5578,6 +5578,7 @@ impl World {
                 None,
                 env.map(|e| (e, 0.45)),
                 [0.0; 3],
+                omsi_render::MaterialExtra { water: true, ..Default::default() },
             )
         };
         let tree_mesh = renderer.add_mesh(scene, &tree_quad_mesh());
@@ -9662,6 +9663,7 @@ fn material_extra(
         glass: false,
         night_switched: false,
         rain_film: false,
+        water: false,
         display: false,
         screen: false,
         led: false,

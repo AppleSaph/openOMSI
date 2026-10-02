@@ -379,7 +379,7 @@ struct MaterialUniform {
     /// `[matl_texadress_mirroronce]`; z the border colour's rgb packed as r * 65536 + g * 256 + b (bytes), w its alpha.
     flags: [f32; 4],
     /// rgb: the D3D material's ambient colour, which takes the ambient light (C); w: 1 for
-    /// a texture that is a season's snow picture (no snow laid over it)
+    /// a texture that is a season's snow picture (no snow laid over it), 2 the map's water
     ambient: [f32; 4],
 }
 
@@ -795,6 +795,9 @@ pub struct MaterialExtra {
     /// The film of water on a window (`[alphascale] Rain_Window_…`): drawn as drops that sit,
     /// gather and run down the glass instead of the texture sliding down as a whole.
     pub rain_film: bool,
+    /// The map's water (`texture/water.tga`): Enhanced draws it as water - a smooth surface
+    /// mirroring the sky more the flatter it is seen, rippled by small waves.
+    pub water: bool,
     /// `[nomaplighting]`: the map's lamps (`[maplight]`) do not light it - a street lamp
     /// is not lit by its own light.
     pub no_map_lights: bool,
@@ -4729,7 +4732,9 @@ impl Renderer {
             .and_then(|id| scene.pbr_maps.get(&id))
             .map(|maps| maps.flags)
             .unwrap_or([0.0; 4]);
-        uniform.ambient[3] = snow_texture_flag(scene, texture);
+        if uniform.ambient[3] < 1.5 {
+            uniform.ambient[3] = snow_texture_flag(scene, texture);
+        }
         let slot = |t: Option<TextureId>| {
             t.and_then(|t| scene.textures.get(t).map(|g| (t, g.gen)))
                 .unwrap_or((usize::MAX, 0))
@@ -5029,7 +5034,7 @@ impl Renderer {
             },
             ambient: {
                 let a = extra.ambient.unwrap_or([color[0], color[1], color[2]]);
-                [a[0], a[1], a[2], snow_texture_flag(scene, texture)]
+                [a[0], a[1], a[2], if extra.water { 2.0 } else { snow_texture_flag(scene, texture) }]
             },
         };
         let slot = |t: Option<TextureId>| {
