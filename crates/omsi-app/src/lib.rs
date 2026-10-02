@@ -500,6 +500,8 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         mouse_drive: false,
         mouse_steer: (0.0, 0.0),
         mouse_edge: 0.0,
+        steer_cursor: None,
+        center_cursor: false,
         mouse_pedals: (0.0, 0.0),
         mouse_kmh: 0.0,
         tutorial: None,
@@ -570,6 +572,12 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
     };
     app.lan = lan;
     app.remotes = lan_game;
+    // mouse steering as the player left it (the wheel eases to the cursor for a second)
+    if app.settings.mouse_steering {
+        app.mouse_drive = true;
+        app.mouse_steer = (0.0, 1.0);
+        app.center_cursor = true;
+    }
     // (the LAN status file stays while the game runs; `exiting` removes it)
     std::mem::forget(_lan_status);
     Ok(Some(app))

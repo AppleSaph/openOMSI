@@ -161,9 +161,7 @@ impl ApplicationHandler for App {
                     if state == ElementState::Pressed && self.game_menu.is_none()
                         && self.chooser.is_none() {
                         if self.mouse_drive {
-                            self.mouse_drive = false;
-                            crate::player::keep_wheel(self.player.as_mut());
-                            self.reset_vr_pointer();
+                            self.set_mouse_drive(false);
                             self.service_msg = Some(("Mouse steering off".into(), 3.0));
                         } else {
                             self.vr_zoom_active = !self.vr_zoom_active;
@@ -667,6 +665,12 @@ impl ApplicationHandler for App {
                 if let (true, Some(s)) = (self.mouse_drive && bus_view && !self.mouse_look
                                               && self.game_menu.is_none(), self.surface.as_ref()) {
                     let (w, h) = (s.config.width as f32, s.config.height as f32);
+                    if std::mem::take(&mut self.center_cursor) {
+                        self.cursor = (w * 0.5, h * 0.5);
+                        if let Some(win) = self.window.as_ref() {
+                            let _ = win.set_cursor_position(winit::dpi::PhysicalPosition::new((w * 0.5) as f64, (h * 0.5) as f64));
+                        }
+                    }
                     // (the speed the divisor takes, smoothed over 0.4 s: the bus's own speed
                     // trembles by fractions of a km/h from frame to frame on its springs and
                     // tyres, and at 30 km/h the wheel twitched with it by itself)
@@ -2473,7 +2477,20 @@ impl ApplicationHandler for App {
             // (in a view of the bus the cursor's own way turns it: move_cursor)
             if self.mouse_look {
                 if !self.cursor_looks() {
-                    self.look_by(delta.0 as f32 * 0.15, delta.1 as f32 * 0.15);
+                    if self.view == "outside" {
+                        // F3 chase orbits at its own gain, not the head's.
+                        self.sync_view_look();
+                        let (y, p) = crate::input_script::chase_orbit_step(
+                            self.look.0,
+                            self.look.1,
+                            delta.0 as f32,
+                            delta.1 as f32,
+                        );
+                        self.look.0 = y;
+                        self.look.1 = p;
+                    } else {
+                        self.look_by(delta.0 as f32 * 0.15, delta.1 as f32 * 0.15);
+                    }
                 }
             } else if self.mouse_drive && self.game_menu.is_none() {
                 self.mouse_past_edge(delta.0 as f32);

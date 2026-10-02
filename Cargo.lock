@@ -3336,6 +3336,7 @@ dependencies = [
  "omsi-net",
  "omsi-timetable",
  "omsi-vehicle",
+ "rayon",
  "rfd",
  "serde",
  "serde_json",

@@ -1925,7 +1925,7 @@ fn natural(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// Write one key of `~/.openomsi/settings.cfg` (the launcher's file; the other lines
 /// stay as they are).
-fn remember_setting(key: &str, value: &str) {
+pub(crate) fn remember_setting(key: &str, value: &str) {
     let Ok(mut v) = omsi_launcher_lib::get_settings() else { return };
     let parsed: serde_json::Value = value.parse::<f64>().map(serde_json::Value::from).unwrap_or_else(|_| serde_json::Value::from(value));
     // a switch goes in as true/false, as the launcher's own values are: written as 1 it

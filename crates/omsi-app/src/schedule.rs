@@ -2207,6 +2207,14 @@ impl Schedule {
                         Some((_, p, t)) => (p[..p.len() - 1].to_vec(), t),
                         None => {
                             log::debug!("trip {trip_name}: the tour's bus has no way from where it stands");
+                            if omsi_cfg::env::var_os("OMSI_DEBUG_TRAFFIC").is_some() {
+                                let ln = &net.lanes[lane0];
+                                log::info!("trip {trip_name}: tour bus on lane {lane0} {:?} at s {s0:.1} of {:.1}, ({:.1}, {:.1}) -> ({:.1}, {:.1}), next {:?}", ln.key, ln.length(), ln.start().x, ln.start().y, ln.end().x, ln.end().y, ln.next);
+                                for &l in section.iter().take(4) {
+                                    let ln = &net.lanes[l];
+                                    log::info!("  trip lane {l} {:?} len {:.1} ({:.1}, {:.1}) -> ({:.1}, {:.1}) prev? next {:?}", ln.key, ln.length(), ln.start().x, ln.start().y, ln.end().x, ln.end().y, ln.next);
+                                }
+                            }
                             return Placed::Drop;
                         }
                     }

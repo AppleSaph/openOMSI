@@ -10,7 +10,10 @@
 //!   player coming in this way as an address of its own. The same port answers
 //!   `GET /status` (a small JSON object about the server, for the launcher's list),
 //!   `GET /icon.png` and, when the server shares them (`share_positions`), `GET /players`:
-//!   who drives what and where, for a web map of the server.
+//!   who drives what and where, for a web map of the server. A dedicated server with an
+//!   admin password also takes `POST /admin`
+//!   from the machine it runs on (see [`local_admin`]): the administration a tool beside the
+//!   server uses, without joining the session.
 //! * [`WsClient`] (a joining game) connects to `wss://…/ws`, binds a UDP socket on
 //!   127.0.0.1 and gives its address to `LanSession::join`; whatever the game sends there
 //!   goes over the WebSocket and back.
@@ -47,6 +50,12 @@ pub struct ServerInfo {
     pub players_public: bool,
     /// The players now, for `GET /players`.
     pub player_list: Vec<PlayerInfo>,
+    /// `POST /admin` from this machine with this password (empty: no such door).
+    pub local_admin_password: String,
+    /// The admin commands that came in that way, for the host loop to run.
+    pub local_admin_queue: Vec<String>,
+    /// When wrong passwords came lately (they lock the door for a while).
+    pub local_admin_failures: Vec<Instant>,
 }
 
 /// A player as `GET /players` tells it: a web map of the server draws it.
@@ -363,8 +372,80 @@ impl WsGateway {
     }
 }
 
+/// Wrong local admin passwords within `ADMIN_LOCK_WINDOW` that close the door for a while.
+const ADMIN_LOCK_AFTER: usize = 5;
+const ADMIN_LOCK_WINDOW: Duration = Duration::from_secs(120);
+
+/// The rest of a request's body, up to its `Content-Length` (4 KiB at most).
+fn read_body(s: &mut TcpStream, request: &mut Vec<u8>) {
+    let text = String::from_utf8_lossy(request).to_string();
+    let Some(head_end) = text.find("\r\n\r\n") else { return };
+    let want = header(&text[..head_end], "content-length").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(4096);
+    let mut buf = [0u8; 1024];
+    while request.len() < head_end + 4 + want {
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => request.extend_from_slice(&buf[..n]),
+        }
+    }
+}
+
+fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.lines().skip(1).find_map(|l| l.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case(name)).map(|(_, v)| v.trim()))
+}
+
+/// Compare two secrets in a time that does not tell how much of them matched.
+fn same_secret(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut d = (a.len() ^ b.len()) as u8 | (a.len() != b.len()) as u8;
+    for i in 0..a.len().max(b.len()) {
+        d |= a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0);
+    }
+    d == 0
+}
+
+/// `POST /admin`: admin commands (one a line, as the Administration menu sends them:
+/// `clock 30600`, `weather next`, `say …`, `kick 3` …) for a dedicated server, from a tool on
+/// the same machine - a web dispatch page, a script. Only from the loopback, only with the
+/// server's admin password in `X-Admin-Password`; five wrong ones in two minutes close it
+/// for a while. A reverse proxy on the same machine forwards from 127.0.0.1 too: it must
+/// not pass `/admin` on.
+pub fn local_admin(request: &[u8], peer: Option<SocketAddr>, info: &Mutex<ServerInfo>) -> (&'static str, String) {
+    let text = String::from_utf8_lossy(request);
+    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    let mut i = info.lock().unwrap_or_else(|e| e.into_inner());
+    if i.local_admin_password.is_empty() {
+        return ("404 Not Found", "no admin password on this server".into());
+    }
+    if !peer.map(|p| p.ip().is_loopback()).unwrap_or(false) {
+        return ("403 Forbidden", "only from this machine".into());
+    }
+    // A tunnel or a proxy on this machine connects from the loopback as well: the server's
+    // own cloudflared tunnel (`tunnel --url http://127.0.0.1:<web_port>`) would have put the
+    // door on the internet behind the password alone. What came through one says so.
+    if ["cf-connecting-ip", "cf-ray", "x-forwarded-for", "forwarded", "x-real-ip"].iter().any(|h| header(head, h).is_some()) {
+        return ("403 Forbidden", "only from this machine, not through a tunnel or proxy".into());
+    }
+    if !head.starts_with("POST ") {
+        return ("405 Method Not Allowed", "POST admin commands, one a line".into());
+    }
+    i.local_admin_failures.retain(|t| t.elapsed() < ADMIN_LOCK_WINDOW);
+    if i.local_admin_failures.len() >= ADMIN_LOCK_AFTER {
+        return ("429 Too Many Requests", "too many wrong passwords: try again later".into());
+    }
+    if !same_secret(header(head, "x-admin-password").unwrap_or(""), &i.local_admin_password) {
+        i.local_admin_failures.push(Instant::now());
+        return ("401 Unauthorized", "wrong admin password".into());
+    }
+    let commands: Vec<String> = body.lines().map(str::trim).filter(|l| !l.is_empty()).take(10).map(|l| l.chars().take(200).collect()).collect();
+    let n = commands.len();
+    i.local_admin_queue.extend(commands);
+    ("202 Accepted", format!("{n} command(s) taken"))
+}
+
 /// One TCP connection to the gateway: a status request, the icon, or a player's WebSocket.
 fn serve(stream: TcpStream, target: SocketAddr, info: &Mutex<ServerInfo>, stop: &AtomicBool, connected: &AtomicUsize) -> Result<(), String> {
+    let peer = stream.peer_addr().ok();
     stream.set_nonblocking(false).map_err(|e| e.to_string())?;
     stream.set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
     let mut head = [0u8; 2048];
@@ -375,8 +456,14 @@ fn serve(stream: TcpStream, target: SocketAddr, info: &Mutex<ServerInfo>, stop: 
     if !upgrade {
         let mut s = stream;
         // (the request is read off the socket before the answer: some proxies wait)
-        let _ = s.read(&mut head);
+        let got = s.read(&mut head).unwrap_or(0);
+        let mut request = head[..got].to_vec();
         let (status, ctype, body): (&str, &str, Vec<u8>) = match path.as_str() {
+            "/admin" => {
+                read_body(&mut s, &mut request);
+                let (status, text) = local_admin(&request, peer, info);
+                (status, "text/plain; charset=utf-8", text.into_bytes())
+            }
             "/status" | "/status.json" => ("200 OK", "application/json", info.lock().unwrap_or_else(|e| e.into_inner()).to_json().into_bytes()),
             "/players" | "/players.json" => {
                 let i = info.lock().unwrap_or_else(|e| e.into_inner());
@@ -706,6 +793,38 @@ mod tests {
     }
 
     #[test]
+    fn local_admin_door_is_shut_to_tunnels() {
+        let info = Mutex::new(ServerInfo { local_admin_password: "s3cret".into(), ..Default::default() });
+        let req = b"POST /admin HTTP/1.1\r\nX-Admin-Password: s3cret\r\nCf-Connecting-Ip: 203.0.113.9\r\nContent-Length: 6\r\n\r\nsay hi";
+        assert_eq!(local_admin(req, Some(SocketAddr::from(([127, 0, 0, 1], 5000))), &info).0, "403 Forbidden");
+        assert!(info.lock().unwrap().local_admin_queue.is_empty());
+    }
+
+    #[test]
+    fn local_admin_door() {
+        let info = Mutex::new(ServerInfo::default());
+        let here = Some(SocketAddr::from(([127, 0, 0, 1], 5000)));
+        let post = |pw: &str, body: &str| format!("POST /admin HTTP/1.1\r\nHost: x\r\nX-Admin-Password: {pw}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_bytes();
+        // no password: no door
+        assert_eq!(local_admin(&post("", "say hi"), here, &info).0, "404 Not Found");
+        info.lock().unwrap().local_admin_password = "s3cret".into();
+        // not from this machine
+        assert_eq!(local_admin(&post("s3cret", "say hi"), Some(SocketAddr::from(([10, 0, 0, 2], 5000))), &info).0, "403 Forbidden");
+        assert_eq!(local_admin(b"GET /admin HTTP/1.1\r\nX-Admin-Password: s3cret\r\n\r\n", here, &info).0, "405 Method Not Allowed");
+        assert_eq!(local_admin(&post("s3cre", "say hi"), here, &info).0, "401 Unauthorized");
+        assert!(info.lock().unwrap().local_admin_queue.is_empty());
+        let (st, _) = local_admin(&post("s3cret", "clock 30600\r\n\r\nweather set Weather/#CAVOK.owt\n"), here, &info);
+        assert_eq!(st, "202 Accepted");
+        assert_eq!(info.lock().unwrap().local_admin_queue, ["clock 30600", "weather set Weather/#CAVOK.owt"]);
+        // five wrong passwords close the door, the right one included
+        for _ in 0..4 {
+            local_admin(&post("nope", "say x"), here, &info);
+        }
+        assert_eq!(local_admin(&post("s3cret", "say x"), here, &info).0, "429 Too Many Requests");
+        assert!(same_secret("abc", "abc") && !same_secret("abc", "abd") && !same_secret("abc", "abcd") && !same_secret("", "a"));
+    }
+
+    #[test]
     fn players_list() {
         let p = PlayerInfo { id: 3, name: "Anna \"A\"".into(), bus: "Vehicles/MAN_SD200/MAN_SD77.bus".into(), line: "37".into(), x: 894179.74, y: 4196165.3, heading: 200.0, speed_kmh: 31.25, lat_lon: Some((52.535412, 13.199642)), ..Default::default() };
         let j = players_json(&[p.clone(), PlayerInfo { id: 4, x: f64::NAN, ..Default::default() }]);
@@ -746,6 +865,16 @@ mod tests {
         assert!(ok, "the datagram came back through the WebSocket");
         let st = query(&format!("http://{}", gw.addr), false).unwrap();
         assert_eq!(st.name, "t");
+        // the admin door over a real connection: a body sent after the head is read too
+        gw.info.lock().unwrap().local_admin_password = "pw".into();
+        let mut s = TcpStream::connect(gw.addr).unwrap();
+        s.write_all(b"POST /admin HTTP/1.1\r\nHost: x\r\nX-Admin-Password: pw\r\nContent-Length: 11\r\n\r\n").unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        s.write_all(b"say hello\r\n").unwrap();
+        let mut r = String::new();
+        let _ = s.read_to_string(&mut r);
+        assert!(r.starts_with("HTTP/1.1 202"), "{r}");
+        assert_eq!(gw.info.lock().unwrap().local_admin_queue, ["say hello"]);
         // the players' positions only when the server shares them
         let get = |path: &str| {
             let mut s = TcpStream::connect(gw.addr).unwrap();
