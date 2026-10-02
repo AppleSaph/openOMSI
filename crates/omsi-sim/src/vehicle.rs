@@ -3389,26 +3389,33 @@ impl TrailerPart {
             .track
             .filter(|t| (t.truncate() - new_pivot.truncate()).length() < 1.0)
             .map(|t| t.z);
+        // the height of the part's origin over its axle (where the ground has none: level
+        // with the coupling, as before)
+        let level = c.z - self.coupling_front.z as f64;
         // the ground under its axle: what the wheels stand on where the world says, else the
         // plain height sampler
         let ground_z = match (on_track, &main.contact, &main.ground) {
             (Some(_), _, _) => None,
-            (None, Some(c), _) => {
-                c.probe(new_pivot.x, new_pivot.y, self.position.z + 1.5)
-                    .below
+            (None, Some(g), _) => {
+                // Looked for from above the coupling's level as well as from the part's own
+                // height: from its own height alone, a rear section that had once dropped
+                // under a viaduct's deck (a frame's step at the ramp, a gap at a joint) only
+                // ever found the ground beneath and hung there under the bridge while the
+                // front section drove on above (#135).
+                let top = self.position.z.max(level) + 1.5;
+                g.probe(new_pivot.x, new_pivot.y, top).below
             }
             (None, None, Some(g)) => g(new_pivot.x, new_pivot.y),
             _ => None,
         };
-        // the height of the part's origin over its axle (where the ground has none: level
-        // with the coupling, as before)
         // A height far from where the coupling holds the part is another level's: the AI's
         // ground lookup knows only x and y and gives the highest road there, which under a
         // bridge is the deck (or, on the deck, a road that runs on beneath it) - the trailer
         // of a lorry and the rear of an articulated bus stood up on the bridge or down under
-        // it (#140). Level with the coupling instead.
-        let level = c.z - self.coupling_front.z as f64;
-        let ground_z = ground_z.filter(|z| main.contact.is_some() || (z + lift - level).abs() < 1.5);
+        // it (#140). Level with the coupling instead. With the world's faces the part may
+        // stand lower than the coupling on a grade, but never metres under it: that is the
+        // road under a bridge seen through a gap in the deck (#135).
+        let ground_z = ground_z.filter(|z| if main.contact.is_some() { z + lift - level > -3.0 } else { (z + lift - level).abs() < 1.5 });
         let axle_z = match on_track.or(ground_z.map(|z| z + lift)) {
             Some(z) if on_track.is_some() => z,
             Some(z) if main.contact.is_some() && dt > 0.0 => {
@@ -4058,6 +4065,57 @@ mod tests {
             let alpha = v.var("articulation_0_alpha").unwrap();
             assert!((alpha.abs() - 52.5).abs() < 1e-3, "alpha {alpha} at heading {h}");
         }
+    }
+
+    /// The rear section of an articulated bus on a viaduct stays on the deck: one frame with
+    /// no deck under its axle (a gap at a joint) does not drop it onto the road below, and
+    /// one that had sunk under the deck finds it again (#135).
+    #[test]
+    fn rear_section_stays_on_a_viaduct_deck() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        let root = omsi_cfg::env::var_os("OMSI_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("../../../OMSI 2 Original"));
+        let bus = root.join("Vehicles/MAN_NL_NG/MAN_GN92_main.bus");
+        let trail = root.join("Vehicles/MAN_NL_NG/MAN_GN92_trail.bus");
+        if !bus.exists() || !trail.exists() {
+            eprintln!("skipped: no {}", bus.display());
+            return;
+        }
+        let ty = Arc::new(VehicleType::load(&root, &bus).expect("GN92"));
+        let mut v = VehicleInstance::new(ty, VehicleHost::new(crate::SimClock::default()));
+        v.attach_trailer_ex(Arc::new(VehicleType::load(&root, &trail).expect("GN92 trail")), false);
+        // 0: a deck at 10 m over a road at 0; 1: a gap in the deck
+        let mode = Arc::new(AtomicU8::new(0));
+        let m = mode.clone();
+        let ground = move |_x: f64, _y: f64, top: f64| {
+            let deck = m.load(Ordering::Relaxed) == 0;
+            if deck && top >= 10.0 {
+                crate::rigid::GroundProbe { below: Some(10.0), above: None }
+            } else if deck {
+                crate::rigid::GroundProbe { below: Some(0.0), above: Some(10.0) }
+            } else {
+                crate::rigid::GroundProbe { below: Some(0.0), above: None }
+            }
+        };
+        v.contact = Some(Arc::new(ground));
+        v.position = DVec3::new(0.0, 0.0, 10.0);
+        for _ in 0..50 {
+            v.update_visuals(0.02);
+        }
+        let on_deck = v.trailers[0].position.z;
+        assert!((on_deck - 10.0).abs() < 0.5, "rear section at {on_deck}");
+        mode.store(1, Ordering::Relaxed);
+        v.update_visuals(0.02);
+        assert!(v.trailers[0].position.z > 9.0, "dropped through the gap to {}", v.trailers[0].position.z);
+        // sunk under the deck: it comes back up
+        mode.store(0, Ordering::Relaxed);
+        v.trailers[0].position.z = 0.2;
+        v.trailers[0].axle_z = Some(0.0);
+        for _ in 0..5 {
+            v.update_visuals(0.02);
+        }
+        assert!(v.trailers[0].position.z > 9.0, "stayed under the deck at {}", v.trailers[0].position.z);
     }
 
     /// A timetable duty and a random traffic car load their bus with `VehicleType::load_ai`,
