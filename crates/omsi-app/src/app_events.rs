@@ -1776,8 +1776,8 @@ impl ApplicationHandler for App {
                     if let Some(d) = self.duty.as_ref().filter(|d| d.trip_done()) {
                         lines.push(match d.trips.get(d.trip_index + 1) {
                             Some(next) => format!(
-                                "End of the trip. Next: line {} to {}, from {} at {} (it starts by itself a minute before)",
-                                next.line,
+                                "End of the trip. Next: {} to {}, from {} at {} (it starts by itself a minute before)",
+                                if next.line.trim().is_empty() { "service trip".to_string() } else { format!("line {}", next.line) },
                                 next.terminus.strip_prefix(&format!("{} ", next.line)).unwrap_or(&next.terminus),
                                 next.stops.first().map(|s| s.name.trim()).unwrap_or("?"),
                                 crate::schedule::hhmm(next.departure)
