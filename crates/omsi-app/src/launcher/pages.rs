@@ -1354,15 +1354,12 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
                 d.buttons.push((String::new(), "0".into()));
                 pv.dirty = true;
             }
-            let was_capturing = pv.capturing;
-            if was_capturing {
-                pv.capturing = false;
-                pv.revealed_button = Some(n);
-                let cols = if list.w - 16.0 < 560.0 { 1usize } else { 2 };
-                let rows = shown_buttons.max(n + 1).div_ceil(cols).max(1);
-                let row = n % rows;
-                l.ui.scroll_to("pad-detail", buttons_start_y + row as f32 * (ROW + 4.0), ROW, list.h);
-            }
+            pv.capturing = false;
+            pv.revealed_button = Some(n);
+            let cols = if list.w - 16.0 < 560.0 { 1usize } else { 2 };
+            let rows = shown_buttons.max(n + 1).div_ceil(cols).max(1);
+            let row = n % rows;
+            l.ui.scroll_to("pad-detail", buttons_start_y + row as f32 * (ROW + 4.0), ROW, list.h);
             pv.last_pressed = Some((n, std::time::Instant::now()));
             let now = d.buttons.get(n).map(|b| b.0.clone()).filter(|a| !a.is_empty());
             let label = match n.checked_sub(crate::controllers::HAT_BUTTONS) {
