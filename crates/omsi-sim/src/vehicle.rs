@@ -14,6 +14,11 @@ use omsi_vehicle::Vehicle;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Scripts often test a stopped bus with `!Velocity_Ground`, so do not expose tiny solver drift.
+fn script_speed(speed_kmh: f32) -> f32 {
+    if speed_kmh.abs() < 0.01 { 0.0 } else { speed_kmh }
+}
+
 /// Built-in variables every road vehicle has (`program/varlist_roadvehicle.txt` + generated).
 pub fn builtin_vars(root: &Path) -> Vec<String> {
     let mut v: Vec<String> =
@@ -1457,7 +1462,7 @@ impl VehicleInstance {
                 w.suspension += (target - w.suspension) * k;
             }
         }
-        let v = self.physics.velocity_kmh();
+        let v = script_speed(self.physics.velocity_kmh());
         self.put(self.v_velocity, v);
         self.put(self.v_velocity_ground, v);
         let n_wheel = self
@@ -1684,7 +1689,7 @@ impl VehicleInstance {
         self.physics.speed = speed;
         self.physics.steer_deg = rb.steer_deg;
         self.physics.accel = rb.accel_body;
-        let v = speed * 3.6;
+        let v = script_speed(speed * 3.6);
         self.put(self.v_velocity, v);
         self.put(self.v_velocity_ground, v);
         let n_wheel = rb
@@ -3767,6 +3772,13 @@ pub fn skin_vertices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_speed_reports_tiny_resting_motion_as_stopped() {
+        assert_eq!(script_speed(0.000251), 0.0);
+        assert_eq!(script_speed(-0.000251), 0.0);
+        assert_eq!(script_speed(0.02), 0.02);
+    }
 
     /// A shadow blob at the model's z = 0 is laid onto the plane through the wheels: 15 cm
     /// up with the body sagging, and following a pitch; one axle gives a level plane.
