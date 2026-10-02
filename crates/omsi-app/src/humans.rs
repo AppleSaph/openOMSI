@@ -1208,6 +1208,11 @@ pub struct Person {
     t_state: f32,
     /// Skinned positions and normals, per mesh.
     skins: Vec<(Vec<Vec3>, Vec<Vec3>)>,
+    /// The bones the skins were made with, and whether this frame's pose changed them
+    /// (somebody standing still keeps the mesh of the frame before: skinning and uploading
+    /// thirty waiting people every frame took 2 ms of the frame at a bus station).
+    skin_bones: Option<[glam::Affine3A; omsi_sim::human::SLOTS]>,
+    pose_changed: bool,
     /// Interior light of the bus the person is in (0 outside).
     interior: f32,
     /// The interior light as drawn: it follows `interior` over a moment (stepping through
@@ -1452,6 +1457,9 @@ pub struct Humans {
     message: Option<String>,
     /// Frames ticked, total and longest tick (ms).
     tick_stats: (u32, f64, f64),
+    /// Where the time of this tick went (stage, ms since the one before), for the slow
+    /// ticks OMSI_PROFILE reports.
+    tick_stages: Vec<(&'static str, f64)>,
     /// Speed, heading and floor acceleration of each bus last frame (for the riders' balance).
     bus_motion: HashMap<BusId, (f64, f64, DVec2)>,
     /// `types` has been cut down to the map's `humans.txt`.
@@ -1651,6 +1659,7 @@ impl Humans {
             center: DVec3::ZERO,
             message: None,
             tick_stats: (0, 0.0, 0.0),
+            tick_stages: Vec::new(),
             bus_motion: HashMap::new(),
             map_humans_done: false,
             last_sync: 0.0,
@@ -2084,6 +2093,8 @@ impl Humans {
             state,
             t_state: 0.0,
             skins: Vec::new(),
+            skin_bones: None,
+            pose_changed: false,
             interior: 0.0,
             lit: 0.0,
             tilt: Mat4::IDENTITY,
@@ -3383,13 +3394,15 @@ impl Humans {
         scene: &mut Scene,
     ) -> bool {
         let started = std::time::Instant::now();
+        self.tick_stages.clear();
         let took = self.tick_inner(dt, world, bus, traffic, renderer, scene);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
-        if debug_pax() && ms > 30.0 {
+        if (debug_pax() || omsi_cfg::env::var_os("OMSI_PROFILE").is_some()) && ms > 30.0 {
             log::info!(
-                "t={:.1} slow people tick: {ms:.1} ms ({} people)",
+                "t={:.1} slow people tick: {ms:.1} ms ({} people): {}",
                 self.time,
-                self.people.len()
+                self.people.len(),
+                self.tick_stages.iter().filter(|s| s.1 >= 1.0).map(|(n, t)| format!("{n} {t:.1}")).collect::<Vec<_>>().join(", ")
             );
         }
         if omsi_cfg::env::var_os("OMSI_CHECK_WALLS").is_some() {
@@ -3401,6 +3414,7 @@ impl Humans {
         took
     }
 
+    #[allow(unused_assignments)]
     fn tick_inner(
         &mut self,
         dt: f32,
@@ -3410,6 +3424,14 @@ impl Humans {
         renderer: &Renderer,
         scene: &mut Scene,
     ) -> bool {
+        let mut mark = std::time::Instant::now();
+        macro_rules! stage {
+            ($name:expr) => {{
+                let now = std::time::Instant::now();
+                self.tick_stages.push(($name, (now - mark).as_secs_f64() * 1000.0));
+                mark = now;
+            }};
+        }
         self.use_map_humans(world);
         self.time += dt as f64;
         let net = traffic.map(|t| &t.net);
@@ -3423,6 +3445,7 @@ impl Humans {
             self.tiles_seen = generation;
             self.tiles_changed(world);
         }
+        stage!("tiles");
         // tiles brought lanes: their pavements join the network, and stops without one look again
         if let (Some(pn), Some(n)) = (self.ped.as_mut(), net) {
             if pn.built < n.lanes.len() {
@@ -3446,6 +3469,7 @@ impl Humans {
                 }
             }
         }
+        stage!("pedestrian network");
         if let Some(n) = net {
             self.stroll_timer -= dt;
             if self.stroll_timer <= 0.0 {
@@ -3458,6 +3482,7 @@ impl Humans {
                 }
             }
         }
+        stage!("populate");
         let mut buses = self.gather_buses(world, bus, traffic);
         for b in &buses {
             if b.entry_open.iter().chain(b.exit_open.iter()).any(|o| *o) {
@@ -3490,10 +3515,12 @@ impl Humans {
         if !self.avatar_only {
             self.stops_tick(dt, world, renderer, scene);
         }
+        stage!("stops");
         // the passengers (sub_6ffc7c)
         let mut taken_ticket = false;
         let mut remove: Vec<usize> = Vec::new();
         self.pax_frame(dt, world, &buses, &bus_ix, &at_stops, bus, renderer, scene, &mut taken_ticket, &mut remove);
+        stage!("passengers");
         // the pedestrians: a crowd on the pavements
         let mut cars: Vec<(DVec2, DVec2, f64)> = Vec::new();
         let mut blocks: Vec<Block> = Vec::new();
@@ -3627,6 +3654,7 @@ impl Humans {
             self.retire(&p);
         }
         self.give_ticket = false;
+        stage!("pedestrians");
         taken_ticket
     }
 
@@ -4254,10 +4282,15 @@ impl Humans {
         }
         let n_due = due.iter().filter(|d| **d).count();
         let pose_one = |p: &mut Person| {
-            let Person { anim, ty, skins, .. } = p;
+            let Person { anim, ty, skins, skin_bones, pose_changed, .. } = p;
+            *pose_changed = false;
             let bones = omsi_sim::human::slots_from_omsi(&anim.bones(&ty.omsi));
             if bones.iter().any(|b| !b.is_finite()) && !skins.is_empty() {
                 // keep the last good mesh (the rest pose would be the file's T-pose)
+                return;
+            }
+            // (the same bones as the mesh was made with: nothing to skin or upload)
+            if skins.len() == ty.meshes.len() && skin_bones.as_ref().is_some_and(|b| b.iter().zip(&bones).all(|(a, c)| a.abs_diff_eq(*c, 1e-6))) {
                 return;
             }
             skins.resize_with(ty.meshes.len(), Default::default);
@@ -4265,6 +4298,8 @@ impl Humans {
                 let (pos, nrm) = &mut skins[k];
                 skin(m, &bones, pos, nrm);
             }
+            *skin_bones = Some(bones);
+            *pose_changed = true;
         };
         // a handful is quicker on this thread than handed to the pool
         if n_due >= 8 {
@@ -4284,9 +4319,11 @@ impl Humans {
         let upload = std::time::Instant::now();
         for (p, &go) in self.people.iter_mut().zip(&due) {
             if go {
-                for (k, (id, _)) in p.meshes.iter().enumerate() {
-                    if let Some((pos, nrm)) = p.skins.get(k) {
-                        renderer.update_mesh(scene, *id, pos, nrm, &p.ty.meshes[k].data.uvs);
+                if p.pose_changed || !p.skinned {
+                    for (k, (id, _)) in p.meshes.iter().enumerate() {
+                        if let Some((pos, nrm)) = p.skins.get(k) {
+                            renderer.update_mesh(scene, *id, pos, nrm, &p.ty.meshes[k].data.uvs);
+                        }
                     }
                 }
                 p.skinned = true;
