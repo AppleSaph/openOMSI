@@ -252,6 +252,16 @@ impl App {
                     // parking brake put on Space, the stock view_reset_all_directions key,
                     // reset the view and never reached the bus - #745)
                     let vehicle_too = self.player.as_ref().is_some_and(|p| p.bindings.iter().any(|b| b.scan_code == scan && b.matches(m)));
+                    // OMSI's `exit` (Ctrl+Q, or what the player put it on): the game ends as
+                    // the menu's Quit ends it. It was no action here at all, so the key did
+                    // nothing (#817)
+                    if action.as_deref() == Some("exit") {
+                        self.finish_vr_nav_edit();
+                        self.game_menu = None;
+                        self.finish_session();
+                        crate::platform::exit(event_loop);
+                        return;
+                    }
                     if let Some(a) = action {
                         if self.game_action(&a) && !vehicle_too {
                             return;
