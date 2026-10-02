@@ -177,11 +177,8 @@ impl App {
                     Vec::new()
                 };
                 if let Some(p) = self.player.as_mut() {
-                    for name in released.iter().flatten() {
-                        let off = format!("{name}_off");
-                        if p.vehicle.ty.program.trigger(&off).is_some() {
-                            p.vehicle.trigger(&off);
-                        }
+                    for fired in &released {
+                        p.door_key_off(fired);
                     }
                 }
             }
@@ -374,26 +371,8 @@ impl App {
                 if self.view != "free" && shift_held_now(&self.keys) && !keys::dik_code(code).is_some_and(|s| self.own_shift.contains(&s)) {
                     if let Some(n) = digit_of(code) {
                         if let Some(p) = self.player.as_mut() {
-                            let groups = crate::player::door_keys(&p.vehicle.ty);
-                            if let Some(group) = groups.get(n - 1) {
-                                let fire = crate::player::door_group_to_fire(&mut p.vehicle, group);
-                                log::info!("door key Shift+{n}: {}", fire.join(" + "));
-                                // the automatic rear doors of the stock Berlin buses (SD, NL): the
-                                // key is their release, and switched off with the doors open it
-                                // shuts them now rather than when the last request has lapsed
-                                // ("why can I not close the rear doors at all?")
-                                if group.len() == 1 && group[0] == "bus_dooraft" {
-                                    let v = &mut p.vehicle;
-                                    let release_on = v.var("bremse_halte_sw").is_some_and(|x| x > 0.5);
-                                    let open = v.var("doorTarget_23").is_some_and(|x| x > 0.5);
-                                    if release_on && open && v.var("doorAftLastOpen").is_some() {
-                                        v.set_var("haltewunsch", 0.0);
-                                        v.set_var("doorAftLastOpen", 1000.0);
-                                    }
-                                }
-                                for name in &fire {
-                                    p.vehicle.trigger(name);
-                                }
+                            let fire = p.door_key(n);
+                            if !fire.is_empty() {
                                 self.door_key_triggers.insert(code, fire);
                             }
                         }

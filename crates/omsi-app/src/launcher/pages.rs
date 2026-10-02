@@ -935,6 +935,11 @@ fn known_action(a: &str) -> Option<String> {
         ("bus_doorfront0", "Front door (leaf 1)"),
         ("bus_doorfront1", "Front door (leaf 2)"),
         ("bus_dooraft", "Release rear doors"),
+        ("door_1", "Door 1 (front), any bus"),
+        ("door_2", "Door 2, any bus"),
+        ("door_3", "Door 3, any bus"),
+        ("door_4", "Door 4, any bus"),
+        ("doors_all", "All doors, any bus"),
         ("ticket_give", "Sell the requested ticket"),
         ("view_set_driver", "Driver's view"),
         ("view_set_passenger", "Passenger view"),
@@ -1304,7 +1309,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
         }
     }
     // the game's own view actions (looking around while held, the cameras, the views)
-    for a in ["gear_up", "gear_down", "view_look_left", "view_look_right", "view_look_up", "view_look_down", "view_reset_direction", "view_interiorcam_plus", "view_interiorcam_minus", "view_toggle_viewpoint", "view_set_driver", "view_set_passenger", "view_set_outside", "sim_pause", "screenshot", "quicksave", "toggel_mouse_ctrl", "toggel_ctrler"] {
+    for a in ["doors_all", "door_4", "door_3", "door_2", "door_1", "gear_up", "gear_down", "view_look_left", "view_look_right", "view_look_up", "view_look_down", "view_reset_direction", "view_interiorcam_plus", "view_interiorcam_minus", "view_toggle_viewpoint", "view_set_driver", "view_set_passenger", "view_set_outside", "sim_pause", "screenshot", "quicksave", "toggel_mouse_ctrl", "toggel_ctrler"] {
         if !actions.iter().any(|x| x == a) {
             actions.insert(1, a.to_string());
         }

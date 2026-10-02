@@ -426,6 +426,7 @@ pub(crate) fn spawn_player(
         startup_at: None,
         give_ticket: false,
         give_change: false,
+        door_buttons: hashbrown::HashMap::new(),
         cam_before_special: None,
         held_keys: Default::default(),
         hand_coupled: 0,
