@@ -233,9 +233,15 @@ fn step_bus(l: &mut Launcher, r: Rect) {
             ui.text_in(if loading { "Reading the buses…" } else { "No buses found. Try another search." }, Rect::new(view.x + 12.0, y, view.w - 24.0, 50.0), 12.5, Weight::Regular, TEXT_DIM, Align::Left);
         }
         for model in &visible {
-            let selected = model.variants.iter().find(|v| v.file == chosen);
             let open = model.variants.len() > 1 && expanded.as_deref() == Some(model.key.as_str());
             let row = Rect::new(view.x + 6.0, y, view.w - 18.0, 54.0);
+            // Keep the scroll extent, but avoid shaping text and emitting geometry for
+            // invisible families. The expanded dropdown retains its widget state.
+            if !open && !ui.rect_visible(row) {
+                y += 58.0;
+                continue;
+            }
+            let selected = model.variants.iter().find(|v| v.file == chosen);
             if ui.row(&format!("bus-family-{}", model.key), row, selected.is_some()) {
                 if model.variants.len() == 1 { pick = Some(model.variants[0].file.clone()); }
                 else { toggle = Some(model.key.clone()); }

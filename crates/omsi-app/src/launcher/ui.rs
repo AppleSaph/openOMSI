@@ -243,6 +243,11 @@ impl Ui {
         self.clip_stack.last().map(|c| c.0).unwrap_or(Rect::new(0.0, 0.0, self.size.x, self.size.y))
     }
 
+    pub fn rect_visible(&self, r: Rect) -> bool {
+        let visible = intersect(self.clip_now(), r);
+        visible.w > 0.0 && visible.h > 0.0
+    }
+
     /// The mouse is over `r` (and not over an open dropdown lying above it, nor outside the
     /// current clip).
     pub fn hover(&self, r: Rect) -> bool {
@@ -1191,6 +1196,21 @@ pub fn weekday(y: i32, m: u32, d: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_visibility_respects_nested_clips_and_partial_rows() {
+        let mut ui = Ui::new();
+        ui.begin(Vec2::new(400.0, 300.0), 1.0, 0.016);
+        ui.push_clip(Rect::new(10.0, 50.0, 200.0, 100.0), 0.0);
+        assert!(!ui.rect_visible(Rect::new(10.0, 0.0, 200.0, 50.0)));
+        assert!(ui.rect_visible(Rect::new(10.0, 40.0, 200.0, 54.0)));
+        assert!(!ui.rect_visible(Rect::new(10.0, 150.0, 200.0, 54.0)));
+        ui.push_clip(Rect::new(10.0, 80.0, 200.0, 20.0), 0.0);
+        assert!(!ui.rect_visible(Rect::new(10.0, 50.0, 200.0, 20.0)));
+        assert!(ui.rect_visible(Rect::new(10.0, 90.0, 200.0, 54.0)));
+        ui.pop_clip();
+        assert!(ui.rect_visible(Rect::new(10.0, 50.0, 200.0, 20.0)));
+    }
 
     #[test]
     fn calendar_arithmetic() {

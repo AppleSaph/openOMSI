@@ -145,8 +145,14 @@ again only when something changes; drag on it to turn the bus, scroll to zoom. I
   *Graphics* (the quality preset first, the screen, distances and memory), *Driving* (keys,
   mouse, wheel and pedals, with the way to the Controls page), *Camera* (the seat, the views,
   head tracking, VR), *Sound*, *Gameplay* (passengers, traffic, collisions, the clock) and
-  *General* (language, the game's interface size, navigator, updates, and resetting every
-  setting).
+  *General* (language, the game's interface size, navigator, Discord Rich Presence,
+  updates, and resetting every setting).
+  **Discord Rich Presence** shows the launcher while preparing a drive, then the map and
+  line above the vehicle type and tour while playing. The full vehicle name is in the logo's
+  tooltip. The launcher status returns when the game ends.
+  It is enabled by default and can be turned off under Settings → General; the switch
+  affects the launcher immediately and the game on its next start. Discord must be running
+  on the same computer.
 * **Controls** - `Inputs/keyboard.cfg`: click a key, press the new one; clashes are red. The
   keys are the game's with *Driving keys: Custom controls* (Settings → Driving); with a ready-made
   layout (W A S D, arrows) those keys drive and win over the list - the page says so, and
