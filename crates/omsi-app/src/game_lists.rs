@@ -1900,6 +1900,10 @@ fn vehicle_pages(app: &App) -> Vec<Page> {
             fleet.push(button("Get up and out", "Get out", "Step out of your car and explore the world", "getout"));
         }
         fleet.push(button("Remove this vehicle", "Remove", "Removes the current vehicle", "remove"));
+        // (#728: another bus in this one's place, or this one again with its files read
+        // anew - a script or a .bus changed - without starting the game again)
+        fleet.push(button("Swap for another vehicle", "Swap", "Put another vehicle in this one's place and drive it", "swap"));
+        fleet.push(button("Reload this vehicle", "Reload", "Read the vehicle's files again (.bus, model and sound configuration, scripts) and drive it from here", "reload"));
     }
     if !app.placed.is_empty() {
         fleet.push(button("Remove the placed vehicles", "Remove", "Removes all vehicles you've placed from the world", "clearplaced"));

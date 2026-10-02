@@ -2036,11 +2036,63 @@ impl App {
 
     /// Put the vehicle file `bus` down beside the camera or the bus driven, in `paint` (a
     /// scheme's name; None: at random) with the depot file `hof` (None: the map's).
+    /// The driven vehicle read again from its files and put where it stands (#728).
+    pub(crate) fn reload_driven_vehicle(&mut self) {
+        let Some(p) = self.player.as_ref() else {
+            self.service_msg = Some(("There is no vehicle to reload: you are on foot".into(), 3.0));
+            return;
+        };
+        // (the file under its content root, as the vehicle lists name it: a whole path was
+        // taken for one under the game's folder)
+        let file = &p.vehicle.ty.def.path;
+        let bus = omsi_cfg::content_roots().iter().chain(std::iter::once(&self.args.root)).find_map(|r| file.strip_prefix(r).ok()).unwrap_or(file).to_string_lossy().replace('\\', "/");
+        let paint = p.vehicle.host.paint_scheme.flatten().and_then(|i| p.vehicle.ty.paint_schemes.get(i)).map(|s| s.name.clone());
+        // (the depot file by its file name, as `find_hof` looks for it)
+        let hof = p.vehicle.host.hof.as_ref().and_then(|h| h.path.file_stem().map(|s| s.to_string_lossy().to_string()).or_else(|| Some(h.name.clone())));
+        let before = p.uid;
+        self.swap_pending = true;
+        self.place_vehicle(&bus, paint, hof);
+        if let Some(p) = self.player.as_ref().filter(|p| p.uid != before) {
+            let name = format!("{} {}", p.vehicle.ty.def.manufacturer, p.vehicle.ty.def.type_name);
+            self.service_msg = Some((format!("Reloaded from its files: {}", name.trim()), 4.0));
+        }
+    }
+
+    /// `q` (just spawned where the driven vehicle stands) becomes the one driven, and the
+    /// one driven until now goes, with whoever rode in it (#728).
+    fn replace_driven_vehicle(&mut self, q: Player) {
+        let uid = q.uid;
+        self.placed.insert(0, q);
+        self.switch_vehicle();
+        if !self.player.as_ref().is_some_and(|p| p.uid == uid) {
+            return;
+        }
+        let Some(mut old) = self.placed.pop() else { return };
+        if let (Some(a), Some(mut ss)) = (self.audio.as_ref(), old.sounds.take()) {
+            ss.stop_all(a);
+        }
+        if let (Some(w), Some(r), Some(scene)) = (self.world.clone(), self.renderer.as_ref(), self.scene.as_mut()) {
+            if let Some(h) = self.humans.as_mut() {
+                h.evict(crate::humans::BusId::Ai(crate::humans::placed_bus_id(old.uid)), &w);
+            }
+            if let Some(mut d) = old.driver.take() {
+                d.hide(r, scene);
+            }
+            w.release_vehicle(r, scene, old.render);
+            for t in old.trailer_renders {
+                w.release_vehicle(r, scene, t);
+            }
+        }
+    }
+
     pub(crate) fn place_vehicle(&mut self, bus: &str, paint: Option<String>, hof: Option<String>) {
+        // (in the driven vehicle's place, see `swap_pending`)
+        let swap = std::mem::take(&mut self.swap_pending) && self.player.is_some();
         let name = self.vehicle_list.iter().find(|v| v.1 == bus).map(|v| v.0.clone()).unwrap_or_else(|| bus.to_string());
         let bus = bus.to_string();
         let (Some(w), Some(r), Some(scene), Some(cam)) = (self.world.clone(), self.renderer.as_ref(), self.scene.as_mut(), self.camera.as_ref()) else { return };
         let (x, y, heading) = match (self.view.as_str(), self.player.as_ref()) {
+            (_, Some(p)) if swap => (p.vehicle.position.x, p.vehicle.position.y, p.vehicle.heading),
             ("free", _) | (_, None) => {
                 let f = cam.forward();
                 let flat = glam::DVec2::new(f.x as f64, f.y as f64).normalize_or_zero();
@@ -2069,6 +2121,10 @@ impl App {
             ..self.args.clone()
         };
         match spawn_player(&one, &w, r, scene) {
+            Ok(Some(q)) if swap => {
+                log::info!("{bus} takes the driven vehicle's place at ({x:.1}, {y:.1})");
+                self.replace_driven_vehicle(q);
+            }
             Ok(Some(q)) => {
                 log::info!("placed {bus} at ({x:.1}, {y:.1})");
                 let uid = q.uid;
@@ -2484,7 +2540,9 @@ impl App {
     /// script ask of the menu by name). False when `id` is none of them.
     pub(crate) fn page_action(&mut self, id: &str) -> bool {
         match id {
-            "place" => {
+            "swap" | "place" => {
+                // (a plain "Place a vehicle" puts one beside; "Swap" in the driven one's place)
+                self.swap_pending = id == "swap" && self.player.is_some();
                 if self.vehicle_list.is_empty() {
                     let menu = crate::menu::Menu::new(&self.args.root, &self.args.map);
                     self.vehicle_meta = menu.vehicles.iter().zip(menu.vehicle_meta).map(|(v, meta)| (v.1.clone(), meta)).collect();
@@ -2515,6 +2573,10 @@ impl App {
             "remove" => {
                 self.close_game_menu();
                 self.remove_driven_vehicle();
+            }
+            "reload" => {
+                self.close_game_menu();
+                self.reload_driven_vehicle();
             }
             "clearplaced" => {
                 self.close_game_menu();
