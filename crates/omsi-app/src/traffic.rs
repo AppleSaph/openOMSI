@@ -1760,7 +1760,7 @@ impl Traffic {
         center: DVec3,
         view: Option<DVec3>,
     ) {
-        if self.mirror || (self.lights_only && self.target == 0) {
+        if self.mirror {
             return;
         }
         if self.viewer.is_none() {
@@ -1892,6 +1892,12 @@ impl Traffic {
         }
         if self.types.is_empty() || self.net.lanes.is_empty() {
             self.initial = false;
+            return;
+        }
+        // made only for the lights: nothing new while the target is 0, but the cars of a
+        // target raised and lowered again go as they do anywhere (returning before the loop
+        // above, they stood at the map's edge and drove over unloaded tiles for good)
+        if self.lights_only && self.target == 0 {
             return;
         }
         // aircraft: a few on the flight paths, independent of the street target
