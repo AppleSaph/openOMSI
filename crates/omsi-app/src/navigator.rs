@@ -212,6 +212,9 @@ struct Roads {
 }
 
 pub struct Navigator {
+    /// The current small-map texture in Scene::overlays, for the cockpit display.
+    pub panel_overlay: Option<usize>,
+    pub cockpit_display: bool,
     drawn_at: f32,
     pub enabled: bool,
     /// The next stops with their times under the map (Shift+N cycles map, map and
@@ -327,6 +330,8 @@ fn map_samples(format: wgpu::TextureFormat) -> u32 {
 impl Navigator {
     pub fn new(enabled: bool, opacity: f32, corner: &str) -> Navigator {
         Navigator {
+            panel_overlay: None,
+            cockpit_display: false,
             drawn_at: f32::MIN,
             enabled,
             schedule: false,
@@ -757,6 +762,7 @@ impl Navigator {
 
     /// Advance, draw into the texture and put it on the screen.
     pub fn frame(&mut self, renderer: &Renderer, scene: &mut Scene, f: &NavFrame) {
+        self.panel_overlay = None;
         // (with the navigator off the route is still followed for OMSI 2's arrows)
         if !self.enabled && !self.city.open && !self.arrows && self.shown < 0.01 {
             return;
@@ -883,6 +889,7 @@ impl Navigator {
         }
         // (the small navigator steps aside while the city map is open)
         if !self.city.open {
+            self.panel_overlay = Some(scene.overlays.len());
             scene.overlays.push((tex, [x0, y0, x0 + pw, y0 + ph]));
         }
         self.panel_rect = [x0, y0, x0 + pw, y0 + ph];
@@ -961,7 +968,7 @@ impl Navigator {
 
         // --- background (half transparent), traffic, markers, text
         let mut bg = Painter::new();
-        bg.rounded(panel, radius, PANEL);
+        bg.rounded(panel, radius, if self.cockpit_display { Color::rgba(10, 10, 10, 1.0) } else { PANEL });
         let n_bg = bg.len();
 
         let mut dy = Painter::new();
@@ -1209,7 +1216,7 @@ impl Navigator {
         gpu.upload_atlas(queue, &mut self.atlas);
         // (the opacity setting is the background's: the map and the text stay solid)
         let flat = Layer::flat(clip_panel, radius, 1.0);
-        let backdrop = Layer::flat(clip_panel, radius, crate::ui::backdrop(self.opacity).min(1.0));
+        let backdrop = Layer::flat(clip_panel, radius, if self.cockpit_display { self.opacity } else { crate::ui::backdrop(self.opacity).min(1.0) });
         let mut layers = [flat, map_layer, backdrop];
         for l in layers.iter_mut() {
             l.opacity *= self.shown;

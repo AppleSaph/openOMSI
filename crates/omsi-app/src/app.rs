@@ -40,6 +40,8 @@ pub(crate) struct App {
     pub(crate) hud: Option<hud::Hud>,
     /// The route navigator (ETS2-style map in a corner).
     pub(crate) navigator: Option<navigator::Navigator>,
+    pub(crate) vr_nav_profiles: crate::vr_navigator::Profiles,
+    pub(crate) vr_nav_edit: Option<crate::vr_navigator::Editing>,
     /// Chat, mouse-over names and name tags (Roboto).
     pub(crate) ui: Option<ui::Ui>,
     pub(crate) fps: f32,

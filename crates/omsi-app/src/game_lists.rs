@@ -11,6 +11,7 @@ use crate::App;
 pub(crate) enum ListKind {
     Admin,
     Options,
+    VrNavigator,
     Lines,
     Tours(String),
     Drivers,
@@ -133,6 +134,26 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     match kind {
         ListKind::Admin => return crate::admin::items(app),
+        ListKind::VrNavigator => {
+            let p = app.vr_nav_profile();
+            out.push((tr("Navigator position (this bus)"), HEADING.into()));
+            out.push((tr("Move and rotate with the mouse..."), "edit".into()));
+            let mut setting = |name: &str, value: String, field: &str| {
+                out.push((format!("{}\t{value}", tr(name)), format!("{field}{ADJUST}")));
+            };
+            setting("Navigator", tr(on_off(p.enabled)), "enabled");
+            setting("Position right / left", format!("{:+.0} cm", p.offset[0] * 100.0), "x");
+            setting("Position forward / back", format!("{:+.0} cm", p.offset[1] * 100.0), "y");
+            setting("Position up / down", format!("{:+.0} cm", p.offset[2] * 100.0), "z");
+            setting("Display width", format!("{:.0} cm", p.width * 100.0), "width");
+            setting("Display rotation", format!("{:+.0}°", p.yaw), "yaw");
+            setting("Display tilt", format!("{:+.0}°", p.tilt), "tilt");
+            setting("Display roll", format!("{:+.0}°", p.roll), "roll");
+            setting("Interface opacity", format!("{:.0} %", p.opacity * 100.0), "opacity");
+            out.push((tr("Reset navigator position"), "reset".into()));
+            out.push((tr("Back"), "options".into()));
+            return out;
+        }
         ListKind::Options => {
             let s = &app.settings;
             // one line a setting with its value on the right, which Left and Right change,
@@ -157,7 +178,7 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
             line(&mut out, tr("Interface grows with the window"), on(s.ui_scale_window), "ui_window");
             // (the backgrounds of all of it, the navigator's as well; the texts stay solid)
             line(&mut out, tr("Interface opacity"), format!("{:.0} %", s.ui_opacity * 100.0), "ui_opacity");
-            line(&mut out, tr("Navigator"), on(app.navigator.as_ref().is_some_and(|n| n.enabled)), "navigator");
+            line(&mut out, tr("Navigator"), on(if app.vr_active() { app.vr_nav_profile().enabled } else { app.navigator.as_ref().is_some_and(|n| n.enabled) }), "navigator");
             line(&mut out, tr("Frame rate"), on(s.show_fps), "fps");
             line(&mut out, tr("Notes in the top-left corner"), on(s.notes), "notes");
             line(&mut out, tr("Sun shadows"), on(s.shadows), "shadows");
@@ -187,6 +208,10 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
             line(&mut out, tr("Seat up / down"), seat(s.seat[2]), "seat 2");
             line(&mut out, tr("Seat right / left"), seat(s.seat[0]), "seat 0");
             out.push((tr("Reset the seat position"), "seat_reset".into()));
+            if app.vr_active() && app.player.is_some() {
+                head(&mut out, "VR");
+                out.push((tr("Navigator position (this bus)"), "vr_navigator".into()));
+            }
         }
         ListKind::Lines => {
             if let Some(sch) = app.schedule.as_ref() {
@@ -305,11 +330,25 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
     }
     let (verb, arg) = action.split_once(' ').unwrap_or((action, ""));
     match kind {
+        ListKind::VrNavigator => {
+            if verb == "edit" { app.start_vr_nav_edit(); return None; }
+            if verb == "options" { return Some(ListKind::Options); }
+            let direction = if arg.trim() == "-" { -1.0 } else { 1.0 };
+            app.vr_nav_adjust(verb, direction);
+            Some(ListKind::VrNavigator)
+        }
         ListKind::Admin => {
             crate::admin::run(app, action);
             Some(ListKind::Admin)
         }
         ListKind::Options => {
+            if app.vr_active() {
+                if verb == "vr_navigator" { return Some(ListKind::VrNavigator); }
+                if verb == "navigator" {
+                    app.vr_nav_adjust("enabled", 1.0);
+                    return Some(ListKind::Options);
+                }
+            }
             // (Left and Right: the last word; Enter leaves `ADJUST`'s mark there)
             let dir = arg.split_whitespace().last().filter(|d| matches!(*d, "+" | "-")).unwrap_or("");
             let s = &mut app.settings;

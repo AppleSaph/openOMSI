@@ -292,6 +292,7 @@ pub struct Frame<'a> {
     pub menu: Option<(usize, &'a [(&'a str, &'a str)])>,
     /// The first line shown when a finger scrolled the menu (`App::menu_top`).
     pub menu_top: Option<f32>,
+    pub vr_nav_editing: bool,
     /// The timetable window: its title and per stop (name, time, 0 served / 1 next / 2 ahead).
     pub timetable: Option<(String, Vec<(String, String, u8)>)>,
     /// The information bar along the top.
@@ -667,6 +668,24 @@ impl Ui {
                 scene.overlays.push((l.tex, [x + 20.0 * s, ly, x + 20.0 * s + l.w as f32, ly + l.h as f32]));
                 self.menu_rects.push(rect);
                 self.menu_arrows.push(arrows);
+            }
+        }
+        if f.vr && f.vr_nav_editing {
+            let s = (s * 0.55).min(f.width * 0.5 / 640.0);
+            let w = 640.0 * s;
+            let x = (f.width - w) * 0.5;
+            let y = f.height * 0.42 - 49.0 * s;
+            let plate = self.text.plate(r, scene, 3);
+            scene.overlays.push((plate, [x, y, x + w, y + 98.0 * s]));
+            for (i, text) in [
+                "Positioning navigator - changes apply to this bus",
+                "Hold left mouse: move | Hold right mouse: rotate",
+                "Wheel: distance | Ctrl+wheel: size | Shift+right drag: roll",
+                "Esc / Enter: save and finish | R: reset position",
+            ].iter().enumerate() {
+                let label = self.text.label(r, scene, text, (15.0 * s) as u32, [245, 245, 245, 0]);
+                let ty = y + (10.0 + i as f32 * 22.0) * s;
+                scene.overlays.push((label.tex, [x + 12.0 * s, ty, x + 12.0 * s + label.w as f32, ty + label.h as f32]));
             }
         }
         self.menu_overlay_range = menu_overlay_start..scene.overlays.len();

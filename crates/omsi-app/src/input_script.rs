@@ -56,6 +56,20 @@ impl App {
 
     /// A key of the window, or of an `OMSI_INPUT` script.
     pub(crate) fn on_key(&mut self, event_loop: &ActiveEventLoop, code: KeyCode, pressed: bool, repeat: bool) {
+        if self.vr_nav_edit.is_some() {
+            if !pressed { self.keys.remove(&code); }
+            if matches!(code, KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::ShiftLeft | KeyCode::ShiftRight) && pressed {
+                self.keys.insert(code);
+            }
+            if pressed && !repeat {
+                match code {
+                    KeyCode::Escape | KeyCode::Enter => self.finish_vr_nav_edit(),
+                    KeyCode::KeyR => self.vr_nav_adjust("reset", 1.0),
+                    _ => {}
+                }
+            }
+            return;
+        }
         // Escape closes the city map first (it would end the session)
         if pressed && code == KeyCode::Escape {
             if let Some(n) = self.navigator.as_mut().filter(|n| n.map_open()) {
@@ -414,6 +428,17 @@ impl App {
                         {
                             // Shift+N: navigator → navigator with the schedule → off (N alone is
                             // the gearbox's neutral)
+                            if self.vr_active() {
+                                if !self.vr_nav_profile().enabled {
+                                    self.vr_nav_adjust("enabled", 1.0);
+                                } else if self.navigator.as_ref().is_some_and(|n| n.schedule) {
+                                    if let Some(n) = self.navigator.as_mut() { n.schedule = false; }
+                                    self.vr_nav_adjust("enabled", 1.0);
+                                } else if let Some(n) = self.navigator.as_mut() {
+                                    n.schedule = true;
+                                }
+                                return;
+                            }
                             if let Some(n) = self.navigator.as_mut() {
                                 match (n.enabled, n.schedule) {
                                     (true, false) => n.schedule = true,
@@ -822,6 +847,7 @@ impl App {
 
     #[cfg(windows)]
     pub(crate) fn poll_vr_cursor_position(&mut self) {
+        if self.vr_nav_edit.is_some() { return; }
         let cockpit = self.vr.is_some() && self.game_menu.is_none()
             && self.chooser.is_none() && !self.mouse_drive
             && matches!(self.view.as_str(), "driver" | "pax");
@@ -948,6 +974,7 @@ impl App {
     }
 
     pub(crate) fn on_left(&mut self, pressed: bool) {
+        if self.vr_nav_edit.is_some() { return; }
         // the object editor: the mouse picks and drags
         if self.game_menu.is_none() && self.editor_mouse(pressed) {
             return;
@@ -955,6 +982,7 @@ impl App {
         // the city map: a click on the navigator opens it; while it is open the mouse is
         // the map's (a click outside closes it)
         let (x, y) = self.cursor;
+        let vr_active = self.vr_active();
         if let Some(n) = self.navigator.as_mut() {
             if n.map_open() {
                 let ctrl = self.keys.contains(&KeyCode::ControlLeft) || self.keys.contains(&KeyCode::ControlRight);
@@ -974,7 +1002,7 @@ impl App {
                 }
                 return;
             }
-            if pressed && n.over_panel(x, y) {
+            if pressed && !vr_active && n.over_panel(x, y) {
                 n.toggle_map();
                 return;
             }
@@ -2217,6 +2245,8 @@ impl App {
                 self.service_msg = Some((if visible { "Desktop VR mirror on" }
                                          else { "Desktop VR mirror off" }.into(), 2.0));
             }
+            "vr_toggle_navigator" => self.vr_nav_adjust("enabled", 1.0),
+            "vr_position_navigator" => self.start_vr_nav_edit(),
             _ => return false,
         }
         true
@@ -2604,6 +2634,12 @@ impl App {
     }
 
     pub(crate) fn update_hover(&mut self) {
+        if self.vr_nav_edit.is_some() {
+            self.hover = None;
+            self.hover_part = None;
+            self.hover_hand = false;
+            return;
+        }
         #[cfg(windows)]
         if !self.mouse_drive && self.vr.as_ref().is_some_and(|vr| vr.needs_cursor_surface(
             self.cursor, self.game_menu.is_some() || self.chooser.is_some())) {

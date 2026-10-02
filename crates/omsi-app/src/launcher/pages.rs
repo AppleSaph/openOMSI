@@ -837,6 +837,8 @@ fn action_label(a: &str) -> String {
         ("vr_recenter", "VR: Reset view"),
         ("vr_toggle_desktop_mirror", "VR: Monitor preview"),
         ("vr_toggle_mode", "VR: Switch VR / desktop"),
+        ("vr_toggle_navigator", "VR: Toggle navigator"),
+        ("vr_position_navigator", "VR: Position navigator"),
         ("exit", "Quit"),
         ("sim_pause", "Pause"),
         ("screenshot", "Screenshot"),
