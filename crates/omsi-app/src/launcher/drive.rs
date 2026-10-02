@@ -812,7 +812,7 @@ fn step_roadbook(l: &mut Launcher, r: Rect) {
     ibis_box(l, Rect::new(r.x, r.bottom() - ibis_h, r.w, ibis_h));
 }
 
-fn ibis_box(l: &mut Launcher, r: Rect) {
+pub(super) fn ibis_box(l: &mut Launcher, r: Rect) {
     l.ui.p().rounded(r, 6.0, FIELD);
     let inner = l.ui.heading(Rect::new(r.x + 12.0, r.y + 10.0, r.w - 24.0, r.h - 20.0), "IBIS", Some("keyboard"));
     let Some((_, info)) = l.state.ibis.clone() else {
