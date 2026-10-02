@@ -633,6 +633,11 @@ fn fs_shadow(in: FsIn) {
 // AO still leave glass transparent. Reject absent/fully faded layers and texture holes.
 @fragment
 fn fs_puddle_glass_depth(in: FsIn) {
+    // From the cabin we see the street through our own pane. Treating that pane as
+    // an SSR hit terminates every ray at the window instead of the outside vehicle.
+    if (inside_vehicle(camera.cam_pos.xyz) * near_player_vehicle(in.world) > 0.5) {
+        discard;
+    }
     var a = diffuse_border(textureSample(t_diffuse, s_diffuse, tex_address(in.uv)), in.uv).a;
     if (material.params.z > 0.5) {
         let tm = sample_transmap(tex_address(in.uv - in.params.zw));
@@ -1416,6 +1421,28 @@ fn rain_env_vanilla(d: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
+    var unused = 0.0;
+    return shade_vanilla(in, &unused, camera.cam_pos.xyz);
+}
+
+// Shared with Enhanced and the wheel splash mask: pools spread as the road soaks.
+fn road_puddle_coverage(world: vec3<f32>, normal: vec3<f32>, wet: f32) -> f32 {
+    let xy = world_pattern_xy(world);
+    let pn = vnoise_f(xy, 0.22, vec2<f32>(17.3, -9.1)) * 0.65
+        + vnoise_f(xy, 0.9, vec2<f32>(-4.0, 8.0)) * 0.35;
+    let threshold = 1.0 - wet * 1.15;
+    return smoothstep(threshold - 0.06, threshold + 0.06, pn) * smoothstep(0.75, 0.95, normal.z);
+}
+
+@fragment
+fn fs_vanilla_reflections(in: FsIn) -> EnhancedOut {
+    var weight = 0.0;
+    let c = shade_vanilla(in, &weight, camera.cam_pos.xyz);
+    let coverage = select(c.a, 0.0, in.params2.w > 1.5);
+    return EnhancedOut(c, vec4<f32>(0.0, weight * 0.49, weight, coverage));
+}
+
+fn shade_vanilla(in: FsIn, puddle_weight: ptr<function, f32>, eye: vec3<f32>) -> vec4<f32> {
     if (material.emissive.w > 1.5) {
         // a pane's film of water: drops, not the sliding texture
         let v = normalize(camera.cam_pos.xyz - in.world);
@@ -1598,7 +1625,7 @@ fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     }
     if (material.params2.y > 0.0) {
         // [matl_envmap]: sphere map reflection, masked by the diffuse alpha like the original
-        let vdir = normalize(in.world - camera.cam_pos.xyz);
+        let vdir = normalize(in.world - eye);
         let r = reflect(vdir, n);
         // (the headset: laid out by the bus's heading, level, not by each eye's view)
         let vr_env = camera.cam_up.w > 0.5;
@@ -1667,14 +1694,18 @@ fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     // to mirror the sky, strongest where you look along it (the Fresnel sheen that makes a
     // wet street read as wet)
     let outside = weather_outside_n(in.world, n, material.extra.x > 0.5, in.params2.w);
-    let wet = camera.shadow.w * material.params2.z * outside;
+    let wet = camera.shadow.w * material.params2.z * outside * (1.0 - clamp(camera.ambient.w, 0.0, 1.0));
     if (wet > 0.0) {
-        let vdir = normalize(in.world - camera.cam_pos.xyz);
+        let vdir = normalize(in.world - eye);
         let facing = clamp(-dot(vdir, n), 0.0, 1.0);
         let fresnel = pow(1.0 - facing, 4.0);
+        let puddle = road_puddle_coverage(in.world, n, wet);
+        let water = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
+        let weight = clamp(mix(fresnel * wet * 0.85, water * wet, puddle), 0.0, 0.9);
         lit = lit * mix(1.0, 0.55, wet);
         let sheen = camera.sky_color.rgb * 0.5 + camera.sun_color.rgb * camera.sun_dir.w * 0.35;
-        lit = mix(lit, sheen, clamp(fresnel * wet * 0.85, 0.0, 0.8));
+        lit = mix(lit, sheen, weight);
+        *puddle_weight = weight * puddle;
     }
     // snow: the ground, the roads and every upward-facing surface whiten under it
     // (not on a shadow blob: whitened, it lit the snow under the bus instead of shading it)
@@ -1695,6 +1726,7 @@ fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     }
     let dist = distance(in.world, camera.cam_pos.xyz);
     let f = 1.0 - exp(-fog_distance(in.world) * camera.fog.w);
+    *puddle_weight *= 1.0 - clamp(f, 0.0, 1.0);
     var rgb = mix(lit, camera.fog.xyz, clamp(f, 0.0, 1.0));
     if (camera.flags.z > 0.0) {
         // Never taken: flags.z (the old enhanced look's aerial perspective) is always 0

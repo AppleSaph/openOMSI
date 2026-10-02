@@ -421,12 +421,12 @@ fn shade_enhanced(in: FsIn, puddle_weight: ptr<function, vec2<f32>>, capture: bo
     // A blended transmap body is a masked paint surface, not glass. Traffic cars often
     // use this material layout for their body; depth-disabled blends remain glass.
     // Window assets are not consistent about carrying an envmap.  The reliable signal
-    // is a depth-disabled blended layer; env/transmap data then tells us it is a pane,
-    // rather than a dirt/text overlay.  This restores traffic interiors and keeps bus
+    // is an explicitly named window, or a depth-disabled blended layer with env/transmap
+    // data that identifies a pane rather than a dirt/text overlay. This keeps bus
     // panes on the reflection/transmission path after the material-depth repair.
     // Painted terrain also blends a transmap without writing depth. It is never glass:
     // Fresnel opacity on its empty mask pixels darkens every lower layer at grazing angles.
-    let glass = !terrain && mode > 1.5 && material.bump.z > 0.5 &&
+    let glass = !terrain && mode > 1.5 && (material.bump.z > 0.5 || material.emissive.w > 0.5) &&
         (has_env || material.params.z > 0.5 || material.emissive.w > 0.5);
     let painted_transmap = material.params.z > 0.5 && !glass;
     // An envmap on opaque vehicle paint is legacy material data, not a request to make
@@ -565,13 +565,11 @@ fn shade_enhanced(in: FsIn, puddle_weight: ptr<function, vec2<f32>>, capture: bo
         // concentric rings cross a puddle where drops land, fading as they widen - the other
         // half of the wheel splashes in `puddles.rs`.
         let pattern_xy = world_pattern_xy(in.world);
-        let pn = vnoise_f(pattern_xy, 0.22, vec2<f32>(17.3, -9.1)) * 0.65 + vnoise_f(pattern_xy, 0.9, vec2<f32>(-4.0, 8.0)) * 0.35;
         // OMSI's own rule: the puddle map is alpha-tested against
         // 255 * (1 - wetness), so the pools spread from the lowest spots as the road soaks
         // and a road that is wet through is one sheet of water (the old threshold never
         // passed three quarters of the carriageway, leaving dry islands in a downpour).
-        let puddle_t = 1.0 - wet_road * 1.15;
-        puddle = smoothstep(puddle_t - 0.06, puddle_t + 0.06, pn) * smoothstep(0.75, 0.95, n.z);
+        puddle = road_puddle_coverage(in.world, n, wet_road);
         if (puddle > 0.001) {
             // A drop is a few millimetres across and its ring dies away within a hand's
             // breadth, so the shared ripple grid is 12.5 cm wide and a ring grows
@@ -904,10 +902,15 @@ fn fs_puddle_vehicle(input: FsIn) -> @location(0) vec4<f32> {
     if (height < 0.0 || material.emissive.w > 1.5) { discard; }
     var unused = vec2<f32>(0.0);
     let eye = camera.cam_pos.xyz - 2.0 * plane.xyz * (dot(plane.xyz, camera.cam_pos.xyz) - plane.w);
+    if (camera.post.x < 0.5) {
+        var unused_vanilla = 0.0;
+        return shade_vanilla(input, &unused_vanilla, eye);
+    }
     return shade_enhanced(input, &unused, true, eye);
 }
 
 @fragment
 fn fs_puddle_chassis() -> @location(0) vec4<f32> {
+    if (camera.post.x < 0.5) { return vec4<f32>(camera.ambient.rgb * 0.025, 1.0); }
     return vec4<f32>(sh_irradiance(vec3<f32>(0.0, 0.0, -1.0)) * enh.exposure.x * 0.025, 1.0);
 }

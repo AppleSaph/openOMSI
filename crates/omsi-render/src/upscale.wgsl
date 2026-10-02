@@ -156,6 +156,12 @@ fn fxaa(uv: vec2<f32>, texel: vec2<f32>) -> vec3<f32> {
 }
 
 @fragment
+fn fs_copy(in: VsOut) -> @location(0) vec4<f32> {
+    // Present classic lighting without metering, grading, or a second AA/upscale pass.
+    return textureLoad(t_src, vec2<i32>(in.clip.xy), 0);
+}
+
+@fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let size = p.src.xy;
     if (p.src.w > 0.5) {

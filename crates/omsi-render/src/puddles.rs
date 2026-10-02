@@ -345,6 +345,7 @@ pub(super) struct Targets {
     resolve_bg: wgpu::BindGroup,
     pub(super) down_bg: wgpu::BindGroup,
     pub(super) tonemap_bg: [wgpu::BindGroup; 2],
+    pub(super) classic_bg: wgpu::BindGroup,
 }
 
 fn trace_size(w: u32, h: u32) -> (u32, u32) {
@@ -475,6 +476,7 @@ impl Targets {
             post_group(&hdr.up[0], &r.adapt_views[0]),
             post_group(&hdr.up[0], &r.adapt_views[1]),
         ];
+        let classic_bg = r.classic_picture_group(&view);
         Self {
             size,
             source_depth,
@@ -492,6 +494,7 @@ impl Targets {
             resolve_bg,
             down_bg,
             tonemap_bg,
+            classic_bg,
         }
     }
 }
@@ -510,7 +513,7 @@ impl Renderer {
         if self.puddles.is_none()
             || self.ao.is_none()
             || self.probe.is_none()
-            || self.sky_state.is_none()
+            || (cu.post[0] > 0.5 && self.sky_state.is_none())
         {
             return false;
         }
@@ -536,13 +539,23 @@ impl Renderer {
         let proj = projection.unwrap_or_else(|| {
             Mat4::perspective_rh(camera.fov_deg.to_radians(), aspect, camera.far, camera.near)
         });
-        let st = self.sky_state.as_ref().unwrap();
-        let surround = [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z]
-            .into_iter()
-            .map(|n| atmosphere::sh_irradiance(&st.sh, n))
-            .sum::<Vec3>()
-            * (0.25 / (6.0 * std::f32::consts::PI));
-        let pre = self.exposure.unwrap_or(0.0).exp();
+        let enhanced = cu.post[0] > 0.5;
+        let surround = if enhanced {
+            let st = self.sky_state.as_ref().unwrap();
+            [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z]
+                .into_iter()
+                .map(|n| atmosphere::sh_irradiance(&st.sh, n))
+                .sum::<Vec3>()
+                * (0.25 / (6.0 * std::f32::consts::PI))
+        } else {
+            // Exactly the sky sheen replaced in shade_vanilla; no Enhanced exposure.
+            lighting.secondary * 0.5 + lighting.sun_color * lighting.sun_intensity * 0.35
+        };
+        let pre = if enhanced {
+            self.exposure.unwrap_or(0.0).exp()
+        } else {
+            1.0
+        };
         let ro = (camera.position / 100.0).floor() * 100.0;
         let origins = vehicle_origins(lighting, camera);
         let mut parts = [<VehicleBox as bytemuck::Zeroable>::zeroed(); 4];
@@ -590,7 +603,12 @@ impl Renderer {
                     .unwrap_or(0.12),
             ],
             vehicle_plane: plane,
-            vehicle_info: [origins.len() as f32, w as f32, h as f32, 0.0],
+            vehicle_info: [
+                origins.len() as f32,
+                w as f32,
+                h as f32,
+                if enhanced { 1.0 } else { 0.0 },
+            ],
             vehicle_parts: parts,
         };
         self.queue.write_buffer(
@@ -837,7 +855,7 @@ fn reflection_glass(u: &MaterialUniform) -> bool {
     u.extra[0] < 0.5
         && u.params[0] > 1.5
         && u.params[1] < 0.5
-        && u.bump[2] > 0.5
+        && (u.bump[2] > 0.5 || u.emissive[3] > 0.5)
         && u.bump[3] < 0.5
         && u.emissive[3] < 1.5
         && (u.params2[1] > 0.0 || u.params[2] > 0.5 || u.emissive[3] > 0.5)
@@ -866,153 +884,369 @@ mod tests {
     #[test]
     #[ignore = "requires a graphics adapter; checks transparent window reflection depth"]
     fn glass_hit_depth_preserves_receiver_depth_across_resizes() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let mut r = pollster::block_on(Renderer::new_with(
-            &instance,
-            None,
-            Some(wgpu::TextureFormat::Rgba8UnormSrgb),
-            RenderOptions {
-                msaa: 4,
-                ssao: false,
-                shadow_size: 1024,
-                render_scale: 1.0,
-                ..Default::default()
-            },
-        ))
-        .expect("test renderer");
-        let mut scene = r.new_scene();
-        let back = r.add_material_wet(
-            &mut scene,
-            None,
-            AlphaMode::Opaque,
-            [1.0; 4],
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            [0.0; 3],
-            1.0,
-        );
-        let pane = r.add_material_inner(
-            &mut scene,
-            None,
-            AlphaMode::Blend,
-            [0.5, 0.5, 0.5, 0.15],
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            [0.0; 3],
-            0.0,
-            MaterialExtra {
-                no_z_write: true,
-                glass: true,
-                ..Default::default()
-            },
-        );
-        for (y, half, material) in [(10.0, 10.0, back), (5.0, 2.0, pane)] {
-            let mesh = r.add_mesh(
+        for msaa in [1, 4] {
+            let instance =
+                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            let mut r = pollster::block_on(Renderer::new_with(
+                &instance,
+                None,
+                Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+                RenderOptions {
+                    msaa,
+                    ssao: false,
+                    shadow_size: 1024,
+                    render_scale: 1.0,
+                    ..Default::default()
+                },
+            ))
+            .expect("test renderer");
+            let mut scene = r.new_scene();
+            let back = r.add_material_wet(
                 &mut scene,
-                &MeshData {
-                    positions: vec![
-                        Vec3::new(-half, y, -half),
-                        Vec3::new(half, y, -half),
-                        Vec3::new(half, y, half),
-                        Vec3::new(-half, y, half),
-                    ],
-                    normals: vec![-Vec3::Y; 4],
-                    uvs: vec![glam::Vec2::ZERO; 4],
-                    ranges: vec![(0, 6, 0)],
-                    indices: vec![0, 1, 2, 0, 2, 3],
-                    one_sided: false,
+                None,
+                AlphaMode::Opaque,
+                [1.0; 4],
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                [0.0; 3],
+                1.0,
+            );
+            let pane = r.add_material_inner(
+                &mut scene,
+                None,
+                AlphaMode::Blend,
+                [0.5, 0.5, 0.5, 0.15],
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                [0.0; 3],
+                0.0,
+                MaterialExtra {
+                    glass: true,
+                    ..Default::default()
                 },
             );
-            r.add_instance(
-                &mut scene,
-                mesh,
-                DVec3::ZERO,
-                Mat4::IDENTITY,
-                vec![material],
-            );
-        }
-        let camera = Camera {
-            position: DVec3::ZERO,
-            yaw: 0.0,
-            pitch: 0.0,
-            roll: 0.0,
-            fov_deg: 90.0,
-            near: 0.1,
-            far: 100.0,
-        };
-        let lighting = Lighting {
-            enhanced: true,
-            wetness: 1.0,
-            shadows: false,
-            ..Default::default()
-        };
-        fn depth_at_centre(r: &Renderer, texture: &wgpu::Texture, size: u32) -> f32 {
-            let buffer = r.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("test reflection depth"),
-                size: 256 * size as u64,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            let mut encoder = r.device.create_command_encoder(&Default::default());
-            encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::DepthOnly,
-                },
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &buffer,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(256),
-                        rows_per_image: Some(size),
+            for (y, half, material) in [(10.0, 10.0, back), (5.0, 2.0, pane)] {
+                let mesh = r.add_mesh(
+                    &mut scene,
+                    &MeshData {
+                        positions: vec![
+                            Vec3::new(-half, y, -half),
+                            Vec3::new(half, y, -half),
+                            Vec3::new(half, y, half),
+                            Vec3::new(-half, y, half),
+                        ],
+                        normals: vec![-Vec3::Y; 4],
+                        uvs: vec![glam::Vec2::ZERO; 4],
+                        ranges: vec![(0, 6, 0)],
+                        indices: vec![0, 1, 2, 0, 2, 3],
+                        one_sided: false,
                     },
-                },
-                wgpu::Extent3d {
-                    width: size,
-                    height: size,
-                    depth_or_array_layers: 1,
-                },
-            );
-            r.queue.submit([encoder.finish()]);
-            let (tx, rx) = std::sync::mpsc::channel();
-            buffer.slice(..).map_async(wgpu::MapMode::Read, move |v| {
-                tx.send(v).unwrap();
-            });
-            r.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            rx.recv().unwrap().unwrap();
-            let data = buffer.slice(..).get_mapped_range();
-            let offset = (size / 2 * 256 + size / 2 * 4) as usize;
-            let depth = f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-            drop(data);
-            buffer.unmap();
-            depth
+                );
+                r.add_instance(
+                    &mut scene,
+                    mesh,
+                    DVec3::ZERO,
+                    Mat4::IDENTITY,
+                    vec![material],
+                );
+            }
+            let camera = Camera {
+                position: DVec3::ZERO,
+                yaw: 0.0,
+                pitch: 0.0,
+                roll: 0.0,
+                fov_deg: 90.0,
+                near: 0.1,
+                far: 100.0,
+            };
+            fn depth_at_centre(r: &Renderer, texture: &wgpu::Texture, size: u32) -> f32 {
+                let buffer = r.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("test reflection depth"),
+                    size: 256 * size as u64,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                let mut encoder = r.device.create_command_encoder(&Default::default());
+                encoder.copy_texture_to_buffer(
+                    wgpu::TexelCopyTextureInfo {
+                        texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::DepthOnly,
+                    },
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(256),
+                            rows_per_image: Some(size),
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width: size,
+                        height: size,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                r.queue.submit([encoder.finish()]);
+                let (tx, rx) = std::sync::mpsc::channel();
+                buffer.slice(..).map_async(wgpu::MapMode::Read, move |v| {
+                    tx.send(v).unwrap();
+                });
+                r.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                rx.recv().unwrap().unwrap();
+                let data = buffer.slice(..).get_mapped_range();
+                let offset = (size / 2 * 256 + size / 2 * 4) as usize;
+                let depth = f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+                drop(data);
+                buffer.unmap();
+                depth
+            }
+            for (enhanced, classic) in [(false, true), (false, false), (true, false)] {
+                for inside in [false, true] {
+                    let lighting = Lighting {
+                        enhanced,
+                        classic,
+                        wetness: 1.0,
+                        shadows: false,
+                        inside: inside.then_some((
+                            DVec3::ZERO,
+                            0.0,
+                            [12.0, 12.0, 12.0, 0.0, 0.0, 0.0],
+                        )),
+                        ..Default::default()
+                    };
+                    for size in [64, 48, 64] {
+                        r.render_to_image(&mut scene, size, size, &camera, &lighting)
+                            .unwrap();
+                        let targets = r.hdr_targets[&(size, size)].puddles.as_ref().unwrap();
+                        assert_eq!(
+                            targets.source_depth,
+                            *r.ao.as_ref().unwrap().depth_view.texture()
+                        );
+                        // Read both textures below through an immutable renderer borrow.
+                        let receiver = depth_at_centre(&r, &targets.source_depth, size);
+                        let hit = depth_at_centre(&r, &targets.hit_depth, size);
+                        assert!(
+                            (receiver - 0.009009).abs() < 1e-5,
+                            "opaque receiver: {receiver}"
+                        );
+                        let expected_hit = if inside { receiver } else { 0.019019 };
+                        assert!((hit - expected_hit).abs() < 1e-5, "glass hit: {hit}; MSAA={msaa}, enhanced={enhanced}, classic={classic}, inside={inside}");
+                    }
+                }
+            }
         }
-        for size in [64, 48, 64] {
-            r.render_to_image(&mut scene, size, size, &camera, &lighting)
-                .unwrap();
-            let targets = r.hdr_targets[&(size, size)].puddles.as_ref().unwrap();
-            assert_eq!(
-                targets.source_depth,
-                *r.ao.as_ref().unwrap().depth_view.texture()
+    }
+
+    #[test]
+    #[ignore = "requires a graphics adapter; renders wet roads through bus glass"]
+    fn wet_scene_reflections_survive_bus_glass_in_every_graphics_mode() {
+        for msaa in [1, 4] {
+            let instance =
+                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            let mut r = pollster::block_on(Renderer::new_with(
+                &instance,
+                None,
+                Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+                RenderOptions {
+                    msaa,
+                    ssao: false,
+                    fxaa: false,
+                    shadow_size: 1024,
+                    render_scale: 1.0,
+                    ..Default::default()
+                },
+            ))
+            .expect("test renderer");
+            let mut scene = r.new_scene();
+            let road = r.add_material_wet(
+                &mut scene,
+                None,
+                AlphaMode::Opaque,
+                [0.25, 0.25, 0.25, 1.0],
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                [0.0; 3],
+                1.0,
             );
-            // Read both textures below through an immutable renderer borrow.
-            let receiver = depth_at_centre(&r, &targets.source_depth, size);
-            let hit = depth_at_centre(&r, &targets.hit_depth, size);
-            assert!(
-                (receiver - 0.009009).abs() < 1e-5,
-                "opaque receiver: {receiver}"
+            let red = r.add_material_wet(
+                &mut scene,
+                None,
+                AlphaMode::Opaque,
+                [1.0, 0.01, 0.01, 1.0],
+                true,
+                None,
+                None,
+                None,
+                None,
+                None,
+                [0.0; 3],
+                0.0,
             );
-            assert!((hit - 0.019019).abs() < 1e-5, "glass hit: {hit}");
+            let pane = r.add_material_inner(
+                &mut scene,
+                None,
+                AlphaMode::Blend,
+                [0.25, 0.3, 0.35, 0.15],
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                [0.0; 3],
+                0.0,
+                MaterialExtra {
+                    glass: true,
+                    ..Default::default()
+                },
+            );
+            let film = r.add_material_inner(
+                &mut scene,
+                None,
+                AlphaMode::Blend,
+                [1.0; 4],
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                [0.0; 3],
+                0.0,
+                MaterialExtra {
+                    rain_film: true,
+                    no_z_write: true,
+                    ..Default::default()
+                },
+            );
+            let mut add_quad = |positions, normal, material| {
+                let mesh = r.add_mesh(
+                    &mut scene,
+                    &MeshData {
+                        positions,
+                        normals: vec![normal; 4],
+                        uvs: vec![glam::Vec2::ZERO; 4],
+                        indices: vec![0, 1, 2, 0, 2, 3],
+                        ranges: vec![(0, 6, 0)],
+                        one_sided: false,
+                    },
+                );
+                r.add_instance(
+                    &mut scene,
+                    mesh,
+                    DVec3::ZERO,
+                    Mat4::IDENTITY,
+                    vec![material],
+                )
+            };
+            add_quad(
+                vec![
+                    Vec3::new(-20.0, 0.0, 0.0),
+                    Vec3::new(20.0, 0.0, 0.0),
+                    Vec3::new(20.0, 30.0, 0.0),
+                    Vec3::new(-20.0, 30.0, 0.0),
+                ],
+                Vec3::Z,
+                road,
+            );
+            add_quad(
+                vec![
+                    Vec3::new(-3.0, 10.0, 0.0),
+                    Vec3::new(3.0, 10.0, 0.0),
+                    Vec3::new(3.0, 10.0, 5.0),
+                    Vec3::new(-3.0, 10.0, 5.0),
+                ],
+                -Vec3::Y,
+                red,
+            );
+            let window = add_quad(
+                vec![
+                    Vec3::new(-3.0, 1.0, -1.0),
+                    Vec3::new(3.0, 1.0, -1.0),
+                    Vec3::new(3.0, 1.0, 6.0),
+                    Vec3::new(-3.0, 1.0, 6.0),
+                ],
+                -Vec3::Y,
+                pane,
+            );
+            let rain = add_quad(
+                vec![
+                    Vec3::new(-3.0, 0.99, -1.0),
+                    Vec3::new(3.0, 0.99, -1.0),
+                    Vec3::new(3.0, 0.99, 6.0),
+                    Vec3::new(-3.0, 0.99, 6.0),
+                ],
+                -Vec3::Y,
+                film,
+            );
+            let camera = Camera {
+                position: DVec3::new(0.0, 0.0, 2.0),
+                yaw: 0.0,
+                pitch: -10.0,
+                roll: 0.0,
+                fov_deg: 70.0,
+                near: 0.1,
+                far: 100.0,
+            };
+            for (enhanced, classic) in [(false, true), (false, false), (true, false)] {
+                let lighting = Lighting {
+                    enhanced,
+                    classic,
+                    wetness: 1.0,
+                    rain: 0.8,
+                    shadows: false,
+                    inside: Some((
+                        DVec3::new(0.0, 0.0, 2.0),
+                        0.0,
+                        [4.0, 4.0, 4.0, 0.0, 0.0, 0.0],
+                    )),
+                    ..Default::default()
+                };
+                let mut reflection = Vec::new();
+                for glass in 0..3 {
+                    scene.instances[window].visible = glass > 0;
+                    scene.instances[rain].visible = glass == 2;
+                    scene.dirty = true;
+                    r.options.reflections = false;
+                    let without = r
+                        .render_to_image(&mut scene, 128, 128, &camera, &lighting)
+                        .unwrap();
+                    r.options.reflections = true;
+                    let with = r
+                        .render_to_image(&mut scene, 128, 128, &camera, &lighting)
+                        .unwrap();
+                    // Compare only the road: the red object is above the image's middle.
+                    let red_change: i64 = with[128 * 70 * 4..]
+                        .chunks_exact(4)
+                        .zip(without[128 * 70 * 4..].chunks_exact(4))
+                        .map(|(a, b)| (a[0] as i64 - a[1] as i64) - (b[0] as i64 - b[1] as i64))
+                        .sum();
+                    assert!(red_change > 1000, "missing road reflection: {red_change}; MSAA={msaa}, enhanced={enhanced}, classic={classic}, glass={glass}");
+                    reflection.push(red_change);
+                }
+                assert!(
+                    reflection[1] > reflection[0] / 4,
+                    "glass hid the reflection: {reflection:?}"
+                );
+                assert!(
+                    reflection[2] > reflection[0] / 4,
+                    "rain film hid the reflection: {reflection:?}"
+                );
+            }
         }
     }
 

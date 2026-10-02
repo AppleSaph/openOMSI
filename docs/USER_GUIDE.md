@@ -265,14 +265,17 @@ lit cumulus) that also lights the scene, contact-hardening sun shadows, aerial p
 and height fog, automatic exposure, a glow only real highlights produce and the PBR
 Neutral tone curve with FXAA (`post_aa`); no light shafts, vignette or grading.
 
-The enhanced renderer also reflects buses, buildings and scenery in wet road puddles
-when `reflections=1`. Shallow rain ripples and depth-aware filtering soften the image.
+Vanilla, Vanilla+ and Enhanced reflect buses, buildings and scenery in wet road puddles
+when `reflections=1`, each using its own lighting. Depth-aware filtering softens the image;
+Enhanced also shades shallow rain ripples.
 The player's nearby bus and up to three coupled sections use one local geometry capture,
 mirrored around the actual road face's height and slope. Its windows are shaded from the
 reflected eye, and an open legacy chassis gets a dark underside in that same depth-tested
 view. This avoids mixing offset screen-space and geometry projections on the bus.
 Other objects use the current frame's colour and a private hit-depth texture that includes
-reflective windows. Rays run at half resolution, capped at 518400 pixels and 48 steps;
+reflective windows. From inside the bus, its own panes let the rays reach the street;
+glass tint and rain films attenuate the reflection along with the scene behind them.
+Rays run at half resolution, capped at 518400 pixels and 48 steps;
 the local bus capture has the same pixel cap and a 60 m distance limit. Dry roads,
 snow-covered roads and mirror views skip these passes. Reflections beyond the local road
 plane use screen-space rays; objects unavailable to those rays keep the sky reflection.

@@ -59,6 +59,7 @@ fn trace_miss(depth: f32) -> vec4<f32> {
     return vec4<f32>(select(vec3<f32>(0.0), vec3<f32>(1.0, 0.0, 0.0), p.projection_trace.z == 2.0), depth);
 }
 fn fallback_light(direction: vec3<f32>, px: vec2<i32>) -> vec3<f32> {
+    if (p.vehicle_info.w < 0.5) { return p.sky.rgb; }
     let lod = 0.03 * (p.origin_rain.w - 1.0);
     let sky = finite_colour(textureSampleLevel(t_probe, s_linear, direction.xzy, lod).rgb * p.sky.w);
     let open = smoothstep(-0.05, 0.35, direction.z);

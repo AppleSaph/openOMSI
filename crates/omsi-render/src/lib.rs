@@ -115,6 +115,8 @@ struct HdrTargets {
     /// Tone mapping with the adapted exposure in `adapt[k]`.
     tonemap_bg: [wgpu::BindGroup; 2],
     fxaa_bg: wgpu::BindGroup,
+    /// Classic shading is presented directly, without the Enhanced tone curve.
+    classic_bg: wgpu::BindGroup,
     /// Allocated only when wet roads need scene reflections in the main view.
     puddles: Option<puddles::Targets>,
 }
@@ -1228,6 +1230,7 @@ pub struct Renderer {
     material_layout: wgpu::BindGroupLayout,
     pass: PassPipelines,
     hdr_pass: Option<PassPipelines>,
+    reflection_pass: Option<PassPipelines>,
     corona_bind_group: wgpu::BindGroup,
     /// The smoke texture (`Texture/rauch.tga`, see [`Renderer::set_smoke_texture`]).
     smoke_bind_group: wgpu::BindGroup,
@@ -1351,6 +1354,7 @@ pub struct Renderer {
     /// Render scale: the pipeline that scales the 3D picture up to the window, its
     /// parameters, and the smaller targets per size (with their bind groups).
     upscale_pipeline: wgpu::RenderPipeline,
+    copy_pipeline: wgpu::RenderPipeline,
     upscale_layout: wgpu::BindGroupLayout,
     upscale_buf: wgpu::Buffer,
     scale_targets: HashMap<(u32, u32), (wgpu::TextureView, wgpu::BindGroup)>,
@@ -1522,8 +1526,8 @@ pub const LAMP_CODE_STRIDE: u32 = 64;
 const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// The colour targets of a pipeline drawing into `format`: in the enhanced pass (the only
-/// one drawing into `HDR_FORMAT` with these pipelines) with the screen mask beside it,
+/// The colour targets of a pipeline drawing into `format`: Enhanced and classic puddle
+/// shading draw into `HDR_FORMAT` with the screen mask beside it,
 /// written by the scene's own shader only (`mask`), coverage-blended where the colour is.
 fn color_targets(format: wgpu::TextureFormat, blend: Option<wgpu::BlendState>, write: wgpu::ColorWrites, mask: bool) -> Vec<Option<wgpu::ColorTargetState>> {
     let mut v = vec![Some(wgpu::ColorTargetState { format, blend, write_mask: write })];
@@ -2885,6 +2889,12 @@ impl Renderer {
             smoke_pipeline: corona_pipeline_for(hdr_format, "fs_smoke_enhanced", alpha_blend),
             sky_pipeline: sky_pipeline_for(hdr_format, "fs_enhanced"),
         });
+        let reflection_pass = (!leave_out_enhanced && !GL_BACKEND.load(std::sync::atomic::Ordering::Relaxed)).then(|| PassPipelines {
+            pipelines: scene_pipelines(hdr_format, "fs_vanilla_reflections"),
+            corona_pipeline: corona_pipeline_for(hdr_format, "fs_main", screen),
+            smoke_pipeline: corona_pipeline_for(hdr_format, "fs_smoke", alpha_blend),
+            sky_pipeline: sky_pipeline_for(hdr_format, "fs_main"),
+        });
         let sky_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -3808,7 +3818,7 @@ impl Renderer {
             bind_group_layouts: &[Some(&upscale_layout)],
             immediate_size: 0,
         });
-        let upscale_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let upscale_pipeline_for = |entry| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("upscale"),
             layout: Some(&upscale_pl),
             vertex: wgpu::VertexState {
@@ -3826,7 +3836,7 @@ impl Renderer {
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &upscale_shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(entry),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: None,
@@ -3837,6 +3847,8 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let upscale_pipeline = upscale_pipeline_for("fs_main");
+        let copy_pipeline = upscale_pipeline_for("fs_copy");
         let upscale_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("upscale params"),
             size: 16,
@@ -3851,6 +3863,7 @@ impl Renderer {
         Renderer {
             _device_poller: DevicePoller::start(&device),
             upscale_pipeline,
+            copy_pipeline,
             upscale_layout,
             upscale_buf,
             scale_targets: HashMap::new(),
@@ -3917,6 +3930,7 @@ impl Renderer {
             material_layout,
             pass,
             hdr_pass,
+            reflection_pass,
             corona_bind_group,
             smoke_bind_group,
             corona_textures: Vec::new(),
@@ -4054,6 +4068,18 @@ impl Renderer {
         self.scale_targets
             .insert((w, h), (view.clone(), bg.clone()));
         (view, bg)
+    }
+
+    fn classic_picture_group(&self, view: &wgpu::TextureView) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("classic scene with reflections"),
+            layout: &self.upscale_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.upscale_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.post_sampler) },
+            ],
+        })
     }
 
     pub fn new_scene(&self) -> Scene {
@@ -6098,6 +6124,7 @@ impl Renderer {
         ];
         // (FXAA reads the screen mask as its `t_base` and leaves the screens as they are)
         let fxaa_bg = bg(&ldr, &mask, none);
+        let classic_bg = self.classic_picture_group(&view);
         self.hdr_targets.insert(
             (w, h),
             HdrTargets {
@@ -6113,6 +6140,7 @@ impl Renderer {
                 meter_bg,
                 tonemap_bg,
                 fxaa_bg,
+                classic_bg,
                 puddles: None,
             },
         );
@@ -7390,6 +7418,17 @@ impl Renderer {
         // the mirrors are drawn by the same path as the window (their picture graded with
         // the window's exposure, see the post passes)
         let enhanced = enhanced_frame;
+        // Rain reflections belong to all graphics modes. Classic shading uses the same
+        // scene/mask targets, then presents their linear colour without Enhanced grading.
+        let puddles_wanted = with_overlays
+            && self.puddles.is_some()
+            && self.options.reflections
+            && lighting.wetness * (1.0 - lighting.snow.clamp(0.0, 1.0)) > 0.05
+            && scene.materials.iter().any(|m| m.uniform.params2[2] > 0.0)
+            && debug_view() == 0.0
+            && omsi_cfg::env::var_os("OMSI_NO_PUDDLE_REFLECTIONS").is_none();
+        let reflection_frame = !enhanced && puddles_wanted && self.reflection_pass.is_some();
+        let masked_frame = enhanced || reflection_frame;
         let grid = self.prepare_lights(scene, cam_rel, enhanced_frame);
         self.prepare_coronas(scene, lighting.night);
         self.prepare_smoke(scene, camera.position);
@@ -7397,14 +7436,14 @@ impl Renderer {
         let ao_on = with_overlays && self.options.ssao && self.ssao_pipeline.is_some() && omsi_cfg::env::var_os("OMSI_NO_AO").is_none();
         // the enhanced path's shading is costly: the depth prepass keeps it to the visible
         // surface (without multisampling, see `share_depth`)
-        let prepass_on = ao_on || (enhanced && (with_overlays || xr_view));
+        let prepass_on = ao_on || puddles_wanted || (enhanced && (with_overlays || xr_view));
         if prepass_on && self.ensure_ao(width, height) {
             // a new AO texture: the camera bind group must point at it
             scene.dirty = true;
             scene.model_buf = None;
             self.hdr_targets.clear();
         }
-        if enhanced {
+        if masked_frame {
             self.hdr_targets(width, height);
         }
         let dt = {
@@ -7696,12 +7735,6 @@ impl Renderer {
         let probe_redraw = enhanced
             && (lead_view || self.sky_state.is_none())
             && self.prepare_enhanced(lighting, cam_rel, ro, dt);
-        let puddles_wanted = enhanced
-            && with_overlays
-            && self.options.reflections
-            && lighting.wetness * (1.0 - lighting.snow.clamp(0.0, 1.0)) > 0.05
-            && debug_view() == 0.0
-            && omsi_cfg::env::var_os("OMSI_NO_PUDDLE_REFLECTIONS").is_none();
         // --- what every pass draws, as batches over one draw list (see `Batch`): the shadow
         // casters of each cascade, the depth prepass and the main pass. The list is built
         // and uploaded before any pass is encoded.
@@ -8471,6 +8504,8 @@ impl Renderer {
         let main_bundles = if omsi_cfg::env::var_os("OMSI_NO_BUNDLES").is_none() {
             let (pp, format) = if enhanced {
                 (self.hdr_pass.as_ref().expect("enhanced pipelines"), wgpu::TextureFormat::Rgba16Float)
+            } else if reflection_frame {
+                (self.reflection_pass.as_ref().unwrap(), HDR_FORMAT)
             } else {
                 (&self.pass, self.format)
             };
@@ -8742,7 +8777,8 @@ impl Renderer {
         // A presurface must colour its below-ground faces before its invisible cover
         // seals them. Reusing prepass depth would reject those faces (or let terrain
         // reject them first). The prepass still supplies AO; colour rebuilds its depth.
-        let share_depth = prepass_on && single && self.ao.is_some() && !has_presurface;
+        // A depth-writing window in the colour pass must not replace the road receiver.
+        let share_depth = prepass_on && single && self.ao.is_some() && !has_presurface && !puddles_wanted;
         let targets = if share_depth {
             None
         } else {
@@ -8815,7 +8851,7 @@ impl Renderer {
                 None => &self.ao.as_ref().unwrap().depth_view,
             };
             // the enhanced path draws into a high-range picture the post pass then grades
-            let hdr = if enhanced {
+            let hdr = if masked_frame {
                 self.hdr_targets.get(&(width, height))
             } else {
                 None
@@ -8834,7 +8870,13 @@ impl Renderer {
                         }
                     }
                 };
-            let pp = if enhanced { self.hdr_pass.as_ref().expect("enhanced pipelines") } else { &self.pass };
+            let pp = if enhanced {
+                self.hdr_pass.as_ref().expect("enhanced pipelines")
+            } else if reflection_frame {
+                self.reflection_pass.as_ref().unwrap()
+            } else {
+                &self.pass
+            };
             // the enhanced pass's screen mask beside the picture (see `MASK_FORMAT`)
             let mask_attachment = hdr.map(|h| wgpu::RenderPassColorAttachment {
                 view: h.mask_msaa.as_ref().unwrap_or(&h.mask),
@@ -8980,7 +9022,7 @@ impl Renderer {
             }
             // HUD overlays (on the vanilla path at full size; the enhanced path draws them
             // after grading, a scaled picture after scaling it up)
-            if !overlays.is_empty() && !enhanced && !scaled {
+            if !overlays.is_empty() && !masked_frame && !scaled {
                 pass.set_pipeline(&self.overlay_pipeline);
                 for (k, _) in overlays.iter().enumerate() {
                     if let Some((_, _, bg, _)) = scene.overlay_res.get(k) {
@@ -8997,6 +9039,31 @@ impl Renderer {
             && self.prepare_puddle_reflections(width, height, camera, aspect, projection, &cu, lighting);
         if puddles_on {
             self.encode_puddle_reflections(&mut encoder, width, height, scene, &main_batches, &list, lighting, camera, tset.as_ref(), &mut timed);
+        }
+        if reflection_frame {
+            let h = &self.hdr_targets[&(width, height)];
+            let bg = h.puddles.as_ref().filter(|_| puddles_on).map_or(&h.classic_bg, |p| &p.classic_bg);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("classic reflections present"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: scene_view, depth_slice: None, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None, timestamp_writes: None,
+                occlusion_query_set: None, multiview_mask: None,
+            });
+            pass.set_pipeline(&self.copy_pipeline);
+            pass.set_bind_group(0, bg, &[]);
+            pass.draw(0..3, 0..1);
+            if !overlays.is_empty() && !scaled {
+                pass.set_pipeline(&self.overlay_pipeline_1x);
+                for (k, _) in overlays.iter().enumerate() {
+                    if let Some((_, _, bg, _)) = scene.overlay_res.get(k) {
+                        pass.set_bind_group(0, bg, &[]);
+                        pass.draw(0..6, 0..1);
+                    }
+                }
+            }
         }
         if enhanced {
             // --- the post passes: glow, metering and adaptation, tone curve, FXAA
