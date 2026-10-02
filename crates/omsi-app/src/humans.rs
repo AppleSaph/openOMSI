@@ -2232,13 +2232,19 @@ impl Humans {
             };
             // (sub_7f0db8 / sub_7f0d3c: the stop less the object)
             let v = pos - *opos;
-            if v.length() > 40.0 {
+            // (Omsi.exe looks at every object of the stop's tile and the ones round it; the
+            // region below reaches the stop's length ahead, which a long bus station stop
+            // takes past 40 m)
+            if v.length() > 40.0_f64.max(length as f64 + 15.0) {
                 continue;
             }
             // (0x7efb08 with -heading: in the stop's frame)
             let lat = h.cos() * v.x - h.sin() * v.y;
             let along = h.cos() * v.y + h.sin() * v.x;
             if !(-along < 10.0 && -along > -(length as f64).max(10.0) && -lat < xmax && -lat > xmin) {
+                if debug_pax() && v.length() < 30.0 {
+                    log::info!("stop {id}: object {obj} (waiting place {p:?}) not the stop's: across {:.1}, along {:.1}", -lat, -along);
+                }
                 continue;
             }
             spots.push(WaitSpot { pos: *p, face: *face, height: *height });
