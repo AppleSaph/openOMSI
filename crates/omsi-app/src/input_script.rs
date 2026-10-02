@@ -3654,7 +3654,7 @@ fn route_char(code: KeyCode) -> Option<char> {
         KeyCode::Period | KeyCode::NumpadDecimal => Some('.'),
         KeyCode::Comma => Some(','),
         KeyCode::Semicolon => Some(';'),
-        KeyCode::Quote => Some('''),
+        KeyCode::Quote => Some('\''),
         KeyCode::BracketLeft => Some('['),
         KeyCode::BracketRight => Some(']'),
         KeyCode::Backslash => Some('\\'),
