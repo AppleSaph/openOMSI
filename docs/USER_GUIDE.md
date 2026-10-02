@@ -275,6 +275,9 @@ view. This avoids mixing offset screen-space and geometry projections on the bus
 Other objects use the current frame's colour and a private hit-depth texture that includes
 reflective windows. From inside the bus, its own panes let the rays reach the street;
 glass tint and rain films attenuate the reflection along with the scene behind them.
+Vanilla blends wet-road reflections and fog in the original encoded colour space.
+Rain drops refract a separate, full-resolution copy of the current scene, including
+its puddle reflections, so wet glass and moving wipers do not feed back into later frames.
 Rays run at half resolution, capped at 518400 pixels and 48 steps;
 the local bus capture has the same pixel cap and a 60 m distance limit. Dry roads,
 snow-covered roads and mirror views skip these passes. Reflections beyond the local road

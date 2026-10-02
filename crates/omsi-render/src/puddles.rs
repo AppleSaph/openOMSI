@@ -338,7 +338,7 @@ pub(super) struct Targets {
     trace: wgpu::TextureView,
     blur: wgpu::TextureView,
     filtered: wgpu::TextureView,
-    view: wgpu::TextureView,
+    pub(super) view: wgpu::TextureView,
     trace_bg: wgpu::BindGroup,
     blur_x_bg: wgpu::BindGroup,
     blur_y_bg: wgpu::BindGroup,
@@ -393,7 +393,8 @@ impl Targets {
                     dimension: wgpu::TextureDimension::D2,
                     format: HDR_FORMAT,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC,
                     view_formats: &[],
                 })
                 .create_view(&Default::default())
@@ -607,7 +608,13 @@ impl Renderer {
                 origins.len() as f32,
                 w as f32,
                 h as f32,
-                if enhanced { 1.0 } else { 0.0 },
+                if enhanced {
+                    1.0
+                } else if lighting.classic {
+                    0.0
+                } else {
+                    -1.0
+                },
             ],
             vehicle_parts: parts,
         };
@@ -944,7 +951,12 @@ mod tests {
                             Vec3::new(-half, y, half),
                         ],
                         normals: vec![-Vec3::Y; 4],
-                        uvs: vec![glam::Vec2::ZERO; 4],
+                        uvs: vec![
+                            glam::Vec2::ZERO,
+                            glam::Vec2::X,
+                            glam::Vec2::ONE,
+                            glam::Vec2::Y,
+                        ],
                         ranges: vec![(0, 6, 0)],
                         indices: vec![0, 1, 2, 0, 2, 3],
                         one_sided: false,
@@ -1040,7 +1052,10 @@ mod tests {
                             "opaque receiver: {receiver}"
                         );
                         let expected_hit = if inside { receiver } else { 0.019019 };
-                        assert!((hit - expected_hit).abs() < 1e-5, "glass hit: {hit}; MSAA={msaa}, enhanced={enhanced}, classic={classic}, inside={inside}");
+                        assert!(
+                            (hit - expected_hit).abs() < 1e-5,
+                            "glass hit: {hit}; MSAA={msaa}, enhanced={enhanced}, classic={classic}, inside={inside}"
+                        );
                     }
                 }
             }
@@ -1139,7 +1154,12 @@ mod tests {
                     &MeshData {
                         positions,
                         normals: vec![normal; 4],
-                        uvs: vec![glam::Vec2::ZERO; 4],
+                        uvs: vec![
+                            glam::Vec2::ZERO,
+                            glam::Vec2::X,
+                            glam::Vec2::ONE,
+                            glam::Vec2::Y,
+                        ],
                         indices: vec![0, 1, 2, 0, 2, 3],
                         ranges: vec![(0, 6, 0)],
                         one_sided: false,
@@ -1235,7 +1255,10 @@ mod tests {
                         .zip(without[128 * 70 * 4..].chunks_exact(4))
                         .map(|(a, b)| (a[0] as i64 - a[1] as i64) - (b[0] as i64 - b[1] as i64))
                         .sum();
-                    assert!(red_change > 1000, "missing road reflection: {red_change}; MSAA={msaa}, enhanced={enhanced}, classic={classic}, glass={glass}");
+                    assert!(
+                        red_change > 1000,
+                        "missing road reflection: {red_change}; MSAA={msaa}, enhanced={enhanced}, classic={classic}, glass={glass}"
+                    );
                     reflection.push(red_change);
                 }
                 assert!(
@@ -1246,6 +1269,149 @@ mod tests {
                     reflection[2] > reflection[0] / 4,
                     "rain film hid the reflection: {reflection:?}"
                 );
+                // No falling rain ripples: the clean scene is static even while the
+                // film's drops move. Its refraction source must exclude those drops
+                // on every frame, and a wiped film must clear immediately.
+                let steady = Lighting {
+                    rain: 0.0,
+                    ..lighting
+                };
+                scene.instances[window].visible = true;
+                r.set_params(&mut scene, rain, &[0.0], true, &[]);
+                scene.dirty = true;
+                // Settle the sky/probe after switching the weather to zero rain.
+                for _ in 0..3 {
+                    r.render_to_image(&mut scene, 128, 128, &camera, &steady).unwrap();
+                }
+                let clean = r
+                    .render_to_image(&mut scene, 128, 128, &camera, &steady)
+                    .unwrap();
+                fn read_behind(r: &Renderer, enhanced: bool) -> Vec<f32> {
+                    let texture = r.glass_prev.as_ref().unwrap().0.texture();
+                    let row = 128 * if texture.format() == HDR_FORMAT { 8 } else { 4 };
+                    let buffer = r.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("rain refraction readback"),
+                        size: row * 128,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    });
+                    let mut encoder = r.device.create_command_encoder(&Default::default());
+                    encoder.copy_texture_to_buffer(
+                        wgpu::TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        wgpu::TexelCopyBufferInfo {
+                            buffer: &buffer,
+                            layout: wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(row as u32),
+                                rows_per_image: Some(128),
+                            },
+                        },
+                        wgpu::Extent3d {
+                            width: 128,
+                            height: 128,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                    r.queue.submit([encoder.finish()]);
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    buffer.slice(..).map_async(wgpu::MapMode::Read, move |v| {
+                        tx.send(v).unwrap();
+                    });
+                    r.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    rx.recv().unwrap().unwrap();
+                    let result = buffer.slice(..).get_mapped_range().to_vec();
+                    buffer.unmap();
+                    if texture.format() != HDR_FORMAT {
+                        return result.into_iter().map(|v| v as f32 / 255.0).collect();
+                    }
+                    let pre = if enhanced {
+                        r.exposure.unwrap_or(0.0).exp()
+                    } else {
+                        1.0
+                    };
+                    result
+                        .chunks_exact(2)
+                        .enumerate()
+                        .map(|(i, bytes)| {
+                            let v = u16::from_le_bytes(bytes.try_into().unwrap());
+                            let exponent = (v >> 10) & 31;
+                            let mantissa = (v & 1023) as f32;
+                            let value = if exponent == 0 {
+                                mantissa * 2.0f32.powi(-24)
+                            } else {
+                                (1.0 + mantissa / 1024.0) * 2.0f32.powi(exponent as i32 - 15)
+                            };
+                            value / if i % 4 == 3 { 1.0 } else { pre }
+                        })
+                        .collect()
+                }
+                let behind = read_behind(&r, enhanced);
+                r.set_params(&mut scene, rain, &[1.0], true, &[]);
+                let mut drop_change = 0u64;
+                for _ in 0..4 {
+                    let wet = r
+                        .render_to_image(&mut scene, 128, 128, &camera, &steady)
+                        .unwrap();
+                    drop_change = wet
+                        .iter()
+                        .zip(&clean)
+                        .map(|(a, b)| a.abs_diff(*b) as u64)
+                        .sum();
+                    let current = read_behind(&r, enhanced);
+                    let drift = current
+                        .iter()
+                        .zip(&behind)
+                        .map(|(a, b)| (a - b).abs())
+                        .sum::<f32>()
+                        / current.len() as f32;
+                    assert!(
+                        drift < 0.002,
+                        "rain/wiper feedback: {drift}; MSAA={msaa}, enhanced={enhanced}, classic={classic}"
+                    );
+                }
+                assert!(
+                    drop_change > 300,
+                    "rain film was not exercised: {drop_change}"
+                );
+                r.set_params(&mut scene, rain, &[0.0], true, &[]);
+                let wiped = r
+                    .render_to_image(&mut scene, 128, 128, &camera, &steady)
+                    .unwrap();
+                let residual: u64 = wiped
+                    .iter()
+                    .zip(&clean)
+                    .map(|(a, b)| a.abs_diff(*b) as u64)
+                    .sum();
+                assert!(
+                    residual < 128 * 128,
+                    "wiper left old film colour: {residual}"
+                );
+
+                // Classic D3D fog is an encoded vertex colour. A mid-grey fog
+                // should remain 128, rather than being encoded a second time to 188.
+                if classic {
+                    scene.instances[window].visible = false;
+                    scene.dirty = true;
+                    let fog = Lighting {
+                        fog_color: Vec3::splat(0.5),
+                        fog_density: 20.0,
+                        inside: None,
+                        ..steady
+                    };
+                    let picture = r
+                        .render_to_image(&mut scene, 128, 128, &camera, &fog)
+                        .unwrap();
+                    let pixel = &picture[(80 * 128 + 64) * 4..][..3];
+                    assert!(
+                        pixel.iter().all(|v| (126..=129).contains(v)),
+                        "double-encoded Vanilla fog: {pixel:?}"
+                    );
+                }
             }
         }
     }
@@ -1313,7 +1479,9 @@ fn vehicle_capture_splits_shared_batches_without_drawing_ai_entries() {
             .collect::<Vec<_>>(),
         vec![0..2, 3..4, 5..6]
     );
-    assert!(selected
-        .iter()
-        .all(|b| (b.pipe, b.mesh, b.first, b.count, b.material) == (7, 3, 12, 24, 4)));
+    assert!(
+        selected
+            .iter()
+            .all(|b| (b.pipe, b.mesh, b.first, b.count, b.material) == (7, 3, 12, 24, 4))
+    );
 }

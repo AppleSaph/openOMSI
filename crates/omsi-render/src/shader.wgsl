@@ -1360,11 +1360,11 @@ fn rain_through(g: RainGlass, v: vec3<f32>) -> vec3<f32> {
 }
 
 // What the eye sees along `through` (the way out of a drop, `rain_through`) from the drop
-// at `world`: the street behind the glass as the last frame drew it, looked up where that
+// at `world`: the clean current street behind the glass, looked up where that
 // way meets it a few metres on - through a drop's rim the way bends far round, so the
 // drop holds the whole street small and upside down, the sky at its bottom, as a real
 // one does. The rain film's reflection slot holds that picture (see `Renderer::glass_slot`);
-// without it (a mirror's view, the first frame of the rain) or off the picture's edge,
+// without it (a mirror's view) or off the picture's edge,
 // `fallback` (the sky's colours). `scale` takes the picture into the caller's units.
 fn rain_behind(world: vec3<f32>, through: vec3<f32>, fallback: vec3<f32>, scale: f32) -> vec3<f32> {
     if (camera.flags.z > -0.5 || dot(through, through) < 1e-4) {
@@ -1416,7 +1416,8 @@ fn rain_env_vanilla(d: vec3<f32>) -> vec3<f32> {
     let horizon = max(camera.fog.rgb, camera.ambient.rgb);
     let ground = camera.ambient.rgb * 0.4 + camera.sun_color.rgb * camera.sun_dir.w * 0.06;
     let sky = mix(horizon, zenith, smoothstep(0.0, 0.5, d.z));
-    return mix(ground, sky, smoothstep(-0.06, 0.04, d.z));
+    let c = mix(ground, sky, smoothstep(-0.06, 0.04, d.z));
+    return select(c, srgb_decode(c), camera.sky_color.w > 0.5);
 }
 
 @fragment
@@ -1702,9 +1703,16 @@ fn shade_vanilla(in: FsIn, puddle_weight: ptr<function, f32>, eye: vec3<f32>) ->
         let puddle = road_puddle_coverage(in.world, n, wet);
         let water = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
         let weight = clamp(mix(fresnel * wet * 0.85, water * wet, puddle), 0.0, 0.9);
-        lit = lit * mix(1.0, 0.55, wet);
         let sheen = camera.sky_color.rgb * 0.5 + camera.sun_color.rgb * camera.sun_dir.w * 0.35;
-        lit = mix(lit, sheen, weight);
+        if (classic) {
+            // OMSI's fixed-function stages blend encoded colours. Mixing weather
+            // vertex colours directly into linear light made a grey wet road milky.
+            // Darken the asphalt in linear light, before converting for the stage
+            // blend. Multiplying its encoded colour by 0.55 made it almost black.
+            lit = srgb_decode(mix(srgb_encode(lit * mix(1.0, 0.75, wet)), sheen, weight));
+        } else {
+            lit = mix(lit * mix(1.0, 0.55, wet), sheen, weight);
+        }
         *puddle_weight = weight * puddle;
     }
     // snow: the ground, the roads and every upward-facing surface whiten under it
@@ -1728,6 +1736,11 @@ fn shade_vanilla(in: FsIn, puddle_weight: ptr<function, f32>, eye: vec3<f32>) ->
     let f = 1.0 - exp(-fog_distance(in.world) * camera.fog.w);
     *puddle_weight *= 1.0 - clamp(f, 0.0, 1.0);
     var rgb = mix(lit, camera.fog.xyz, clamp(f, 0.0, 1.0));
+    if (classic) {
+        // D3D's fixed-function fog blends the encoded vertex fog colour too.
+        // Treating that colour as linear raised a mid-grey fog from 128 to 188.
+        rgb = srgb_decode(mix(srgb_encode(lit), camera.fog.xyz, clamp(f, 0.0, 1.0)));
+    }
     if (camera.flags.z > 0.0) {
         // Never taken: flags.z (the old enhanced look's aerial perspective) is always 0
         // now - the enhanced path has its own fragment shader (enhanced.wgsl). The branch
