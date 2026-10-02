@@ -1469,7 +1469,7 @@ impl ApplicationHandler for App {
                         // other key never brought it back straight
                         let (l, r) = (self.keys.contains(&KeyCode::ArrowLeft), self.keys.contains(&KeyCode::ArrowRight));
                         if l || r {
-                            self.look.0 = (self.look.0 + step * 1.5 * (r as i32 - l as i32) as f32).clamp(-140.0, 140.0);
+                            self.look.0 = crate::input_script::cab_look_yaw(&self.view, self.look.0 + step * 1.5 * (r as i32 - l as i32) as f32);
                             self.arrow_glance = true;
                         } else if self.arrow_glance {
                             self.look.0 *= (-6.0 * dt).exp();
@@ -1502,7 +1502,7 @@ impl ApplicationHandler for App {
                         self.look.1 = (self.look.1 - step * 0.7).max(-85.0);
                     }
                     if self.view != "outside" {
-                        self.look.0 = self.look.0.clamp(-140.0, 140.0);
+                        self.look.0 = crate::input_script::cab_look_yaw(&self.view, self.look.0);
                     }
                     // Ctrl+Shift+Page Up / Page Down held: the clock runs forwards / backwards,
                     // a quarter of an hour per second at first, faster the longer it is held
