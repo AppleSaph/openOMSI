@@ -485,9 +485,39 @@ pub(crate) fn door_group_to_fire(v: &mut omsi_sim::VehicleInstance, group: &[Str
     }
 }
 
+/// Whether the leaf door trigger `name` works is open now: what the trigger does to the
+/// doors' targets when tried (a target it turns down was up), else the target its script
+/// names first. The first one named can be a branch not taken: the SD202's
+/// `bus_doorfront1` names the rear doors' target (`doorTarget_23`, for a bus whose rear
+/// door the front buttons work) before its own leaf's, so with both front leaves open
+/// the second Shift+1 shut only one of them.
+pub(crate) fn door_trigger_open(v: &mut omsi_sim::VehicleInstance, name: &str) -> Option<bool> {
+    let targets: Vec<usize> = v
+        .ty
+        .program
+        .var_names
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| {
+            let n = n.to_ascii_lowercase();
+            n.contains("target") || n.contains("soll")
+        })
+        .map(|(k, _)| k)
+        .collect();
+    if !targets.is_empty() {
+        let tried = v.trial_triggers(&[name]);
+        let now = &v.state.vars;
+        let changed = targets.iter().find(|&&k| (tried.get(k).copied().unwrap_or(0.0) > 0.5) != (now.get(k).copied().unwrap_or(0.0) > 0.5));
+        if let Some(&k) = changed {
+            return Some(now.get(k).copied().unwrap_or(0.0) > 0.5);
+        }
+    }
+    door_trigger_target(&v.ty.program, name).and_then(|id| v.state.vars.get(id as usize).copied()).map(|x| x > 0.5)
+}
+
 /// Which triggers of a door key's group the doors' targets ask for (see
 /// `door_group_to_fire`).
-fn door_group_plan(v: &omsi_sim::VehicleInstance, group: &[String]) -> Vec<String> {
+fn door_group_plan(v: &mut omsi_sim::VehicleInstance, group: &[String]) -> Vec<String> {
     // an open and close pair (`open|close`): whichever fits the leaf now
     let group: Vec<String> = group
         .iter()
@@ -503,7 +533,7 @@ fn door_group_plan(v: &omsi_sim::VehicleInstance, group: &[String]) -> Vec<Strin
     let group = &group[..];
     let states: Vec<Option<bool>> = group
         .iter()
-        .map(|n| door_trigger_target(&v.ty.program, n).and_then(|id| v.state.vars.get(id as usize).copied()).map(|x| x > 0.5))
+        .map(|n| door_trigger_open(v, n))
         .collect();
     if group.len() < 2 || states.iter().any(|s| s.is_none()) {
         return group.to_vec();
@@ -548,17 +578,17 @@ impl Player {
         let groups = door_keys(&self.vehicle.ty);
         let fire: Vec<String> = if n == 0 {
             let doors: Vec<&Vec<String>> = groups.iter().filter(|g| !(g.len() == 1 && g[0] == "bus_dooraft")).collect();
-            let is_open = |v: &omsi_sim::VehicleInstance, g: &Vec<String>| {
-                g.iter().any(|t| {
-                    let open = t.split('|').next().unwrap_or(t);
-                    door_trigger_target(&v.ty.program, open).and_then(|id| v.state.vars.get(id as usize).copied()).is_some_and(|x| x > 0.5)
-                        || trigger_leaves(&v.ty.program, open).iter().any(|l| v.var(l).is_some_and(|x| x > 0.5))
+            let is_open = |v: &mut omsi_sim::VehicleInstance, g: &Vec<String>| {
+                g.iter().any(|t| match t.split_once('|') {
+                    Some((open, _)) => trigger_leaves(&v.ty.program, open).iter().any(|l| v.var(l).is_some_and(|x| x > 0.5)),
+                    None => door_trigger_open(v, t) == Some(true),
                 })
             };
-            let any_open = doors.iter().any(|g| is_open(&self.vehicle, g));
+            let open: Vec<bool> = doors.iter().map(|g| is_open(&mut self.vehicle, g)).collect();
+            let any_open = open.iter().any(|o| *o);
             let mut fire = Vec::new();
-            for g in doors {
-                if !any_open || is_open(&self.vehicle, g) {
+            for (g, o) in doors.iter().zip(&open) {
+                if !any_open || *o {
                     fire.extend(door_group_to_fire(&mut self.vehicle, g));
                 }
             }
