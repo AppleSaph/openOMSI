@@ -354,7 +354,6 @@ pub struct Frame<'a> {
     pub menu: Option<(usize, &'a [(&'a str, &'a str)])>,
     /// The first line shown when a finger scrolled the menu (`App::menu_top`).
     pub menu_top: Option<f32>,
-    pub vr_nav_editing: bool,
     /// Ids of the game menu's lines that are greyed out and cannot be chosen (the timetable
     /// without an active route).
     pub menu_disabled: &'a [&'a str],

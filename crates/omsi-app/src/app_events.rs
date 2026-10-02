@@ -248,21 +248,6 @@ impl ApplicationHandler for App {
                 if self.vr_nav_edit.is_some() && (!self.vr_active() || self.view != "driver") {
                     self.finish_vr_nav_edit();
                 }
-                // Refresh cached options when switching between VR and desktop, including
-                // a runtime disconnect while the placement submenu is still open.
-                let vr_nav_available = self.vr_active() && self.player.is_some();
-                let refresh_options = match self.list_kind.as_ref() {
-                    Some(crate::game_lists::ListKind::VrNavigator) => !vr_nav_available,
-                    Some(crate::game_lists::ListKind::Options) => {
-                        let has_vr_nav = self.admin_list.as_ref().is_some_and(|items|
-                            items.iter().any(|(_, action)| action == "vr_navigator"));
-                        has_vr_nav != vr_nav_available
-                    }
-                    _ => false,
-                };
-                if refresh_options {
-                    self.open_list(crate::game_lists::ListKind::Options);
-                }
                 #[cfg(windows)]
                 self.poll_vr_cursor_position();
                 // OMSI's autosave of the last situation: every five minutes of play
