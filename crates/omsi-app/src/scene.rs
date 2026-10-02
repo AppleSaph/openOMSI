@@ -10600,9 +10600,9 @@ fn vehicle_texture_names(
         }
         for o in &vm.overrides {
             for name in [
-                o.nightmap.clone(),
+                o.nightmap.clone().map(|t| subst(&t)),
                 o.transmap.clone().map(|t| subst(&t)),
-                o.lightmap.clone().map(|l| l.0),
+                o.lightmap.clone().map(|l| subst(&l.0)),
                 o.envmap.clone().map(|e| e.0),
                 o.envmap_mask
                     .clone()
@@ -11688,16 +11688,20 @@ impl World {
                     if omsi_cfg::env::var_os("OMSI_FORCE_OPAQUE").is_some() && !dirt_overlay {
                         alpha = AlphaMode::Opaque;
                     }
+                    // (a night or light map named as a [CTCTexture] is the paint scheme's
+                    // picture as well, like the diffuse texture and the transparency map:
+                    // looked up by the model's own name, a destination display lit by its own
+                    // texture glowed with the model's default text over the repaint's, #895)
                     let night = ov.iter().find_map(|o| o.nightmap.clone()).and_then(|t| {
-                        tex!(&t, &dirs_ref)
+                        tex!(&subst(&t), &dirs_ref)
                     });
                     let lightmap = ov.iter().find_map(|o| o.lightmap.clone()).and_then(|(t, _)| {
-                        tex!(&t, &dirs_ref)
+                        tex!(&subst(&t), &dirs_ref)
                     });
                     // (a `\S:n` panel lit all over by its light map is an LED panel; one
                     // whose light map is a picture is a flipdot: see `is_white_lightmap`)
                     let lm_white = |ov: &[&MaterialDef]| -> bool {
-                        ov.iter().find_map(|o| o.lightmap.as_ref()).and_then(|(t, _)| lightmap_is_white(t, &dirs_ref)).unwrap_or(true)
+                        ov.iter().find_map(|o| o.lightmap.as_ref()).and_then(|(t, _)| lightmap_is_white(&subst(t), &dirs_ref)).unwrap_or(true)
                     };
                     // [matl_envmap] tex factor: reflectivity = factor (saturating at 1) x the
                     // reflection mask, which is the [matl_envmap_mask]'s alpha or else the
@@ -11805,8 +11809,8 @@ impl World {
                     };
                     let mut item_look = |ov_item: &Vec<&MaterialDef>| -> Look {
                         let mut find_tex = |t: &str| -> Option<TextureId> { tex!(t, &dirs_ref) };
-                        let it_night = ov_item.iter().find_map(|o| o.nightmap.clone()).and_then(|t| find_tex(&t)).or(night);
-                        let it_light = ov_item.iter().find_map(|o| o.lightmap.clone()).and_then(|(t, _)| find_tex(&t)).or(lightmap);
+                        let it_night = ov_item.iter().find_map(|o| o.nightmap.clone()).and_then(|t| find_tex(&subst(&t))).or(night);
+                        let it_light = ov_item.iter().find_map(|o| o.lightmap.clone()).and_then(|(t, _)| find_tex(&subst(&t))).or(lightmap);
                         // the item's own transparency map, else the plain material's
                         let it_script_trans = match ov_item.iter().find_map(|o| o.transmap.clone()) {
                             Some(t) => t.trim().strip_prefix("\\S:").and_then(|n| n.trim().parse::<usize>().ok()),
@@ -11905,7 +11909,7 @@ impl World {
                         let list = ov.iter().map(|o| &o.lightmaps).find(|l| !l.is_empty())?;
                         let maps: Vec<(PathBuf, String)> = list
                             .iter()
-                            .filter_map(|(t, v)| omsi_texture::find_texture(t, &dirs_ref).map(|p| (p, v.clone())))
+                            .filter_map(|(t, v)| omsi_texture::find_texture(&subst(t), &dirs_ref).map(|p| (p, v.clone())))
                             .collect();
                         (maps.len() >= 2 && maps.len() <= 8).then(|| MultiLight {
                             maps,
