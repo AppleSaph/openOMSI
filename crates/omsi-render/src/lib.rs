@@ -1316,9 +1316,9 @@ pub struct Renderer {
     /// The screen size each object (origin and radius) was judged by in the main view's last
     /// frame: all its meshes and LOD levels take the same one, so exactly one level of an
     /// object is drawn and it does not flip between levels with the view's jitter.
-    object_sizes: std::cell::RefCell<HashMap<[u64; 4], f32>>,
+    object_sizes: std::cell::RefCell<hashbrown::HashMap<[u64; 4], f32>>,
     /// Cleared and reused as the next main view's object-size history.
-    object_sizes_scratch: std::cell::RefCell<HashMap<[u64; 4], f32>>,
+    object_sizes_scratch: std::cell::RefCell<hashbrown::HashMap<[u64; 4], f32>>,
     /// The far shadow cascade as last drawn: its light matrix, frames since, the render
     /// origin and the sun it was drawn for.
     shadow_far_cache: std::cell::Cell<(Mat4, u32, DVec3, Vec3)>,
@@ -3803,8 +3803,8 @@ impl Renderer {
             dynamic_scale: std::cell::Cell::new(1.0),
             flicker: std::cell::RefCell::new(HashMap::new()),
             cull_drawn: std::cell::RefCell::new(Vec::new()),
-            object_sizes: std::cell::RefCell::new(HashMap::new()),
-            object_sizes_scratch: std::cell::RefCell::new(HashMap::new()),
+            object_sizes: Default::default(),
+            object_sizes_scratch: Default::default(),
             shadow_far_cache: std::cell::Cell::new((Mat4::IDENTITY, 0, DVec3::ZERO, Vec3::ZERO)),
             shadow_near_cache: std::cell::Cell::new((Mat4::IDENTITY, 0, DVec3::ZERO, Vec3::ZERO)),
             xr_shadow_cache: std::cell::Cell::new(None),
@@ -7845,7 +7845,7 @@ impl Renderer {
             sizes_now.clear();
             (sizes_before, sizes_now)
         } else {
-            (HashMap::new(), HashMap::new())
+            Default::default()
         };
         let cull_one = |i: usize, sizes: &mut Vec<([u64; 4], f32)>| -> Option<(usize, f32, bool)> {
             let inst = &scene.instances[i];
@@ -8679,9 +8679,15 @@ impl Renderer {
             && !single
             && prepass_on
             && omsi_cfg::env::var_os("OMSI_NO_MSAA_PREPASS").is_none();
+        let parts = if !cfg!(any(target_os = "macos", target_os = "ios")) && main_bundles.len() >= 2 && omsi_cfg::env::var_os("OMSI_NO_MAIN_SPLIT").is_none() {
+            main_bundles.len().min(2)
+        } else {
+            1
+        };
+        let mut lead = (parts > 1).then(|| self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("main part") }));
         if msaa_prepass {
             if let (Some(pipes), Some(t)) = (self.prepass_msaa_pipelines.as_ref(), targets.as_ref()) {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                let mut pass = lead.as_mut().unwrap_or(&mut encoder).begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("msaa depth prepass"),
                     color_attachments: &[],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -8755,30 +8761,34 @@ impl Renderer {
                 depth_slice: None,
                 resolve_target: h.mask_msaa.as_ref().map(|_| &h.mask),
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    load: if parts > 1 { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) },
                     store: if h.mask_msaa.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
                 },
             });
-            let parts = if hdr.is_none() && !msaa_prepass && !cfg!(any(target_os = "macos", target_os = "ios")) && main_bundles.len() >= 2 && omsi_cfg::env::var_os("OMSI_NO_MAIN_SPLIT").is_none() {
-                main_bundles.len().min(2)
-            } else {
-                1
-            };
             let per_part = main_bundles.len().div_ceil(parts.max(1));
             let sky_clear = wgpu::LoadOp::Clear(wgpu::Color { r: sky.x as f64, g: sky.y as f64, b: sky.z as f64, a: 1.0 });
             let depth_first = if share_depth || msaa_prepass { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(0.0) };
             for g in 0..parts.saturating_sub(1) {
                 let first = g == 0;
-                let mut part = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("main part") });
+                let mut part = lead.take().unwrap_or_else(|| self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("main part") }));
                 {
-                    let mut pass = part.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("main part"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    let part_colors = [
+                        Some(wgpu::RenderPassColorAttachment {
                             view: draw_view,
                             depth_slice: None,
                             resolve_target: None,
                             ops: wgpu::Operations { load: if first { sky_clear } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store },
-                        })],
+                        }),
+                        hdr.map(|h| wgpu::RenderPassColorAttachment {
+                            view: h.mask_msaa.as_ref().unwrap_or(&h.mask),
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations { load: if first { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store },
+                        }),
+                    ];
+                    let mut pass = part.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("main part"),
+                        color_attachments: if part_colors[1].is_some() { &part_colors[..] } else { &part_colors[..1] },
                         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                             view: depth_view,
                             depth_ops: Some(wgpu::Operations { load: if first { depth_first } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store }),
@@ -10048,7 +10058,7 @@ fn batch_items(
     out: &mut Vec<Batch>,
 ) {
     if sort {
-        items.sort_unstable_by_key(|d| (d.pipe, d.mesh, d.range, d.material));
+        items.sort_unstable_by_key(|d| (d.pipe, d.material, d.mesh, d.range));
     }
     let mut k = 0;
     while k < items.len() {
