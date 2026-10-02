@@ -5617,12 +5617,13 @@ impl Traffic {
                                 car.id
                             );
                         }
-                    } else if st.route.is_empty() && self.net.lanes[st.lane].kind != LaneKind::Air {
-                        // a dead end: stop before it (an aircraft flies on)
-                        let at = end - 0.5;
-                        stop_at = Some(stop_at.map(|x| x.min(at)).unwrap_or(at));
-                        car.gone = true;
                     } else if st.route.is_empty() {
+                        // a dead end (the map's edge, the end of a street spline): Omsi.exe
+                        // drives on at speed and deletes the car the frame it runs out of
+                        // road (0x71dc9c finds no next segment, 0x6fe3fc deletes it), and
+                        // `drive` takes it off there. Braking for the end, the cars stopped
+                        // there one by one and those behind queued into a stop-and-go (an
+                        // aircraft flies on in any case)
                         car.gone = true;
                     }
                 }
@@ -5713,6 +5714,9 @@ impl Traffic {
                 log::info!("t={:.2} car {}: v {:.2} lane {} s {:.1}/{:.1} upcoming {:?} bend {:.2} desired {:.2} lead {:?} stop {:?} why {:?}", self.time, car.id, car.state.speed, car.state.lane, car.state.s, self.net.lanes[car.state.lane].length(), up, car.state.curve_speed(&self.net), car.state.desired_accel(&self.net, lead_now, stop_at), lead_now.map(|l| l.gap), stop_at.map(|x| x - car.state.front), car.why);
             }
             if !car.state.drive(&self.net, dt, lead_now, stop_at) {
+                if debug {
+                    log::info!("t={:.1}: car {} ran out of road at {:.1} m/s: taken off", self.time, car.id, car.state.speed);
+                }
                 remove.push(i);
                 continue;
             }
