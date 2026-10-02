@@ -237,17 +237,6 @@ fn ao_at(frag: vec2<f32>, world: vec3<f32>) -> f32 {
 @group(0) @binding(18) var t_lmap: texture_2d<f32>;
 @group(0) @binding(19) var<uniform> lmap: vec4<f32>;
 
-// The sRGB curve both ways (the textures are sampled through it, the target writes through
-// it): the classic picture multiplies on the encoded values, as Omsi.exe does.
-fn srgb_encode(c: vec3<f32>) -> vec3<f32> {
-    let x = max(c, vec3<f32>(0.0));
-    return select(1.055 * pow(x, vec3<f32>(1.0 / 2.4)) - 0.055, x * 12.92, x <= vec3<f32>(0.0031308));
-}
-fn srgb_decode(c: vec3<f32>) -> vec3<f32> {
-    let x = max(c, vec3<f32>(0.0));
-    return select(pow((x + 0.055) / 1.055, vec3<f32>(2.4)), x / 12.92, x <= vec3<f32>(0.04045));
-}
-
 // The tile light map's light at a world point (black outside the loaded square).
 fn light_map_at(p: vec3<f32>) -> vec3<f32> {
     if (lmap.w < 0.5) {
@@ -1705,10 +1694,8 @@ fn shade_vanilla(in: FsIn, puddle_weight: ptr<function, f32>, eye: vec3<f32>) ->
         let weight = clamp(mix(fresnel * wet * 0.85, water * wet, puddle), 0.0, 0.9);
         let sheen = camera.sky_color.rgb * 0.5 + camera.sun_color.rgb * camera.sun_dir.w * 0.35;
         if (classic) {
-            // OMSI's fixed-function stages blend encoded colours. Mixing weather
-            // vertex colours directly into linear light made a grey wet road milky.
-            // Darken the asphalt in linear light, before converting for the stage
-            // blend. Multiplying its encoded colour by 0.55 made it almost black.
+            // Vanilla blends encoded weather colours, but asphalt darkening
+            // must stay in linear light to avoid turning the road black.
             lit = srgb_decode(mix(srgb_encode(lit * mix(1.0, 0.75, wet)), sheen, weight));
         } else {
             lit = mix(lit * mix(1.0, 0.55, wet), sheen, weight);

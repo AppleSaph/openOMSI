@@ -36,6 +36,7 @@ pub(super) struct Uniform {
 
 pub(super) fn shader_source() -> String {
     [
+        include_str!("colour.wgsl"),
         include_str!("puddle_common.wgsl"),
         include_str!("puddle_reflection.wgsl"),
     ]
@@ -477,7 +478,7 @@ impl Targets {
             post_group(&hdr.up[0], &r.adapt_views[0]),
             post_group(&hdr.up[0], &r.adapt_views[1]),
         ];
-        let classic_bg = r.classic_picture_group(&view);
+        let classic_bg = r.picture_group(&view);
         Self {
             size,
             source_depth,
@@ -891,256 +892,213 @@ mod tests {
     #[test]
     #[ignore = "requires a graphics adapter; checks transparent window reflection depth"]
     fn glass_hit_depth_preserves_receiver_depth_across_resizes() {
-        for msaa in [1, 4] {
-            let instance =
-                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-            let mut r = pollster::block_on(Renderer::new_with(
-                &instance,
-                None,
-                Some(wgpu::TextureFormat::Rgba8UnormSrgb),
-                RenderOptions {
-                    msaa,
-                    ssao: false,
-                    shadow_size: 1024,
-                    render_scale: 1.0,
-                    ..Default::default()
-                },
-            ))
-            .expect("test renderer");
-            let mut scene = r.new_scene();
-            let back = r.add_material_wet(
+        let mut r = test_renderer(4);
+        let mut scene = r.new_scene();
+        let back = test_material(
+            &r,
+            &mut scene,
+            [1.0; 4],
+            false,
+            1.0,
+            MaterialExtra::default(),
+        );
+        let pane = test_material(
+            &r,
+            &mut scene,
+            [0.5, 0.5, 0.5, 0.15],
+            false,
+            0.0,
+            MaterialExtra {
+                glass: true,
+                ..Default::default()
+            },
+        );
+        for (y, half, material) in [(10.0, 10.0, back), (5.0, 2.0, pane)] {
+            test_quad(
+                &r,
                 &mut scene,
-                None,
-                AlphaMode::Opaque,
-                [1.0; 4],
-                false,
-                None,
-                None,
-                None,
-                None,
-                None,
-                [0.0; 3],
-                1.0,
+                [
+                    [-half, y, -half],
+                    [half, y, -half],
+                    [half, y, half],
+                    [-half, y, half],
+                ],
+                -Vec3::Y,
+                material,
             );
-            let pane = r.add_material_inner(
-                &mut scene,
-                None,
-                AlphaMode::Blend,
-                [0.5, 0.5, 0.5, 0.15],
-                false,
-                None,
-                None,
-                None,
-                None,
-                None,
-                [0.0; 3],
-                0.0,
-                MaterialExtra {
-                    glass: true,
-                    ..Default::default()
-                },
-            );
-            for (y, half, material) in [(10.0, 10.0, back), (5.0, 2.0, pane)] {
-                let mesh = r.add_mesh(
-                    &mut scene,
-                    &MeshData {
-                        positions: vec![
-                            Vec3::new(-half, y, -half),
-                            Vec3::new(half, y, -half),
-                            Vec3::new(half, y, half),
-                            Vec3::new(-half, y, half),
-                        ],
-                        normals: vec![-Vec3::Y; 4],
-                        uvs: vec![
-                            glam::Vec2::ZERO,
-                            glam::Vec2::X,
-                            glam::Vec2::ONE,
-                            glam::Vec2::Y,
-                        ],
-                        ranges: vec![(0, 6, 0)],
-                        indices: vec![0, 1, 2, 0, 2, 3],
-                        one_sided: false,
-                    },
+        }
+        let camera = Camera {
+            position: DVec3::ZERO,
+            yaw: 0.0,
+            pitch: 0.0,
+            roll: 0.0,
+            fov_deg: 90.0,
+            near: 0.1,
+            far: 100.0,
+        };
+        let mut lighting = Lighting {
+            enhanced: true,
+            wetness: 1.0,
+            shadows: false,
+            ..Default::default()
+        };
+        fn depth_at_centre(r: &Renderer, texture: &wgpu::Texture, size: u32) -> f32 {
+            let bytes = r
+                .read_texture(texture, wgpu::TextureAspect::DepthOnly)
+                .unwrap();
+            let offset = ((size / 2 * size + size / 2) * 4) as usize;
+            f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        }
+        for inside in [false, true] {
+            lighting.inside =
+                inside.then_some((DVec3::ZERO, 0.0, [12.0, 12.0, 12.0, 0.0, 0.0, 0.0]));
+            for size in [64, 48, 64] {
+                r.render_to_image(&mut scene, size, size, &camera, &lighting)
+                    .unwrap();
+                let targets = r.hdr_targets[&(size, size)].puddles.as_ref().unwrap();
+                assert_eq!(
+                    targets.source_depth,
+                    *r.ao.as_ref().unwrap().depth_view.texture()
                 );
-                r.add_instance(
-                    &mut scene,
-                    mesh,
-                    DVec3::ZERO,
-                    Mat4::IDENTITY,
-                    vec![material],
+                // Read both textures below through an immutable renderer borrow.
+                let receiver = depth_at_centre(&r, &targets.source_depth, size);
+                let hit = depth_at_centre(&r, &targets.hit_depth, size);
+                assert!(
+                    (receiver - 0.009009).abs() < 1e-5,
+                    "opaque receiver: {receiver}"
                 );
-            }
-            let camera = Camera {
-                position: DVec3::ZERO,
-                yaw: 0.0,
-                pitch: 0.0,
-                roll: 0.0,
-                fov_deg: 90.0,
-                near: 0.1,
-                far: 100.0,
-            };
-            fn depth_at_centre(r: &Renderer, texture: &wgpu::Texture, size: u32) -> f32 {
-                let buffer = r.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("test reflection depth"),
-                    size: 256 * size as u64,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                });
-                let mut encoder = r.device.create_command_encoder(&Default::default());
-                encoder.copy_texture_to_buffer(
-                    wgpu::TexelCopyTextureInfo {
-                        texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::DepthOnly,
-                    },
-                    wgpu::TexelCopyBufferInfo {
-                        buffer: &buffer,
-                        layout: wgpu::TexelCopyBufferLayout {
-                            offset: 0,
-                            bytes_per_row: Some(256),
-                            rows_per_image: Some(size),
-                        },
-                    },
-                    wgpu::Extent3d {
-                        width: size,
-                        height: size,
-                        depth_or_array_layers: 1,
-                    },
-                );
-                r.queue.submit([encoder.finish()]);
-                let (tx, rx) = std::sync::mpsc::channel();
-                buffer.slice(..).map_async(wgpu::MapMode::Read, move |v| {
-                    tx.send(v).unwrap();
-                });
-                r.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-                rx.recv().unwrap().unwrap();
-                let data = buffer.slice(..).get_mapped_range();
-                let offset = (size / 2 * 256 + size / 2 * 4) as usize;
-                let depth = f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-                drop(data);
-                buffer.unmap();
-                depth
-            }
-            for (enhanced, classic) in [(false, true), (false, false), (true, false)] {
-                for inside in [false, true] {
-                    let lighting = Lighting {
-                        enhanced,
-                        classic,
-                        wetness: 1.0,
-                        shadows: false,
-                        inside: inside.then_some((
-                            DVec3::ZERO,
-                            0.0,
-                            [12.0, 12.0, 12.0, 0.0, 0.0, 0.0],
-                        )),
-                        ..Default::default()
-                    };
-                    for size in [64, 48, 64] {
-                        r.render_to_image(&mut scene, size, size, &camera, &lighting)
-                            .unwrap();
-                        let targets = r.hdr_targets[&(size, size)].puddles.as_ref().unwrap();
-                        assert_eq!(
-                            targets.source_depth,
-                            *r.ao.as_ref().unwrap().depth_view.texture()
-                        );
-                        // Read both textures below through an immutable renderer borrow.
-                        let receiver = depth_at_centre(&r, &targets.source_depth, size);
-                        let hit = depth_at_centre(&r, &targets.hit_depth, size);
-                        assert!(
-                            (receiver - 0.009009).abs() < 1e-5,
-                            "opaque receiver: {receiver}"
-                        );
-                        let expected_hit = if inside { receiver } else { 0.019019 };
-                        assert!(
-                            (hit - expected_hit).abs() < 1e-5,
-                            "glass hit: {hit}; MSAA={msaa}, enhanced={enhanced}, classic={classic}, inside={inside}"
-                        );
-                    }
-                }
+                let expected_hit = if inside { receiver } else { 0.019019 };
+                assert!((hit - expected_hit).abs() < 1e-5, "glass hit: {hit}");
             }
         }
+    }
+
+    fn test_renderer(msaa: u32) -> Renderer {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        pollster::block_on(Renderer::new_with(
+            &instance,
+            None,
+            Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+            RenderOptions {
+                msaa,
+                ssao: false,
+                fxaa: false,
+                shadow_size: 1024,
+                render_scale: 1.0,
+                ..Default::default()
+            },
+        ))
+        .expect("test renderer")
+    }
+
+    fn test_material(
+        r: &Renderer,
+        scene: &mut Scene,
+        colour: [f32; 4],
+        unlit: bool,
+        moisture: f32,
+        extra: MaterialExtra,
+    ) -> MaterialId {
+        let alpha = if extra.glass || extra.rain_film {
+            AlphaMode::Blend
+        } else {
+            AlphaMode::Opaque
+        };
+        r.add_material_inner(
+            scene, None, alpha, colour, unlit, None, None, None, None, None, [0.0; 3], moisture,
+            extra,
+        )
+    }
+
+    fn test_quad(
+        r: &Renderer,
+        scene: &mut Scene,
+        positions: [[f32; 3]; 4],
+        normal: Vec3,
+        material: MaterialId,
+    ) -> usize {
+        let mesh = r.add_mesh(
+            scene,
+            &MeshData {
+                positions: positions.map(Vec3::from).to_vec(),
+                normals: vec![normal; 4],
+                uvs: vec![
+                    glam::Vec2::ZERO,
+                    glam::Vec2::X,
+                    glam::Vec2::ONE,
+                    glam::Vec2::Y,
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                ranges: vec![(0, 6, 0)],
+                one_sided: false,
+            },
+        );
+        r.add_instance(scene, mesh, DVec3::ZERO, Mat4::IDENTITY, vec![material])
+    }
+
+    fn refraction_source(r: &Renderer, enhanced: bool) -> Vec<f32> {
+        let texture = r.glass_picture.as_ref().unwrap().texture();
+        let bytes = r.read_texture(texture, wgpu::TextureAspect::All).unwrap();
+        if texture.format() != HDR_FORMAT {
+            return bytes.into_iter().map(|v| v as f32 / 255.0).collect();
+        }
+        let pre = if enhanced {
+            r.exposure.unwrap().exp()
+        } else {
+            1.0
+        };
+        bytes
+            .chunks_exact(2)
+            .enumerate()
+            .map(|(i, b)| {
+                half_to_f32(u16::from_le_bytes(b.try_into().unwrap()))
+                    / if i % 4 == 3 { 1.0 } else { pre }
+            })
+            .collect()
+    }
+
+    fn image_difference(a: &[u8], b: &[u8]) -> u64 {
+        a.iter().zip(b).map(|(a, b)| a.abs_diff(*b) as u64).sum()
     }
 
     #[test]
     #[ignore = "requires a graphics adapter; renders wet roads through bus glass"]
     fn wet_scene_reflections_survive_bus_glass_in_every_graphics_mode() {
         for msaa in [1, 4] {
-            let instance =
-                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-            let mut r = pollster::block_on(Renderer::new_with(
-                &instance,
-                None,
-                Some(wgpu::TextureFormat::Rgba8UnormSrgb),
-                RenderOptions {
-                    msaa,
-                    ssao: false,
-                    fxaa: false,
-                    shadow_size: 1024,
-                    render_scale: 1.0,
-                    ..Default::default()
-                },
-            ))
-            .expect("test renderer");
+            let mut r = test_renderer(msaa);
             let mut scene = r.new_scene();
-            let road = r.add_material_wet(
+            let road = test_material(
+                &r,
                 &mut scene,
-                None,
-                AlphaMode::Opaque,
                 [0.25, 0.25, 0.25, 1.0],
                 false,
-                None,
-                None,
-                None,
-                None,
-                None,
-                [0.0; 3],
                 1.0,
+                MaterialExtra::default(),
             );
-            let red = r.add_material_wet(
+            let red = test_material(
+                &r,
                 &mut scene,
-                None,
-                AlphaMode::Opaque,
                 [1.0, 0.01, 0.01, 1.0],
                 true,
-                None,
-                None,
-                None,
-                None,
-                None,
-                [0.0; 3],
                 0.0,
+                MaterialExtra::default(),
             );
-            let pane = r.add_material_inner(
+            let pane = test_material(
+                &r,
                 &mut scene,
-                None,
-                AlphaMode::Blend,
                 [0.25, 0.3, 0.35, 0.15],
                 false,
-                None,
-                None,
-                None,
-                None,
-                None,
-                [0.0; 3],
                 0.0,
                 MaterialExtra {
                     glass: true,
                     ..Default::default()
                 },
             );
-            let film = r.add_material_inner(
+            let film = test_material(
+                &r,
                 &mut scene,
-                None,
-                AlphaMode::Blend,
                 [1.0; 4],
                 false,
-                None,
-                None,
-                None,
-                None,
-                None,
-                [0.0; 3],
                 0.0,
                 MaterialExtra {
                     rain_film: true,
@@ -1148,67 +1106,50 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let mut add_quad = |positions, normal, material| {
-                let mesh = r.add_mesh(
-                    &mut scene,
-                    &MeshData {
-                        positions,
-                        normals: vec![normal; 4],
-                        uvs: vec![
-                            glam::Vec2::ZERO,
-                            glam::Vec2::X,
-                            glam::Vec2::ONE,
-                            glam::Vec2::Y,
-                        ],
-                        indices: vec![0, 1, 2, 0, 2, 3],
-                        ranges: vec![(0, 6, 0)],
-                        one_sided: false,
-                    },
-                );
-                r.add_instance(
-                    &mut scene,
-                    mesh,
-                    DVec3::ZERO,
-                    Mat4::IDENTITY,
-                    vec![material],
-                )
-            };
-            add_quad(
-                vec![
-                    Vec3::new(-20.0, 0.0, 0.0),
-                    Vec3::new(20.0, 0.0, 0.0),
-                    Vec3::new(20.0, 30.0, 0.0),
-                    Vec3::new(-20.0, 30.0, 0.0),
+            test_quad(
+                &r,
+                &mut scene,
+                [
+                    [-20.0, 0.0, 0.0],
+                    [20.0, 0.0, 0.0],
+                    [20.0, 30.0, 0.0],
+                    [-20.0, 30.0, 0.0],
                 ],
                 Vec3::Z,
                 road,
             );
-            add_quad(
-                vec![
-                    Vec3::new(-3.0, 10.0, 0.0),
-                    Vec3::new(3.0, 10.0, 0.0),
-                    Vec3::new(3.0, 10.0, 5.0),
-                    Vec3::new(-3.0, 10.0, 5.0),
+            test_quad(
+                &r,
+                &mut scene,
+                [
+                    [-3.0, 10.0, 0.0],
+                    [3.0, 10.0, 0.0],
+                    [3.0, 10.0, 5.0],
+                    [-3.0, 10.0, 5.0],
                 ],
                 -Vec3::Y,
                 red,
             );
-            let window = add_quad(
-                vec![
-                    Vec3::new(-3.0, 1.0, -1.0),
-                    Vec3::new(3.0, 1.0, -1.0),
-                    Vec3::new(3.0, 1.0, 6.0),
-                    Vec3::new(-3.0, 1.0, 6.0),
+            let window = test_quad(
+                &r,
+                &mut scene,
+                [
+                    [-3.0, 1.0, -1.0],
+                    [3.0, 1.0, -1.0],
+                    [3.0, 1.0, 6.0],
+                    [-3.0, 1.0, 6.0],
                 ],
                 -Vec3::Y,
                 pane,
             );
-            let rain = add_quad(
-                vec![
-                    Vec3::new(-3.0, 0.99, -1.0),
-                    Vec3::new(3.0, 0.99, -1.0),
-                    Vec3::new(3.0, 0.99, 6.0),
-                    Vec3::new(-3.0, 0.99, 6.0),
+            let rain = test_quad(
+                &r,
+                &mut scene,
+                [
+                    [-3.0, 0.99, -1.0],
+                    [3.0, 0.99, -1.0],
+                    [3.0, 0.99, 6.0],
+                    [-3.0, 0.99, 6.0],
                 ],
                 -Vec3::Y,
                 film,
@@ -1229,18 +1170,13 @@ mod tests {
                     wetness: 1.0,
                     rain: 0.8,
                     shadows: false,
-                    inside: Some((
-                        DVec3::new(0.0, 0.0, 2.0),
-                        0.0,
-                        [4.0, 4.0, 4.0, 0.0, 0.0, 0.0],
-                    )),
+                    inside: Some((camera.position, 0.0, [4.0, 4.0, 4.0, 0.0, 0.0, 0.0])),
                     ..Default::default()
                 };
                 let mut reflection = Vec::new();
                 for glass in 0..3 {
-                    scene.instances[window].visible = glass > 0;
-                    scene.instances[rain].visible = glass == 2;
-                    scene.dirty = true;
+                    r.set_params(&mut scene, window, &[], glass > 0, &[]);
+                    r.set_params(&mut scene, rain, &[], glass == 2, &[]);
                     r.options.reflections = false;
                     let without = r
                         .render_to_image(&mut scene, 128, 128, &camera, &lighting)
@@ -1249,7 +1185,7 @@ mod tests {
                     let with = r
                         .render_to_image(&mut scene, 128, 128, &camera, &lighting)
                         .unwrap();
-                    // Compare only the road: the red object is above the image's middle.
+                    // Only the road: the red wall is above this region.
                     let red_change: i64 = with[128 * 70 * 4..]
                         .chunks_exact(4)
                         .zip(without[128 * 70 * 4..].chunks_exact(4))
@@ -1257,112 +1193,40 @@ mod tests {
                         .sum();
                     assert!(
                         red_change > 1000,
-                        "missing road reflection: {red_change}; MSAA={msaa}, enhanced={enhanced}, classic={classic}, glass={glass}"
+                        "missing reflection: {red_change}; MSAA={msaa}, enhanced={enhanced}, classic={classic}, glass={glass}"
                     );
                     reflection.push(red_change);
                 }
                 assert!(
-                    reflection[1] > reflection[0] / 4,
+                    reflection[1..].iter().all(|v| *v > reflection[0] / 4),
                     "glass hid the reflection: {reflection:?}"
                 );
-                assert!(
-                    reflection[2] > reflection[0] / 4,
-                    "rain film hid the reflection: {reflection:?}"
-                );
-                // No falling rain ripples: the clean scene is static even while the
-                // film's drops move. Its refraction source must exclude those drops
-                // on every frame, and a wiped film must clear immediately.
+
+                // The road stays still while drops move. Settle the sky after changing weather.
                 let steady = Lighting {
                     rain: 0.0,
                     ..lighting
                 };
-                scene.instances[window].visible = true;
+                r.set_params(&mut scene, window, &[], true, &[]);
                 r.set_params(&mut scene, rain, &[0.0], true, &[]);
-                scene.dirty = true;
-                // Settle the sky/probe after switching the weather to zero rain.
                 for _ in 0..3 {
-                    r.render_to_image(&mut scene, 128, 128, &camera, &steady).unwrap();
+                    r.render_to_image(&mut scene, 128, 128, &camera, &steady)
+                        .unwrap();
                 }
                 let clean = r
                     .render_to_image(&mut scene, 128, 128, &camera, &steady)
                     .unwrap();
-                fn read_behind(r: &Renderer, enhanced: bool) -> Vec<f32> {
-                    let texture = r.glass_prev.as_ref().unwrap().0.texture();
-                    let row = 128 * if texture.format() == HDR_FORMAT { 8 } else { 4 };
-                    let buffer = r.device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("rain refraction readback"),
-                        size: row * 128,
-                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                        mapped_at_creation: false,
-                    });
-                    let mut encoder = r.device.create_command_encoder(&Default::default());
-                    encoder.copy_texture_to_buffer(
-                        wgpu::TexelCopyTextureInfo {
-                            texture,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d::ZERO,
-                            aspect: wgpu::TextureAspect::All,
-                        },
-                        wgpu::TexelCopyBufferInfo {
-                            buffer: &buffer,
-                            layout: wgpu::TexelCopyBufferLayout {
-                                offset: 0,
-                                bytes_per_row: Some(row as u32),
-                                rows_per_image: Some(128),
-                            },
-                        },
-                        wgpu::Extent3d {
-                            width: 128,
-                            height: 128,
-                            depth_or_array_layers: 1,
-                        },
-                    );
-                    r.queue.submit([encoder.finish()]);
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    buffer.slice(..).map_async(wgpu::MapMode::Read, move |v| {
-                        tx.send(v).unwrap();
-                    });
-                    r.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-                    rx.recv().unwrap().unwrap();
-                    let result = buffer.slice(..).get_mapped_range().to_vec();
-                    buffer.unmap();
-                    if texture.format() != HDR_FORMAT {
-                        return result.into_iter().map(|v| v as f32 / 255.0).collect();
-                    }
-                    let pre = if enhanced {
-                        r.exposure.unwrap_or(0.0).exp()
-                    } else {
-                        1.0
-                    };
-                    result
-                        .chunks_exact(2)
-                        .enumerate()
-                        .map(|(i, bytes)| {
-                            let v = u16::from_le_bytes(bytes.try_into().unwrap());
-                            let exponent = (v >> 10) & 31;
-                            let mantissa = (v & 1023) as f32;
-                            let value = if exponent == 0 {
-                                mantissa * 2.0f32.powi(-24)
-                            } else {
-                                (1.0 + mantissa / 1024.0) * 2.0f32.powi(exponent as i32 - 15)
-                            };
-                            value / if i % 4 == 3 { 1.0 } else { pre }
-                        })
-                        .collect()
-                }
-                let behind = read_behind(&r, enhanced);
+                let behind = refraction_source(&r, enhanced);
                 r.set_params(&mut scene, rain, &[1.0], true, &[]);
-                let mut drop_change = 0u64;
                 for _ in 0..4 {
                     let wet = r
                         .render_to_image(&mut scene, 128, 128, &camera, &steady)
                         .unwrap();
-                    drop_change = wet
-                        .iter()
-                        .zip(&clean)
-                        .map(|(a, b)| a.abs_diff(*b) as u64)
-                        .sum();
-                    let current = read_behind(&r, enhanced);
+                    assert!(
+                        image_difference(&wet, &clean) > 300,
+                        "rain film was not exercised"
+                    );
+                    let current = refraction_source(&r, enhanced);
                     let drift = current
                         .iter()
                         .zip(&behind)
@@ -1374,29 +1238,17 @@ mod tests {
                         "rain/wiper feedback: {drift}; MSAA={msaa}, enhanced={enhanced}, classic={classic}"
                     );
                 }
-                assert!(
-                    drop_change > 300,
-                    "rain film was not exercised: {drop_change}"
-                );
                 r.set_params(&mut scene, rain, &[0.0], true, &[]);
                 let wiped = r
                     .render_to_image(&mut scene, 128, 128, &camera, &steady)
                     .unwrap();
-                let residual: u64 = wiped
-                    .iter()
-                    .zip(&clean)
-                    .map(|(a, b)| a.abs_diff(*b) as u64)
-                    .sum();
                 assert!(
-                    residual < 128 * 128,
-                    "wiper left old film colour: {residual}"
+                    image_difference(&wiped, &clean) < 128 * 128,
+                    "wiper left old film colour"
                 );
 
-                // Classic D3D fog is an encoded vertex colour. A mid-grey fog
-                // should remain 128, rather than being encoded a second time to 188.
                 if classic {
-                    scene.instances[window].visible = false;
-                    scene.dirty = true;
+                    r.set_params(&mut scene, window, &[], false, &[]);
                     let fog = Lighting {
                         fog_color: Vec3::splat(0.5),
                         fog_density: 20.0,

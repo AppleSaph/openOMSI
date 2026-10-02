@@ -12,6 +12,7 @@ struct PuddleParams {
     // xy: projection z coefficients, z: diagnostic view (0 normally), w: hit thickness
     projection_trace: vec4<f32>,
     vehicle_plane: vec4<f32>,
+    // xyz: capture count and scene size; w: -1 Vanilla+, 0 Vanilla, 1 Enhanced
     vehicle_info: vec4<f32>,
     vehicle_parts: array<PuddleVehicleBox, 4>,
 };
@@ -56,14 +57,10 @@ fn finite_colour(c: vec3<f32>) -> vec3<f32> {
     return select(vec3<f32>(0.0), clamp(c, vec3<f32>(0.0), vec3<f32>(65000.0)), all(exponent != vec3<u32>(0x7f800000u)));
 }
 fn reflection_colour(c: vec3<f32>) -> vec3<f32> {
-    if (abs(p.vehicle_info.w) > 0.5) { return c; }
-    let v = max(c, vec3<f32>(0.0));
-    return select(v * 12.92, 1.055 * pow(v, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055), v > vec3<f32>(0.0031308));
+    return select(c, srgb_encode(c), abs(p.vehicle_info.w) < 0.5);
 }
 fn scene_colour(c: vec3<f32>) -> vec3<f32> {
-    if (abs(p.vehicle_info.w) > 0.5) { return c; }
-    let v = max(c, vec3<f32>(0.0));
-    return select(v / 12.92, pow((v + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), v > vec3<f32>(0.04045));
+    return select(c, srgb_decode(c), abs(p.vehicle_info.w) < 0.5);
 }
 fn trace_miss(depth: f32) -> vec4<f32> {
     return vec4<f32>(select(vec3<f32>(0.0), vec3<f32>(1.0, 0.0, 0.0), p.projection_trace.z == 2.0), depth);
