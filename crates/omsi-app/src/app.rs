@@ -153,6 +153,8 @@ pub(crate) struct App {
     /// time (a game started with the mouse steering on: wherever the cursor was, the wheel
     /// turned and the bus drove off on full throttle).
     pub(crate) center_cursor: bool,
+    /// The duty trip whose end was told on the screen.
+    pub(crate) trip_end_told: Option<usize>,
     /// The mouse's throttle and brake (eased in with the steering).
     pub(crate) mouse_pedals: (f32, f32),
     /// The speed mouse steering divides by, smoothed.

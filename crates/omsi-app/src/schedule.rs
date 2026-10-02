@@ -3981,6 +3981,10 @@ impl PlayerDuty {
         &self.trips[self.trip_index]
     }
 
+    pub fn trip_done(&self) -> bool {
+        self.done
+    }
+
     /// Service/depot legs have no public line and use the HOF's
     /// `Betriebsfahrt` destination. They remain part of the duty, but the
     /// player's IBIS should use the next public leg while the bus is waiting.

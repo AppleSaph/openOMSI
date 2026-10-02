@@ -1221,6 +1221,19 @@ impl ApplicationHandler for App {
                         let (trip, stop) = d.trip_for_ibis();
                         p.set_duty_destination(trip, stop);
                     }
+                    if d.trip_done() && self.trip_end_told != Some(d.trip_index) {
+                        self.trip_end_told = Some(d.trip_index);
+                        self.service_msg = Some((match d.trips.get(d.trip_index + 1) {
+                            Some(next) => format!(
+                                "End of the trip. Next: line {} to {}, from {} at {}",
+                                next.line,
+                                next.terminus,
+                                next.stops.first().map(|s| s.name.as_str()).unwrap_or("?"),
+                                crate::schedule::hhmm(next.departure)
+                            ),
+                            None => "End of the duty: the tour's last trip is done".into(),
+                        }, 20.0));
+                    }
                     let mut fonts = w.fonts.lock();
                     if let Err(e) = crate::schedule_paper::update_vehicle(
                         &mut p.vehicle,
