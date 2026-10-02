@@ -1142,14 +1142,17 @@ pub struct TripPath {
     pub stops: Vec<i64>,
 }
 
-/// One spline of the map a trip drives over: its id in its tile, and the tile's place in
-/// `global.cfg`'s `[map]` list. The launcher's map picture draws these over the tile files
-/// alone - no `.sli`, no lanes, no `Network`.
+/// One spline of the map a trip drives over: its id in its tile, which `[path]` of it the
+/// trip uses, and the tile's place in `global.cfg`'s `[map]` list. It is the game's own
+/// `LaneKey` (`schedule::steps_of` builds the same three fields), so the launcher's map
+/// picture can find the very lane the game would drive the trip on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RoadPiece {
     pub tile_x: i32,
     pub tile_y: i32,
     pub spline: i64,
+    /// The `[path]` of that spline's `.sli` the trip drives (the game's own lane).
+    pub path: u16,
 }
 
 /// The route of trip `trip` of the map `map` on `date`: its road pieces and its stops.
@@ -1176,8 +1179,11 @@ pub fn trip_path(map: &str, date: &str, trip: &str) -> Result<TripPath> {
     let track_name = if t.display_name.trim().is_empty() { t.name.trim() } else { t.display_name.trim() };
     if let Some(track) = data.tracks.iter().find(|x| x.path.file_stem().map(|s| s.to_string_lossy().eq_ignore_ascii_case(track_name)).unwrap_or(false)) {
         for e in &track.entries {
+            if e.values.len() < 5 {
+                continue;
+            }
             if let Some(tile) = at(e.values[2]) {
-                out.route.push(RoadPiece { tile_x: tile.0, tile_y: tile.1, spline: e.values[0] as i64 });
+                out.route.push(RoadPiece { tile_x: tile.0, tile_y: tile.1, spline: e.values[0] as i64, path: e.values[1] as u16 });
             }
         }
         return Ok(out);
@@ -1185,8 +1191,11 @@ pub fn trip_path(map: &str, date: &str, trip: &str) -> Result<TripPath> {
     for w in out.stops.windows(2) {
         let Some(link) = data.stn_links.iter().find(|l| l.from_id == w[0] && l.to_id == w[1]) else { continue };
         for e in &link.entries {
+            if e.values.len() < 4 {
+                continue;
+            }
             let Some(tile) = at(e.values[2]) else { continue };
-            let p = RoadPiece { tile_x: tile.0, tile_y: tile.1, spline: e.values[0] as i64 };
+            let p = RoadPiece { tile_x: tile.0, tile_y: tile.1, spline: e.values[0] as i64, path: e.values[1] as u16 };
             // consecutive links repeat the piece they share
             if out.route.last() != Some(&p) {
                 out.route.push(p);

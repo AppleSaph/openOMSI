@@ -2949,103 +2949,138 @@ impl World {
     /// take the tile's terrain height; editor-only splines and objects count (some maps put
     /// all their traffic paths on invisible splines).
     pub fn navigation_map(&self) -> NavigationMap {
-        use rayon::prelude::*;
-        let t0 = std::time::Instant::now();
-        let scos: Mutex<HashMap<String, Option<Arc<SceneryObject>>>> = Mutex::new(HashMap::new());
-        let sco_of = |file: &str| -> Option<Arc<SceneryObject>> {
-            let key = file.trim().to_ascii_lowercase().replace('\\', "/");
-            if let Some(v) = scos.lock().get(&key) {
-                return v.clone();
-            }
-            let v = SceneryObject::load(&omsi_cfg::resolve_path(&self.root, file)).ok().map(Arc::new);
-            scos.lock().insert(key, v.clone());
-            v
-        };
-        let tiles = self.map_tiles();
-        #[allow(clippy::type_complexity)]
-        let parts: Vec<(Vec<Lane>, Vec<(i64, DVec3)>, Vec<(DVec3, f64, String)>, Vec<(Vec<DVec3>, f32)>)> = tiles
-            .par_iter()
-            .map(|(_, tx, ty, path)| {
-                let (tx, ty) = (*tx, *ty);
-                let mut lanes = Vec::new();
-                let mut positions = Vec::new();
-                let mut signs = Vec::new();
-                let mut roads = Vec::new();
-                let Some(tile) = crate::tiles::read_tile(path, &self.chrono_dirs.read()) else {
-                    return (lanes, positions, signs, roads);
-                };
-                let origin2 = DVec2::new(tx as f64 * tile_size(), ty as f64 * tile_size());
-                let terrain = Terrain::load(&tile_companion(&path, ".terrain")).unwrap_or_else(|_| Terrain::flat());
-                for sp in tile.splines.iter().filter(|s| !s.deleted && !s.file.trim().is_empty()) {
-                    let Some(st) = self.spline_type(&sp.file) else { continue };
-                    if !st.def.paths.iter().any(|p| p.kind == 0) {
-                        // Short surfaces also corroborate editor-only traffic paths at
-                        // junctions; the navigator filters decorative patches for display.
-                        if sp.length >= 2.0 {
-                            let curve = SplineCurve::from_map(sp, origin2).with_sli(&st.def);
-                            let n = ((curve.length / 4.0).ceil() as usize).clamp(1, 400);
-                            let side = if sp.mirror { -1.0 } else { 1.0 };
-                            for (lo, hi, z) in road_sections(&sp.file, &st.def) {
-                                let offset = side * ((lo + hi) * 0.5) as f64;
-                                let pts: Vec<DVec3> = (0..=n).map(|k| curve.offset_point(curve.length * k as f64 / n as f64, offset, z as f64)).collect();
-                                roads.push((pts, hi - lo));
-                            }
-                        }
-                    }
-                    if st.def.paths.is_empty() {
-                        continue;
-                    }
-                    let curve = SplineCurve::from_map(sp, origin2);
-                    let mut new_lanes = spline_lanes(&st.def, sp, &curve, (tx, ty));
-                    for l in new_lanes.iter_mut() {
-                        l.invisible = st.def.only_editor;
-                    }
-                    lanes.extend(new_lanes);
-                }
-                for o in &tile.objects {
-                    if o.file.trim().is_empty() {
-                        continue;
-                    }
-                    let (x, y) = (origin2.x + o.pos[0], origin2.y + o.pos[1]);
-                    let ground = || {
-                        let (lx, ly) = ((x - origin2.x).clamp(0.0, tile_size()) as f32, (y - origin2.y).clamp(0.0, tile_size()) as f32);
-                        terrain.sample(lx, ly) as f64
-                    };
-                    // street name signs carry the street's name as their text
-                    if is_street_sign(&o.file) {
-                        if let Some(name) = o.extra.first().map(|t| t.trim()).filter(|t| t.chars().filter(|c| c.is_alphabetic()).count() >= 3) {
-                            signs.push((DVec3::new(x, y, o.pos[2] + ground()), o.rot[0], name.to_string()));
-                        }
-                    }
-                    let Some(sco) = sco_of(&o.file) else {
-                        positions.push((o.id, DVec3::new(x, y, o.pos[2] + ground())));
-                        continue;
-                    };
-                    let absolute = sco.abs_height || !sco.spline_helpers.is_empty();
-                    let pos = DVec3::new(x, y, if absolute { o.pos[2] } else { o.pos[2] + ground() });
-                    positions.push((o.id, pos));
-                    if !sco.paths.is_empty() {
-                        lanes.extend(object_lanes(&sco, pos, [o.rot[0], 0.0, 0.0], None, (tx, ty), o.id, &o.rules));
-                    }
-                }
-                (lanes, positions, signs, roads)
-            })
-            .collect();
-        let mut lanes = Vec::new();
-        let mut positions = HashMap::new();
-        let mut signs = Vec::new();
-        let mut roads = Vec::new();
-        for (l, p, s, r) in parts {
-            lanes.extend(l);
-            positions.extend(p);
-            signs.extend(s);
-            roads.extend(r);
-        }
-        log::info!("navigation map: {} roads without a path for cars", roads.len());
-        log::info!("navigation map: {} tiles, {} lanes, {} objects placed, {} street name signs, {} object types, {:.1} s", tiles.len(), lanes.len(), positions.len(), signs.len(), scos.lock().len(), t0.elapsed().as_secs_f64());
-        NavigationMap { lanes, road_surfaces: roads, places: positions, signs }
+        let tiles: Vec<(i32, i32, PathBuf)> = self.map_tiles().into_iter().map(|(_, x, y, p)| (x, y, p)).collect();
+        navigation_map_of(&self.root, &tiles, &self.chrono_dirs.read())
     }
+}
 
+/// The same read with no `World` holding the caches, so that anything else that wants to
+/// know what a map has (the launcher's map picture) reads it the way the navigator does.
+/// `root` is the installation the map belongs to: what its tiles name - a `.sli`, a `.sco`
+/// and the model beside it - is resolved against it, so a mod's own copy wins over the
+/// original's and a map that lacks one borrows the other installation's (`omsi_cfg::
+/// resolve_path`).
+pub fn navigation_map_of(root: &Path, tiles: &[(i32, i32, PathBuf)], chrono_dirs: &[PathBuf]) -> NavigationMap {
+    use rayon::prelude::*;
+    let t0 = std::time::Instant::now();
+    let scos: Mutex<HashMap<String, Option<Arc<SceneryObject>>>> = Mutex::new(HashMap::new());
+    let sco_of = |file: &str| -> Option<Arc<SceneryObject>> {
+        let key = file.trim().to_ascii_lowercase().replace('\\', "/");
+        if let Some(v) = scos.lock().get(&key) {
+            return v.clone();
+        }
+        let v = SceneryObject::load(&omsi_cfg::resolve_path(root, file)).ok().map(Arc::new);
+        scos.lock().insert(key, v.clone());
+        v
+    };
+    let slis: Mutex<HashMap<String, Option<Arc<Spline>>>> = Mutex::new(HashMap::new());
+    let sli_of = |file: &str| -> Option<Arc<Spline>> {
+        // (the navigator loads `.sli` through `World::spline_type` with the same two calls)
+        let key = file.trim().to_ascii_lowercase().replace('\\', "/");
+        if let Some(v) = slis.lock().get(&key) {
+            return v.clone();
+        }
+        let v = Spline::load(&omsi_cfg::resolve_path(root, file)).ok().map(|def| {
+            omsi_geometry::register_half_cant_width(file, &def);
+            Arc::new(def)
+        });
+        slis.lock().insert(key, v.clone());
+        v
+    };
+    #[allow(clippy::type_complexity)]
+    let parts: Vec<(Vec<Lane>, Vec<(i64, DVec3)>, Vec<(DVec3, f64, String)>, Vec<(Vec<DVec3>, f32)>)> = tiles
+        .par_iter()
+        .map(|(tx, ty, path)| {
+            let (tx, ty) = (*tx, *ty);
+            let mut lanes = Vec::new();
+            let mut positions = Vec::new();
+            let mut signs = Vec::new();
+            let mut roads = Vec::new();
+            let Some(tile) = crate::tiles::read_tile(path, chrono_dirs) else {
+                return (lanes, positions, signs, roads);
+            };
+            let origin2 = DVec2::new(tx as f64 * tile_size(), ty as f64 * tile_size());
+            let terrain = Terrain::load(&tile_companion(&path, ".terrain")).unwrap_or_else(|_| Terrain::flat());
+            for sp in tile.splines.iter().filter(|s| !s.deleted && !s.file.trim().is_empty()) {
+                let Some(def) = sli_of(&sp.file) else { continue };
+                if !def.paths.iter().any(|p| p.kind == 0) {
+                    // Short surfaces also corroborate editor-only traffic paths at
+                    // junctions; the navigator filters decorative patches for display.
+                    if sp.length >= 2.0 {
+                        let curve = SplineCurve::from_map(sp, origin2).with_sli(&def);
+                        let n = ((curve.length / 4.0).ceil() as usize).clamp(1, 400);
+                        let side = if sp.mirror { -1.0 } else { 1.0 };
+                        for (lo, hi, z) in road_sections(&sp.file, &def) {
+                            let offset = side * ((lo + hi) * 0.5) as f64;
+                            let pts: Vec<DVec3> = (0..=n).map(|k| curve.offset_point(curve.length * k as f64 / n as f64, offset, z as f64)).collect();
+                            roads.push((pts, hi - lo));
+                        }
+                    }
+                }
+                if def.paths.is_empty() {
+                    continue;
+                }
+                let curve = SplineCurve::from_map(sp, origin2);
+                let mut new_lanes = spline_lanes(&def, sp, &curve, (tx, ty));
+                for l in new_lanes.iter_mut() {
+                    l.invisible = def.only_editor;
+                }
+                lanes.extend(new_lanes);
+            }
+            for o in &tile.objects {
+                if o.file.trim().is_empty() {
+                    continue;
+                }
+                let (x, y) = (origin2.x + o.pos[0], origin2.y + o.pos[1]);
+                let ground = || {
+                    let (lx, ly) = ((x - origin2.x).clamp(0.0, tile_size()) as f32, (y - origin2.y).clamp(0.0, tile_size()) as f32);
+                    terrain.sample(lx, ly) as f64
+                };
+                // street name signs carry the street's name as their text
+                if is_street_sign(&o.file) {
+                    if let Some(name) = o.extra.first().map(|t| t.trim()).filter(|t| t.chars().filter(|c| c.is_alphabetic()).count() >= 3) {
+                        signs.push((DVec3::new(x, y, o.pos[2] + ground()), o.rot[0], name.to_string()));
+                    }
+                }
+                let Some(sco) = sco_of(&o.file) else {
+                    positions.push((o.id, DVec3::new(x, y, o.pos[2] + ground())));
+                    continue;
+                };
+                let absolute = sco.abs_height || !sco.spline_helpers.is_empty();
+                let pos = DVec3::new(x, y, if absolute { o.pos[2] } else { o.pos[2] + ground() });
+                positions.push((o.id, pos));
+                if !sco.paths.is_empty() {
+                    lanes.extend(object_lanes(&sco, pos, [o.rot[0], 0.0, 0.0], None, (tx, ty), o.id, &o.rules));
+                }
+            }
+            (lanes, positions, signs, roads)
+        })
+        .collect();
+    let mut lanes = Vec::new();
+    let mut positions = HashMap::new();
+    let mut signs = Vec::new();
+    let mut roads = Vec::new();
+    for (l, p, s, r) in parts {
+        lanes.extend(l);
+        positions.extend(p);
+        signs.extend(s);
+        roads.extend(r);
+    }
+    log::info!("navigation map: {} roads without a path for cars", roads.len());
+    log::info!(
+        "navigation map: {} tiles, {} lanes, {} objects placed, {} street name signs, {} object types, {} spline types, {:.1} s",
+        tiles.len(),
+        lanes.len(),
+        positions.len(),
+        signs.len(),
+        scos.lock().len(),
+        slis.lock().len(),
+        t0.elapsed().as_secs_f64()
+    );
+    NavigationMap { lanes, road_surfaces: roads, places: positions, signs }
+}
+
+impl World {
     /// Every tile of global.cfg's `[map]` list whose file exists, with its index in that list
     /// (repeaters and timetable tracks name a tile by that index).
     pub fn map_tiles(&self) -> Vec<(usize, i32, i32, PathBuf)> {

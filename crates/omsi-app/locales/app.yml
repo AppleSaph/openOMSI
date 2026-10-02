@@ -20591,7 +20591,27 @@ _version: 2
   de: "Die Karte lässt sich nicht lesen"
   zh: "无法读取这张地图"
   zh-tw: "無法讀取這張地圖"
-"This map has no road splines":
-  de: "Diese Karte hat keine Straßen-Splines"
-  zh: "这张地图没有道路曲线"
-  zh-tw: "這張地圖沒有道路曲線"
+"This map has no roads":
+  de: "Diese Karte hat keine Straßen"
+  zh: "这张地图没有道路"
+  zh-tw: "這張地圖沒有道路"
+"Vehicle & environment":
+  de: "Fahrzeug & Umgebung"
+  zh: "车辆和环境"
+  zh-tw: "車輛和環境"
+"Map & duty":
+  de: "Karte & Dienst"
+  zh: "地图设置"
+  zh-tw: "地圖設定"
+"Put the roadbook away (choosing a tour brings it back)":
+  de: "Fahrplan weglegen (eine Tour holt ihn zurück)"
+  zh: "收起路书（选一个班次会再打开）"
+  zh-tw: "收起路書（選一個班次會再打開）"
+"The roadbook: the trips of the chosen tour and where they call":
+  de: "Der Fahrplan: die Fahrten der gewählten Tour und ihre Haltestellen"
+  zh: "路书：所选班次的每一趟车和它停靠的站"
+  zh-tw: "路書：所選班次的每一趟車和它停靠的站"
+"The vehicle and the day: back to the first tab":
+  de: "Das Fahrzeug und der Tag: zurück zum ersten Reiter"
+  zh: "车辆和日期：回到第一个页签"
+  zh-tw: "車輛和日期：回到第一個頁籤"

@@ -1,12 +1,14 @@
-//! The Drive page: the duty put together in four steps - the bus, the route (map, line,
-//! tour), the time and weather, the roadbook - in a panel on the left, the bus itself in
-//! the showroom on the right, and the button that starts the game.
+//! The Drive page: one background and two tabs over it - the bus on its turntable while the
+//! vehicle and the day are chosen, the map itself while the duty is (see `mapview`: it is
+//! dragged, zoomed and clicked, not looked at), with the roadbook a sidebar of its own.
+//!
+//! The order is what a player does: what to drive, then where and when.
 
-use super::state::{fmt_bytes, hhmm, trip_index_at};
+use super::state::{hhmm, trip_index_at};
 use super::theme::*;
 use super::ui::{id_of, ButtonKind};
 use super::Launcher;
-use glam::Vec2;
+use glam::{DVec2, Vec2};
 use omsi_ui::paint::Align;
 use omsi_ui::{Color, Rect, Weight};
 
@@ -30,7 +32,8 @@ struct BusManufacturer {
 
 #[derive(Default)]
 pub struct DriveView {
-    pub step: usize,
+    /// The tab: 0 the vehicle and the environment, 1 the map and the duty.
+    pub tab: usize,
     pub bus_filter: String,
     /// The original OMSI manufacturer/type hierarchy, cached between content updates.
     bus_manufacturers: std::sync::Arc<Vec<BusManufacturer>>,
@@ -39,47 +42,493 @@ pub struct DriveView {
     bus_list_initialized: bool,
     vehicle_settings_open: bool,
     pub line_filter: String,
-    /// What stands in the side column's picture: `None` follows the step (the map belongs
-    /// to the Route step, the bus to the others), `Some` is what the player switched to.
-    pub preview_map: Option<bool>,
+    /// The line list was put where the chosen line is (once: the first time it has rows).
+    line_scrolled: bool,
+    /// The roadbook's sidebar: open or shut, and whether the player shut it by hand (which
+    /// is what stops a chosen tour from opening it again).
+    pub book_open: bool,
+    book_shut: bool,
 }
 
-const STEPS: [(&str, &str); 4] = [("Bus", "directions_bus"), ("Route", "route"), ("Time & weather", "partly_cloudy_day"), ("Roadbook", "receipt_long")];
+/// The two tabs: what is driven, and where and when.
+const TABS: [&str; 2] = ["Vehicle & environment", "Map & duty"];
+/// Between a panel and what is beside it.
+const GAP: f32 = 16.0;
+/// The foot's button.
+const GO_H: f32 = 46.0;
 
 pub fn draw(l: &mut Launcher, area: Rect) {
-    let form_w = (area.w * 0.5).clamp(440.0, 580.0);
-    let panel = Rect::new(area.x, area.y, form_w, area.h);
-    l.ui.panel(panel);
-    // the steps: plain tabs with a line under the chosen one
-    let tabs = Rect::new(panel.x + 16.0, panel.y + 8.0, panel.w - 32.0, 42.0);
-    let w = tabs.w / 4.0;
-    let sel = l.ui.anim(id_of("drive-step"), l.drive.step as f32, 0.08);
-    l.ui.p().rect(Rect::new(tabs.x, tabs.bottom() - 1.0, tabs.w, 1.0), EDGE);
-    l.ui.p().rect(Rect::new(tabs.x + w * sel, tabs.bottom() - 2.0, w, 2.0), ACCENT);
-    for (k, (name, _)) in STEPS.iter().enumerate() {
-        let cell = Rect::new(tabs.x + w * k as f32, tabs.y, w, tabs.h - 2.0);
-        let id = id_of(&format!("step-{k}"));
-        let (h, _, clicked) = l.ui.interact(id, cell);
+    let size = l.ui.size;
+    // the page's own background: the rail along the left and the status line at the foot
+    // stay, what lies between them is the bus (or the map)
+    let full = Rect::new(super::RAIL_W, 0.0, (size.x - super::RAIL_W).max(240.0), (size.y - 40.0).max(160.0));
+    let panel_w = (area.w * 0.34).clamp(340.0, 430.0);
+    let panel = Rect::new(area.x, area.y + 52.0, panel_w, (area.h - 52.0).max(140.0));
+    let book_w = (area.w * 0.28).clamp(300.0, 380.0);
+    let book = l.drive.book_open.then(|| Rect::new((size.x - 24.0 - book_w).max(area.x), area.y + 52.0, book_w, (area.h - 52.0).max(140.0)));
+    // the window: what the panels leave of the page, which is what the map is framed in and
+    // what the bus is framed in
+    let right = book.map(|b| b.x - GAP).unwrap_or(size.x - 24.0);
+    let free = Rect::new(panel.right() + GAP, 0.0, (right - panel.right() - GAP).max(120.0), full.h);
+    let ft = foot_of(l, right, full);
+
+    // the background
+    if l.drive.tab == 0 {
+        l.preview_full(full, (panel.right() + GAP) / size.x);
+    } else {
+        l.mapview.want(map_look(l));
+        l.map_background(full);
+        // (the names and times the map's own pixels cannot say, written where the roads are
+        // this frame - before the panels, so they stay under them)
+        map_labels(l, free, &ft.card);
+    }
+
+    tabs(l, Rect::new(area.x, area.y, panel_w, 40.0));
+    if l.drive.tab == 1 {
+        env_chip(l, Rect::new(area.x + panel_w + GAP, area.y + 2.0, (right - area.x - panel_w - GAP).max(120.0), 34.0));
+    }
+    if l.drive.tab == 0 {
+        vehicle_panel(l, panel);
+    } else {
+        duty_panel(l, panel);
+    }
+    if l.drive.tab == 1 {
+        match book {
+            Some(b) => book_panel(l, b),
+            None => book_handle(l, Rect::new(size.x - 42.0, area.y + 52.0, 34.0, 128.0)),
+        }
+    }
+    foot(l, &ft, l.drive.tab == 1);
+    if l.drive.tab == 1 {
+        legend(l, free);
+        l.map_interact(full, free);
+    } else {
+        l.showroom_pointer(full);
+    }
+}
+
+/// The two tabs, the chosen one underlined.
+fn tabs(l: &mut Launcher, r: Rect) {
+    let w = r.w / TABS.len() as f32;
+    l.ui.p().rect(Rect::new(r.x, r.bottom() - 1.0, r.w, 1.0), EDGE);
+    let sel = l.ui.anim(id_of("drive-tab"), l.drive.tab as f32, 0.08);
+    l.ui.p().rect(Rect::new(r.x + w * sel, r.bottom() - 2.0, w, 2.0), ACCENT);
+    for (k, name) in TABS.iter().enumerate() {
+        let cell = Rect::new(r.x + w * k as f32, r.y, w, r.h - 2.0);
+        // (the map lies behind the whole page: what the page draws over it takes the mouse
+        // first, so a click on a tab is not a click on the entry point behind it)
+        l.ui.solid(cell);
+        let (h, _, clicked) = l.ui.interact(id_of(&format!("drive-tab-{k}")), cell);
         if clicked {
-            l.drive.step = k;
-            if k == 3 {
-                l.state.load_ibis();
+            l.drive.tab = k;
+        }
+        let on = l.drive.tab == k;
+        let c = if on { TEXT } else if h { TEXT_SOFT } else { TEXT_DIM };
+        l.ui.text_in(name, cell, 13.0, if on { Weight::Medium } else { Weight::Regular }, c, Align::Left);
+    }
+}
+
+/// What the bus is, the day it is driven on and the weather - one column that scrolls (both
+/// halves of it are long).
+fn vehicle_panel(l: &mut Launcher, panel: Rect) {
+    let bus_h = 452.0;
+    let time_head = 34.0;
+    let time_h = 545.0;
+    let content = bus_h + time_head + time_h + 8.0;
+    let off = l.ui.scroll_offset("drive-vehicle");
+    l.ui.push_clip(panel, RADIUS);
+    let x = panel.x + 18.0;
+    let w = panel.w - 36.0;
+    step_bus(l, Rect::new(x, panel.y + 14.0 - off, w, bus_h));
+    let y = panel.y + 14.0 - off + bus_h + 8.0;
+    l.ui.heading(Rect::new(x, y, w, time_head), "Time & weather", Some("partly_cloudy_day"));
+    step_time(l, Rect::new(x, y + time_head, w, time_h));
+    l.ui.pop_clip();
+    l.ui.scroll_keep("drive-vehicle", panel, content);
+}
+
+/// Where the bus is put down and what it drives there: the map, the duty, the place to start
+/// (all of it also clickable on the map itself).
+fn duty_panel(l: &mut Launcher, r: Rect) {
+    l.ui.panel(r);
+    let body = Rect::new(r.x + 18.0, r.y + 16.0, r.w - 36.0, r.h - 32.0);
+    let mut y = body.y;
+    // the map (on a server: the server's, not to be changed)
+    if let Some(name) = joined_server_name(l) {
+        let m = l.state.map().map(|m| if m.friendly.is_empty() { m.name.clone() } else { m.friendly.clone() }).unwrap_or_else(|| l.state.choice.map.clone());
+        l.ui.label(Rect::new(body.x, y, 62.0, ROW), "Map");
+        let fr = Rect::new(body.x + 62.0, y, body.w - 62.0, ROW);
+        l.ui.solid(fr);
+        l.ui.p().rounded(fr, RADIUS, FIELD);
+        l.ui.icon("lock", Vec2::new(fr.x + 16.0, fr.center().y), 15.0, TEXT_DIM);
+        l.ui.text_in(&format!("{m} · {name}"), Rect::new(fr.x + 32.0, fr.y, fr.w - 40.0, fr.h), 12.5, Weight::Regular, TEXT_SOFT, Align::Left);
+        y += ROW + 12.0;
+    } else {
+        let maps: Vec<(String, String)> = l.state.maps.iter().map(|m| (m.file.clone(), format!("{}{}{}", if l.state.fresh.contains_key(&m.file) { "★ NEW · " } else { "" }, if m.friendly.is_empty() { &m.name } else { &m.friendly }, if m.installed { "  (mod)" } else { "" }))).collect();
+        let mut sel = maps.iter().position(|m| m.0 == l.state.choice.map).unwrap_or(0);
+        l.ui.label(Rect::new(body.x, y, 62.0, ROW), "Map");
+        if l.ui.select("map", Rect::new(body.x + 62.0, y, body.w - 62.0, ROW), &mut sel, &maps.iter().map(|m| m.1.clone()).collect::<Vec<_>>()) {
+            if let Some((f, _)) = maps.get(sel) {
+                let f = f.clone();
+                l.state.select_map(&f);
             }
         }
-        let on = l.drive.step == k;
-        let c = if on { TEXT } else if h { TEXT_SOFT } else { TEXT_DIM };
-        l.ui.text_in(name, cell, 13.0, if on { Weight::Medium } else { Weight::Regular }, c, Align::Center);
+        y += ROW + 12.0;
     }
-    let body = Rect::new(panel.x + 18.0, tabs.bottom() + 16.0, panel.w - 36.0, panel.bottom() - tabs.bottom() - 32.0);
-    match l.drive.step {
-        0 => step_bus(l, body),
-        1 => step_route(l, body),
-        2 => step_time(l, body),
-        _ => step_roadbook(l, body),
+    let mut free = l.state.choice.free;
+    if l.ui.toggle("free", Rect::new(body.x, y, body.w, ROW), &mut free, "Free drive (no timetable duty)") {
+        l.state.choice.free = free;
+        l.state.touched();
     }
-    // the right side: the bus, what the duty is, and the start
-    let side = Rect::new(panel.right() + 24.0, area.y, area.right() - panel.right() - 24.0, area.h);
-    summary(l, side);
+    y += ROW + 14.0;
+    if free {
+        l.ui.paragraph("Free driving: the bus starts where you chose, with the traffic and the timetable's buses around it, but no line of your own.", Vec2::new(body.x, y), body.w, 12.5, Weight::Regular, TEXT_DIM);
+        return;
+    }
+    // lines: a list that scrolls, with the search above it
+    let lines_h = 214.0;
+    l.ui.heading(Rect::new(body.x, y, body.w, 26.0), "Line", None);
+    l.ui.text_input("line-filter", Rect::new(body.x, y + 28.0, body.w, 34.0), &mut l.drive.line_filter, "Filter…", Some("search"));
+    let q = l.drive.line_filter.to_lowercase();
+    let lines: Vec<(String, String, usize)> = l.state.lines.iter()
+        .filter(|x| x.user_allowed)
+        .filter(|x| q.is_empty() || x.name.to_lowercase().contains(&q))
+        .map(|x| (x.name.clone(), x.termini.join(" · "), x.tours.len()))
+        .collect();
+    let chosen = l.state.choice.line.clone();
+    let mut pick_line = None;
+    let loading = l.state.loading_lines;
+    // (the list opens on the line the duty already has, not on the alphabet)
+    if !l.drive.line_scrolled && !lines.is_empty() {
+        l.drive.line_scrolled = true;
+        if let Some(k) = lines.iter().position(|x| chosen.as_deref() == Some(x.0.as_str())) {
+            l.ui.scroll_to("line-list", k as f32 * 44.0, 44.0, lines_h);
+        }
+    }
+    let list = Rect::new(body.x - 4.0, y + 70.0, body.w + 8.0, lines_h);
+    l.ui.scroll_area("line-list", list, &mut |ui, v| {
+        let rh = 44.0;
+        if lines.is_empty() {
+            ui.text_in(if loading { "Reading the timetable…" } else { "No lines on this date." }, Rect::new(v.x + 10.0, v.y + 6.0, v.w, 34.0), 12.5, Weight::Regular, TEXT_DIM, Align::Left);
+        }
+        for (k, (name, termini, tours)) in lines.iter().enumerate() {
+            let rr = Rect::new(v.x + 4.0, v.y + k as f32 * rh, v.w - 12.0, rh - 4.0);
+            let on = chosen.as_deref() == Some(name.as_str());
+            if ui.row(&format!("line-{name}"), rr, on) {
+                pick_line = Some(name.clone());
+            }
+            // (a long line name, as Ahlheim's "Eichenhoehe TA11 Mo-Do Schule", is cut)
+            let count = format!("{tours}");
+            let cw = ui.width(&count, 11.5, Weight::Bold) + 8.0;
+            let bw = (ui.width(name, 12.5, Weight::Bold) + 14.0).clamp(34.0, (rr.w - cw - 24.0).max(34.0));
+            let badge = Rect::new(rr.x + 8.0, rr.y + 9.0, bw, 22.0);
+            ui.p().rounded(badge, 4.0, Color::rgba(52, 52, 52, 1.0));
+            ui.text_in(name, badge.pad(6.0, 0.0), 12.0, Weight::Bold, TEXT, Align::Center);
+            ui.icon("event", Vec2::new(rr.right() - cw - 8.0, rr.y + 20.0), 13.0, TEXT_FAINT);
+            ui.text_in(&count, Rect::new(rr.right() - cw, rr.y + 9.0, cw - 4.0, 22.0), 11.5, Weight::Bold, TEXT_DIM, Align::Right);
+            ui.text_in(termini, Rect::new(rr.x + 8.0, rr.y + 28.0, rr.w - 16.0, 14.0), 11.0, Weight::Regular, TEXT_FAINT, Align::Left);
+        }
+        lines.len() as f32 * rh + 4.0
+    });
+    if let Some(n) = pick_line {
+        if l.state.choice.line.as_deref() != Some(n.as_str()) {
+            l.state.choice.line = Some(n);
+            l.state.choice.tour = None;
+            l.state.touched();
+        }
+    }
+    y += 70.0 + lines_h + 12.0;
+    // tours: the same, and choosing one brings the roadbook up with it
+    l.ui.heading(Rect::new(body.x, y, body.w, 26.0), "Tour", None);
+    y += 30.0;
+    let Some(line) = l.state.line().cloned() else {
+        l.ui.paragraph("Pick a line first. As in OMSI, the start time and date then say where in the tour the bus is: the trip under way, or the next to leave.", Vec2::new(body.x, y), body.w, 12.5, Weight::Regular, TEXT_DIM);
+        return;
+    };
+    let mut tours: Vec<&omsi_launcher_lib::TourInfo> = line.tours.iter().collect();
+    tours.sort_by(|a, b| b.runs.cmp(&a.runs).then_with(|| natural(&a.number).cmp(&natural(&b.number))));
+    let now = l.state.choice.time as f64 * 60.0;
+    let tours: Vec<(String, usize, String, bool, Option<String>, Option<(f64, f64)>, String, String)> = tours.iter().map(|t| {
+        let trip = trip_index_at(t, now).and_then(|i| t.trips.get(i));
+        let from = t.trips.first().map(|x| x.from.clone()).unwrap_or_default();
+        let terminus = t.trips.last().map(|x| x.terminus.clone()).unwrap_or_default();
+        (t.number.clone(), t.trips.len(), t.days.clone(), t.runs, t.next_run.clone(), trip.map(|x| (x.departure, x.arrival)), from, terminus)
+    }).collect();
+    let chosen_t = l.state.choice.tour.clone();
+    let mut pick = None;
+    l.ui.scroll_area("tour-list", Rect::new(body.x - 4.0, y, body.w + 8.0, (body.bottom() - y - 52.0).max(80.0)), &mut |ui, v| {
+        let rh = 76.0;
+        for (k, (num, trips, days, runs, next, trip_time, from, terminus)) in tours.iter().enumerate() {
+            let rr = Rect::new(v.x + 4.0, v.y + k as f32 * rh, v.w - 12.0, rh - 4.0);
+            let on = chosen_t.as_deref() == Some(num.as_str());
+            if ui.row(&format!("tour-{num}"), rr, on) {
+                pick = Some((num.clone(), *runs, next.clone()));
+            }
+            let c = if *runs { TEXT } else { TEXT_FAINT };
+            // (the tour's name as the map writes it and OMSI lists it: "1", "Mo-Fr 1")
+            ui.text_in(num, Rect::new(rr.x + 10.0, rr.y + 4.0, rr.w - 110.0, 18.0), 13.5, Weight::Bold, c, Align::Left);
+            if let Some((departure, arrival)) = trip_time {
+                ui.text_in(&format!("{} - {}", hhmm(*departure), hhmm(*arrival)), Rect::new(rr.right() - 110.0, rr.y + 5.0, 100.0, 18.0), 12.0, Weight::Medium, if *runs { ACCENT } else { TEXT_FAINT }, Align::Right);
+                ui.text_in(&format!("{}: {}", omsi_ui::tr("Trip duration"), trip_duration(*departure, *arrival)), Rect::new(rr.x + 10.0, rr.y + 40.0, rr.w - 20.0, 16.0), 11.5, Weight::Medium, c, Align::Left);
+            }
+            if !from.is_empty() || !terminus.is_empty() {
+                ui.text_in(&format!("{from} → {terminus}"), Rect::new(rr.x + 10.0, rr.y + 23.0, rr.w - 20.0, 16.0), 11.5, Weight::Medium, c, Align::Left);
+            }
+            let sub = if *runs {
+                format!("{trips} trips · {days}")
+            } else {
+                match next {
+                    Some(n) => format!("{trips} trips · {days} · runs {n}"),
+                    None => format!("{trips} trips · never within a year"),
+                }
+            };
+            ui.text_in(&sub, Rect::new(rr.x + 10.0, rr.y + 57.0, rr.w - 20.0, 16.0), 11.0, Weight::Regular, TEXT_DIM, Align::Left);
+        }
+        tours.len() as f32 * rh + 4.0
+    });
+    if let Some((num, runs, next)) = pick {
+        // a tour of another day moves the date to the next day it runs (OMSI lists only
+        // the day's tours)
+        if !runs {
+            if let Some(n) = next {
+                l.state.choice.date = n;
+                l.state.load_lines();
+            }
+        }
+        l.state.choice.tour = Some(num);
+        l.state.touched();
+        // the roadbook has something to say now
+        l.state.load_ibis();
+        if !l.drive.book_shut {
+            l.drive.book_open = true;
+        }
+    }
+    // where to start: one of the map's entry points, as in OMSI 2; Automatic takes the one
+    // nearest to the duty's first stop by road (a free drive: the map's first)
+    let Some(m) = l.state.map().cloned() else { return };
+    let y = body.bottom() - ROW;
+    let mut labels = vec![if free { "Automatic (the map's first)".to_string() } else { "Automatic (nearest to the first stop)".to_string() }];
+    labels.extend(m.entry_points.iter().map(|e| if e.name.is_empty() { format!("entry {}", e.index + 1) } else { e.name.clone() }));
+    // (the choice is the entry's place in the list; 0 = automatic here)
+    let mut es = if l.state.choice.entry < 0 { 0 } else { (l.state.choice.entry as usize + 1).min(labels.len() - 1) };
+    l.ui.label(Rect::new(body.x, y, 62.0, ROW), "Start at");
+    if l.ui.select("entry", Rect::new(body.x + 62.0, y, body.w - 62.0, ROW), &mut es, &labels) {
+        l.state.choice.entry = es as i32 - 1;
+        l.state.touched();
+    }
+    // (the hovered one is the one the map is about to take: say which it is)
+    if let Some(i) = l.mapview.hovered() {
+        if let Some(name) = l.mapview.entry_name(i) {
+            l.ui.text_in(name, Rect::new(body.x, y - 22.0, body.w, 18.0), 11.5, Weight::Medium, ACCENT, Align::Left);
+        }
+    }
+}
+
+/// The roadbook's sidebar: the chosen tour's trips and their stops, and the IBIS beside them.
+fn book_panel(l: &mut Launcher, r: Rect) {
+    l.ui.panel(r);
+    l.ui.heading(Rect::new(r.x + 16.0, r.y + 8.0, r.w - 76.0, 30.0), "Roadbook", Some("receipt_long"));
+    if l.ui.button("book-shut", Rect::new(r.right() - 46.0, r.y + 12.0, 30.0, 30.0), "", Some("chevron_right"), ButtonKind::Ghost) {
+        l.drive.book_open = false;
+        l.drive.book_shut = true;
+    }
+    l.ui.tooltip(Rect::new(r.right() - 46.0, r.y + 12.0, 30.0, 30.0), "Put the roadbook away (choosing a tour brings it back)");
+    step_roadbook(l, Rect::new(r.x + 18.0, r.y + 50.0, r.w - 36.0, r.h - 66.0));
+}
+
+/// The roadbook put away: a handle at the window's edge.
+fn book_handle(l: &mut Launcher, r: Rect) {
+    l.ui.solid(r);
+    if l.ui.button("book-open", r, "", Some("receipt_long"), ButtonKind::Normal) {
+        l.drive.book_open = true;
+    }
+    l.ui.tooltip(r, "The roadbook: the trips of the chosen tour and where they call");
+}
+
+/// The foot's own boxes, so the map's labels can keep out of their way.
+struct Foot {
+    card: Rect,
+    cont: Option<Rect>,
+    btn: Rect,
+}
+
+fn foot_of(l: &mut Launcher, right: f32, full: Rect) -> Foot {
+    let x = right - 24.0;
+    let btn = Rect::new(x - 210.0, full.bottom() - 24.0 - GO_H, 210.0, GO_H);
+    let cont = (l.state.joined_server.is_none() && l.state.has_last_situation()).then(|| Rect::new(btn.x, btn.y - 44.0, btn.w, 38.0));
+    let top = cont.map(|c| c.y).unwrap_or(btn.y);
+    Foot { card: Rect::new(x - 480.0, top - 80.0, 480.0, 72.0), cont, btn }
+}
+
+/// The foot of the page: what the choice comes to, and the button that goes on with it (to
+/// the map on the first tab, into the game on the second).
+fn foot(l: &mut Launcher, f: &Foot, map_tab: bool) {
+    let running = l.state.instances.iter().filter(|i| i.running).count();
+    l.ui.solid(f.card);
+    l.ui.solid(f.btn);
+    if let Some(c) = f.cont {
+        l.ui.solid(c);
+    }
+    if !map_tab {
+        // the day and the bus in short, above the button that goes on to the map
+        let bus = l.state.bus().map(|b| display_bus_name(&b.name)).unwrap_or_else(|| "No bus chosen".into());
+        l.ui.text_in(&bus, Rect::new(f.card.x, f.card.y + 6.0, f.card.w, 20.0), 13.0, Weight::Medium, TEXT, Align::Right);
+        l.ui.text_in(&start_line(l), Rect::new(f.card.x, f.card.y + 28.0, f.card.w, 20.0), 11.5, Weight::Regular, TEXT_DIM, Align::Right);
+        l.ui.text_in(&paint_line(l), Rect::new(f.card.x, f.card.y + 48.0, f.card.w, 20.0), 11.5, Weight::Regular, TEXT_DIM, Align::Right);
+        if l.ui.button("to-map", f.btn, TABS[1], Some("map"), ButtonKind::Primary) {
+            l.drive.tab = 1;
+        }
+        return;
+    }
+    // the duty in short: the line, the tour, the trip the game would start with
+    let (duty, when) = duty_of(l);
+    l.ui.p().rounded(f.card, RADIUS, Color::rgba(14, 14, 14, 0.82));
+    l.ui.text_in(&duty, Rect::new(f.card.x + 16.0, f.card.y + 8.0, f.card.w - 32.0, 20.0), 13.5, Weight::Medium, TEXT, Align::Right);
+    l.ui.text_in(&when, Rect::new(f.card.x + 16.0, f.card.y + 28.0, f.card.w - 32.0, 18.0), 11.5, Weight::Regular, TEXT_DIM, Align::Right);
+    l.ui.text_in(&duty_place(l), Rect::new(f.card.x + 16.0, f.card.y + 48.0, f.card.w - 32.0, 18.0), 11.5, Weight::Regular, TEXT_DIM, Align::Right);
+    let label = if running > 0 && l.state.second_armed.map(|t| t.elapsed().as_secs() < 6).unwrap_or(false) {
+        "Start another game"
+    } else if (l.state.choice.free || l.state.choice.line.is_none()) && l.state.joined_server.is_none() {
+        "Drive"
+    } else {
+        "Start the duty"
+    };
+    if l.ui.button("launch", f.btn, label, Some("play_arrow"), ButtonKind::Primary) {
+        start(l);
+    }
+    // where the last game on this map was left (`laststn.osn`): a second way in
+    if let Some(c) = f.cont {
+        if l.ui.button("continue", c, "Continue where you left off", Some("history"), ButtonKind::Normal) {
+            l.state.launch_last_situation();
+        }
+    }
+    if running > 0 {
+        let note = format!("{running} game{} running - see Sessions", if running > 1 { "s" } else { "" });
+        let nr = Rect::new(f.btn.x, f.btn.bottom() + 4.0, f.btn.w, 20.0);
+        let (h, _, clicked) = l.ui.interact(id_of("running-note"), nr);
+        if clicked {
+            l.go(super::Page::Sessions);
+        }
+        l.ui.text_in(&note, nr, 12.5, Weight::Regular, if h { TEXT } else { OK }, Align::Center);
+    }
+}
+
+/// The vehicle and the environment as one row, over the map: what the first tab decided,
+/// and the way back to it.
+fn env_chip(l: &mut Launcher, r: Rect) {
+    let bus = l.state.bus().map(|b| display_bus_name(&b.name)).unwrap_or_else(|| "No bus chosen".into());
+    let text = format!("{bus}  ·  {}", start_line(l));
+    let w = l.ui.width(&text, 11.5, Weight::Regular) + 66.0;
+    let chip = Rect::new((r.right() - w).max(r.x), r.y, w, 34.0);
+    l.ui.solid(chip);
+    let (h, _, clicked) = l.ui.interact(id_of("drive-env"), chip);
+    l.ui.p().rounded(chip, RADIUS, Color::rgba(14, 14, 14, if h { 0.94 } else { 0.82 }));
+    l.ui.icon("directions_bus", Vec2::new(chip.x + 20.0, chip.center().y), 16.0, if h { ACCENT } else { TEXT_DIM });
+    l.ui.text_in(&text, Rect::new(chip.x + 38.0, chip.y, chip.w - 48.0, chip.h), 11.5, Weight::Regular, TEXT_SOFT, Align::Left);
+    l.ui.tooltip(chip, "The vehicle and the day: back to the first tab");
+    if clicked {
+        l.drive.tab = 0;
+    }
+}
+
+/// The livery the bus would wear.
+fn paint_line(l: &Launcher) -> String {
+    match l.state.bus() {
+        Some(bus) if l.state.choice.paint.is_empty() => default_livery_label(bus).to_string(),
+        Some(_) => l.state.choice.paint.clone(),
+        None => String::new(),
+    }
+}
+
+/// The chosen day and weather in one line (the first tab's own work, summed up on the
+/// second where it is only a backdrop).
+fn start_line(l: &Launcher) -> String {
+    let weather = match l.state.choice.weather.strip_prefix("metar:") {
+        Some(code) => format!("at {code}"),
+        None if l.state.choice.weather == "cycle" => "weather cycle".into(),
+        None => l.state.weathers.iter().find(|w| w.file == l.state.choice.weather).map(|w| w.name.clone()).unwrap_or_else(|| "the map's weather".into()),
+    };
+    let (yy, mm, dd) = super::ui::parse_date(&l.state.choice.date);
+    format!("{:02}:{:02}, {dd} {} {yy} · {weather}", l.state.choice.time / 60, l.state.choice.time % 60, super::ui::MONTHS[(mm as usize).clamp(1, 12) - 1])
+}
+
+/// The duty in words: the line and the tour, and when the trip the game would take runs.
+fn duty_of(l: &Launcher) -> (String, String) {
+    let map = l.state.map().map(|m| if m.friendly.is_empty() { m.name.clone() } else { m.friendly.clone() }).unwrap_or_else(|| "-".into());
+    match (&l.state.choice.line, &l.state.choice.tour, l.state.choice.free) {
+        (_, _, true) | (None, _, _) => (format!("Free drive · {map}"), "wherever you like".into()),
+        (Some(line), Some(t), _) => {
+            let trip = l.state.tour().and_then(|t| t.trips.get(l.state.first_trip().unwrap_or(0)));
+            let when = trip.map(|x| format!("{} - {} · {:.1} km · {} → {}", hhmm(x.departure), hhmm(x.arrival), x.km, if x.from.is_empty() { "?" } else { &x.from }, x.terminus)).unwrap_or_default();
+            (format!("Line {line} · tour {t} · {map}"), when)
+        }
+        (Some(line), None, _) => (format!("Line {line} · choose a tour · {map}"), String::new()),
+    }
+}
+
+/// Where the bus is put down.
+fn duty_place(l: &Launcher) -> String {
+    match l.state.choice.entry {
+        e if e < 0 => "starting point: automatic".to_string(),
+        e => l
+            .state
+            .map()
+            .and_then(|m| m.entry_points.get(e as usize))
+            .map(|x| format!("starting at {}", if x.name.is_empty() { format!("entry {}", x.index + 1) } else { x.name.clone() }))
+            .unwrap_or_else(|| "starting point: automatic".into()),
+    }
+}
+
+/// How much map the picture holds: its foot, out of the panels' way.
+fn legend(l: &mut Launcher, free: Rect) {
+    let Some((roads, stops, entries)) = l.mapview.counts() else { return };
+    let t = format!("{roads} {}  ·  {stops} {}  ·  {entries} {}", omsi_ui::tr("roads"), omsi_ui::tr("stops"), omsi_ui::tr("entry points"));
+    let w = l.ui.width(&t, 11.0, Weight::Regular) + 20.0;
+    let bar = Rect::new(free.x + 4.0, free.bottom() - 30.0, w, 20.0);
+    l.ui.solid(bar);
+    l.ui.p().rounded(bar, 5.0, Color::rgba(0, 0, 0, 0.55));
+    l.ui.text_in(&t, bar.pad(10.0, 0.0), 11.0, Weight::Regular, TEXT_SOFT, Align::Left);
+}
+
+/// The names and times the map's own pixels cannot say: where the chosen trip calls, and
+/// which entry point the mouse is on. Written over the picture, under the panels, and clear
+/// of `avoid` (the foot's own card).
+fn map_labels(l: &mut Launcher, free: Rect, avoid: &Rect) {
+    let stops: Vec<(DVec2, usize)> = l.mapview.stops_placed().to_vec();
+    if !stops.is_empty() {
+        let trip = l.state.tour().and_then(|t| t.trips.get(l.state.first_trip().unwrap_or(0))).cloned();
+        let mut taken: Vec<Rect> = Vec::new();
+        for (place, k) in stops {
+            let Some(st) = trip.as_ref().and_then(|t| t.stops.get(k)) else { continue };
+            let at = l.mapview.project(place);
+            if !free.contains(at) {
+                continue;
+            }
+            let text = format!("{}  {}", st.name, hhmm(st.arr));
+            let w = l.ui.width(&text, 11.0, Weight::Medium);
+            let rr = Rect::new(at.x + 9.0, at.y - 17.0, w + 12.0, 17.0);
+            // (a crowded map, or one with a card over it: what would sit on something else
+            // is left out)
+            let hits = |t: &Rect| t.x < rr.right() && rr.x < t.right() && t.y < rr.bottom() && rr.y < t.bottom();
+            if taken.iter().any(hits) || hits(avoid) {
+                continue;
+            }
+            l.ui.p().rounded(rr, 4.0, Color::rgba(10, 10, 10, 0.78));
+            l.ui.text_in(&text, Rect::new(rr.x + 6.0, rr.y, w, rr.h), 11.0, Weight::Medium, TEXT_SOFT, Align::Left);
+            taken.push(rr);
+        }
+    }
+    if let Some(i) = l.mapview.hovered().or_else(|| (l.state.choice.entry >= 0).then_some(l.state.choice.entry as usize)) {
+        let (Some(name), Some(at)) = (l.mapview.entry_name(i).map(str::to_string), l.mapview.entry_at(i)) else { return };
+        if !free.contains(at) {
+            return;
+        }
+        let name = if name.chars().count() > 28 { name.chars().take(27).collect::<String>() + "…" } else { name };
+        let w = l.ui.width(&name, 11.5, Weight::Medium);
+        let rr = Rect::new(at.x + 10.0, at.y - 26.0, w + 12.0, 19.0);
+        l.ui.p().rounded(rr, 4.0, Color::rgba(10, 10, 10, 0.86));
+        l.ui.text_in(&name, Rect::new(rr.x + 6.0, rr.y, w, rr.h), 11.5, Weight::Medium, TEXT, Align::Left);
+    }
 }
 
 /// Names in older packs often use underscores as spaces. Keep the original file and
@@ -359,174 +808,6 @@ fn step_bus(l: &mut Launcher, r: Rect) {
             }
             if plate_changed { l.state.choice.plate = plate; l.state.touched(); }
         }
-    }
-}
-
-fn step_route(l: &mut Launcher, r: Rect) {
-    let mut y = r.y;
-    // the map (on a server: the server's, not to be changed)
-    if let Some(name) = joined_server_name(l) {
-        let m = l.state.map().map(|m| if m.friendly.is_empty() { m.name.clone() } else { m.friendly.clone() }).unwrap_or_else(|| l.state.choice.map.clone());
-        l.ui.label(Rect::new(r.x, y, 110.0, ROW), "Map");
-        let fr = Rect::new(r.x + 110.0, y, r.w - 110.0, ROW);
-        l.ui.solid(fr);
-        l.ui.p().rounded(fr, RADIUS, FIELD);
-        l.ui.icon("lock", Vec2::new(fr.x + 16.0, fr.center().y), 15.0, TEXT_DIM);
-        l.ui.text_in(&format!("{m}  ·  set by {name}"), Rect::new(fr.x + 32.0, fr.y, fr.w - 40.0, fr.h), 13.0, Weight::Regular, TEXT_SOFT, Align::Left);
-        y += ROW + 8.0;
-        return step_route_rest(l, r, y);
-    }
-    let maps: Vec<(String, String)> = l.state.maps.iter().map(|m| (m.file.clone(), format!("{}{}{}", if l.state.fresh.contains_key(&m.file) { "★ NEW · " } else { "" }, if m.friendly.is_empty() { &m.name } else { &m.friendly }, if m.installed { "  (mod)" } else { "" }))).collect();
-    let mut sel = maps.iter().position(|m| m.0 == l.state.choice.map).unwrap_or(0);
-    l.ui.label(Rect::new(r.x, y, 110.0, ROW), "Map");
-    if l.ui.select("map", Rect::new(r.x + 110.0, y, r.w - 110.0, ROW), &mut sel, &maps.iter().map(|m| m.1.clone()).collect::<Vec<_>>()) {
-        if let Some((f, _)) = maps.get(sel) {
-            let f = f.clone();
-            l.state.select_map(&f);
-        }
-    }
-    y += ROW + 8.0;
-    step_route_rest(l, r, y);
-}
-
-fn step_route_rest(l: &mut Launcher, r: Rect, mut y: f32) {
-    let mut free = l.state.choice.free;
-    if l.ui.toggle("free", Rect::new(r.x, y, r.w, ROW), &mut free, "Free drive (no timetable duty)") {
-        l.state.choice.free = free;
-        l.state.touched();
-    }
-    y += ROW + 10.0;
-    // where to start: one of the map's entry points, as in OMSI 2; Automatic takes the one
-    // nearest to the duty's first stop by road (a free drive: the map's first)
-    if let Some(m) = l.state.map().cloned() {
-        let mut labels = vec![if free { "Automatic (the map's first)".to_string() } else { "Automatic (nearest to the first stop)".to_string() }];
-        labels.extend(m.entry_points.iter().map(|e| if e.name.is_empty() { format!("entry {}", e.index + 1) } else { e.name.clone() }));
-        // (the choice is the entry's place in the list; 0 = automatic here)
-        let mut es = if l.state.choice.entry < 0 { 0 } else { (l.state.choice.entry as usize + 1).min(labels.len() - 1) };
-        l.ui.label(Rect::new(r.x, y, 110.0, ROW), "Start at");
-        if l.ui.select("entry", Rect::new(r.x + 110.0, y, r.w - 110.0, ROW), &mut es, &labels) {
-            l.state.choice.entry = es as i32 - 1;
-            l.state.touched();
-        }
-        y += ROW + 10.0;
-    }
-    if free {
-        l.ui.paragraph("Free driving: the bus starts where you chose, with the traffic and the timetable's buses around it, but no line of your own.", Vec2::new(r.x, y), r.w, 13.0, Weight::Regular, TEXT_DIM);
-        return;
-    }
-    // lines and tours side by side
-    let half = (r.w - 12.0) * 0.5;
-    let left = Rect::new(r.x, y, half, r.bottom() - y);
-    let right = Rect::new(r.x + half + 12.0, y, half, r.bottom() - y);
-    l.ui.heading(Rect::new(left.x, left.y, left.w, 28.0), "Line", None);
-    l.ui.text_input("line-filter", Rect::new(left.x, left.y + 30.0, left.w, 34.0), &mut l.drive.line_filter, "Filter…", Some("search"));
-    let q = l.drive.line_filter.to_lowercase();
-    let lines: Vec<(String, String, usize)> = l.state.lines.iter()
-        .filter(|x| x.user_allowed)
-        .filter(|x| q.is_empty() || x.name.to_lowercase().contains(&q))
-        .map(|x| (x.name.clone(), x.termini.join(" · "), x.tours.len()))
-        .collect();
-    let chosen = l.state.choice.line.clone();
-    let mut pick_line = None;
-    let loading = l.state.loading_lines;
-    l.ui.scroll_area("line-list", Rect::new(left.x - 4.0, left.y + 72.0, left.w + 8.0, left.h - 72.0), &mut |ui, v| {
-        let rh = 48.0;
-        if lines.is_empty() {
-            ui.text_in(if loading { "Reading the timetable…" } else { "No lines on this date." }, Rect::new(v.x + 10.0, v.y, v.w, 36.0), 12.5, Weight::Regular, TEXT_DIM, Align::Left);
-        }
-        for (k, (name, termini, tours)) in lines.iter().enumerate() {
-            let rr = Rect::new(v.x + 4.0, v.y + k as f32 * rh, v.w - 12.0, rh - 4.0);
-            let on = chosen.as_deref() == Some(name.as_str());
-            if ui.row(&format!("line-{name}"), rr, on) {
-                pick_line = Some(name.clone());
-            }
-            // (a long line name, as Ahlheim's "Eichenhoehe TA11 Mo-Do Schule", is cut)
-            let count = format!("{tours}");
-            let cw = ui.width(&count, 11.5, Weight::Bold) + 8.0;
-            let bw = (ui.width(name, 13.0, Weight::Black) + 14.0).clamp(34.0, (rr.w - cw - 24.0).max(34.0));
-            let badge = Rect::new(rr.x + 8.0, rr.y + 8.0, bw, 22.0);
-            ui.p().rounded(badge, 4.0, Color::rgba(52, 52, 52, 1.0));
-            ui.text_in(name, badge.pad(6.0, 0.0), 12.5, Weight::Bold, TEXT, Align::Center);
-            ui.icon("event", Vec2::new(rr.right() - cw - 8.0, rr.y + 19.0), 13.0, TEXT_FAINT);
-            ui.text_in(&count, Rect::new(rr.right() - cw, rr.y + 8.0, cw - 4.0, 22.0), 11.5, Weight::Bold, TEXT_DIM, Align::Right);
-            ui.text_in(termini, Rect::new(rr.x + 8.0, rr.y + 28.0, rr.w - 16.0, 16.0), 11.0, Weight::Regular, TEXT_FAINT, Align::Left);
-        }
-        lines.len() as f32 * rh + 4.0
-    });
-    if let Some(n) = pick_line {
-        if l.state.choice.line.as_deref() != Some(n.as_str()) {
-            l.state.choice.line = Some(n);
-            l.state.choice.tour = None;
-            l.state.touched();
-        }
-    }
-    l.ui.heading(Rect::new(right.x, right.y, right.w, 28.0), "Tour", None);
-    let Some(line) = l.state.line().cloned() else {
-        l.ui.paragraph("Pick a line first. As in OMSI, the start time and date then say where in the tour the bus is: the trip under way, or the next to leave.", Vec2::new(right.x, right.y + 34.0), right.w, 12.5, Weight::Regular, TEXT_DIM);
-        return;
-    };
-    let mut tours: Vec<&omsi_launcher_lib::TourInfo> = line.tours.iter().collect();
-    tours.sort_by(|a, b| b.runs.cmp(&a.runs).then_with(|| natural(&a.number).cmp(&natural(&b.number))));
-    let now = l.state.choice.time as f64 * 60.0;
-    let tours: Vec<(String, usize, String, bool, Option<String>, Option<(f64, f64)>, String, String)> = tours.iter().map(|t| {
-        let trip = trip_index_at(t, now).and_then(|i| t.trips.get(i));
-        let from = t.trips.first().map(|x| x.from.clone()).unwrap_or_default();
-        let terminus = t.trips.last().map(|x| x.terminus.clone()).unwrap_or_default();
-        (
-            t.number.clone(),
-            t.trips.len(),
-            t.days.clone(),
-            t.runs,
-            t.next_run.clone(),
-            trip.map(|x| (x.departure, x.arrival)),
-            from,
-            terminus,
-        )
-    }).collect();
-    let chosen_t = l.state.choice.tour.clone();
-    let mut pick = None;
-    l.ui.scroll_area("tour-list", Rect::new(right.x - 4.0, right.y + 30.0, right.w + 8.0, right.h - 30.0), &mut |ui, v| {
-        let rh = 84.0;
-        for (k, (num, trips, days, runs, next, trip_time, from, terminus)) in tours.iter().enumerate() {
-            let rr = Rect::new(v.x + 4.0, v.y + k as f32 * rh, v.w - 12.0, rh - 4.0);
-            let on = chosen_t.as_deref() == Some(num.as_str());
-            if ui.row(&format!("tour-{num}"), rr, on) {
-                pick = Some((num.clone(), *runs, next.clone()));
-            }
-            let c = if *runs { TEXT } else { TEXT_FAINT };
-            // (the tour's name as the map writes it and OMSI lists it: "1", "Mo-Fr 1")
-            let name = num.clone();
-            ui.text_in(&name, Rect::new(rr.x + 10.0, rr.y + 5.0, rr.w - 110.0, 18.0), 13.5, Weight::Bold, c, Align::Left);
-            if let Some((departure, arrival)) = trip_time {
-                ui.text_in(&format!("{} - {}", hhmm(*departure), hhmm(*arrival)), Rect::new(rr.right() - 110.0, rr.y + 6.0, 100.0, 18.0), 12.0, Weight::Medium, if *runs { ACCENT } else { TEXT_FAINT }, Align::Right);
-                ui.text_in(&format!("{}: {}", omsi_ui::tr("Trip duration"), trip_duration(*departure, *arrival)), Rect::new(rr.x + 10.0, rr.y + 43.0, rr.w - 20.0, 16.0), 12.0, Weight::Medium, c, Align::Left);
-            }
-            if !from.is_empty() || !terminus.is_empty() {
-                ui.text_in(&format!("{from} → {terminus}"), Rect::new(rr.x + 10.0, rr.y + 25.0, rr.w - 20.0, 16.0), 11.5, Weight::Medium, c, Align::Left);
-            }
-            let sub = if *runs {
-                format!("{trips} trips · {days}")
-            } else {
-                match next {
-                    Some(n) => format!("{trips} trips · {days} · runs {n}"),
-                    None => format!("{trips} trips · never within a year"),
-                }
-            };
-            ui.text_in(&sub, Rect::new(rr.x + 10.0, rr.y + 61.0, rr.w - 20.0, 16.0), 11.0, Weight::Regular, TEXT_DIM, Align::Left);
-        }
-        tours.len() as f32 * rh + 4.0
-    });
-    if let Some((num, runs, next)) = pick {
-        // a tour of another day moves the date to the next day it runs (OMSI lists only
-        // the day's tours)
-        if !runs {
-            if let Some(n) = next {
-                l.state.choice.date = n;
-                l.state.load_lines();
-            }
-        }
-        l.state.choice.tour = Some(num);
-        l.state.touched();
     }
 }
 
@@ -858,117 +1139,13 @@ fn ibis_box(l: &mut Launcher, r: Rect) {
 /// launch choice takes), and the entry point the player picked.
 fn map_look(l: &Launcher) -> super::mapview::Look {
     let file = l.state.choice.map.clone();
-    let root = std::path::PathBuf::from(&l.state.config.root);
-    let global = omsi_launcher_lib::content_dir().map(|c| c.join(&file)).filter(|p| p.is_file()).unwrap_or_else(|| omsi_cfg::resolve_path(&root, &file));
+    // (the map list came from the content roots; ask them the same way, case-insensitively,
+    // so a mod's map is found wherever its root sits)
+    let global = omsi_cfg::find_in_roots(&file)
+        .map(|(_, p)| p)
+        .unwrap_or_else(|| omsi_cfg::resolve_path(std::path::Path::new(&l.state.config.root), &file));
     let trip = l.state.tour().and_then(|t| t.trips.get(l.state.first_trip().unwrap_or(0))).map(|t| t.name.clone()).unwrap_or_default();
     super::mapview::Look { map: file, global, date: l.state.choice.date.clone(), trip, entry: l.state.choice.entry }
-}
-
-/// The right column: the bus preview, the duty in short, the start button.
-fn summary(l: &mut Launcher, side: Rect) {
-    let pw = side.w;
-    let ph = (pw / 1.6).min(side.h * 0.55);
-    let pr = Rect::new(side.x, side.y, pw, ph);
-    // The picture: the map on the Route step (that is what it is about - which line, from
-    // where, how far), the bus everywhere else, and either one by the switch over it.
-    let map_shown = l.drive.preview_map.unwrap_or(l.drive.step == 1);
-    if map_shown {
-        // (only asked for while it is shown: reading 891 tiles for a picture nobody looks
-        // at would be a second of work for nothing)
-        l.mapview.want(map_look(l));
-        l.map_preview(pr);
-    } else {
-        l.preview(pr);
-    }
-    let chip = Rect::new(pr.right() - 96.0, pr.y + 10.0, 86.0, 28.0);
-    let (icon, label) = if map_shown { ("directions_bus", "Bus") } else { ("map", "Map") };
-    if l.ui.button("preview-switch", chip, label, Some(icon), ButtonKind::Ghost) {
-        l.drive.preview_map = Some(!map_shown);
-    }
-    let mut y = pr.bottom() + 18.0;
-    let bus_name = l.state.bus().map(|bus| display_bus_name(&bus.name)).unwrap_or_else(|| "No bus chosen".into());
-    l.ui.text_in(&bus_name, Rect::new(side.x, y, pw, 24.0), 18.0, Weight::Bold, TEXT, Align::Left);
-    y += 26.0;
-    let paint = if l.state.choice.paint.is_empty() { l.state.bus().map(default_livery_label).unwrap_or("Default paint").to_string() } else { l.state.choice.paint.clone() };
-    l.ui.text_in(&paint, Rect::new(side.x, y, pw, 18.0), 12.5, Weight::Regular, TEXT_DIM, Align::Left);
-    y += 30.0;
-    let map = l.state.map().map(|m| if m.friendly.is_empty() { m.name.clone() } else { m.friendly.clone() }).unwrap_or_else(|| "-".into());
-    let duty = match (&l.state.choice.line, &l.state.choice.tour, l.state.choice.free) {
-        (_, _, true) | (None, _, _) => "Free drive".to_string(),
-        (Some(line), Some(t), _) => format!("Line {line}, tour {t}"),
-        (Some(line), None, _) => format!("Line {line}, choose a tour"),
-    };
-    let weather = match l.state.choice.weather.strip_prefix("metar:") {
-        Some(code) => format!("Current weather at {code}"),
-        None if l.state.choice.weather == "cycle" => "Weather cycle".into(),
-        None => l.state.weathers.iter().find(|w| w.file == l.state.choice.weather).map(|w| w.name.clone()).unwrap_or_else(|| "Map default".into()),
-    };
-    let (yy, mm, dd) = super::ui::parse_date(&l.state.choice.date);
-    let mut start_at = format!("{:02}:{:02}, {dd} {} {yy}", l.state.choice.time / 60, l.state.choice.time % 60, super::ui::MONTHS[(mm as usize).clamp(1, 12) - 1]);
-    let mut weather = weather;
-    // on a server: its clock and weather
-    if let Some(i) = l.state.joined_server.as_ref().and_then(|a| l.state.server_info.get(a)).and_then(|x| x.1.as_ref().ok()) {
-        start_at = format!("{} (the server's clock)", i.time);
-        weather = if i.weather.is_empty() { "the map's (the server's)".into() } else { format!("{} (the server's)", i.weather) };
-    }
-    let rows = [
-        ("Map", map),
-        ("Duty", duty),
-        ("Start", start_at),
-        ("Weather", weather),
-    ];
-    for (k, v) in rows {
-        l.ui.text_in(k, Rect::new(side.x, y, 90.0, 22.0), 12.5, Weight::Regular, TEXT_DIM, Align::Left);
-        l.ui.text_in(&v, Rect::new(side.x + 90.0, y, pw - 90.0, 22.0), 12.5, Weight::Regular, TEXT, Align::Left);
-        y += 24.0;
-    }
-    if let Some(b) = l.state.bus().filter(|b| !b.missing_packs.is_empty()) {
-        y += 8.0;
-        let text = omsi_ui::tr("Parts missing: needs %{packs}").replace("%{packs}", &b.missing_packs.join(", "));
-        l.ui.icon("warning", Vec2::new(side.x + 9.0, y + 10.0), 16.0, WARN);
-        l.ui.text_in(&text, Rect::new(side.x + 24.0, y, pw - 24.0, 20.0), 12.5, Weight::Medium, WARN, Align::Left);
-    }
-    // on a server: which, and the way back to playing alone
-    if let Some(name) = joined_server_name(l) {
-        y += 12.0;
-        l.ui.icon("dns", Vec2::new(side.x + 9.0, y + 11.0), 16.0, OK);
-        l.ui.text_in(&format!("Server: {name}"), Rect::new(side.x + 24.0, y, pw - 170.0, 22.0), 13.0, Weight::Medium, OK, Align::Left);
-        if l.ui.button("leave-server", Rect::new(side.x + pw - 150.0, y - 6.0, 150.0, 34.0), "Leave Server", Some("logout"), ButtonKind::Danger) {
-            l.state.leave_server();
-        }
-    }
-    let running = l.state.instances.iter().filter(|i| i.running).count();
-    // the start: the whole width of the column, at its foot
-    let note_h = if running > 0 { 24.0 } else { 0.0 };
-    let btn = Rect::new(side.x, side.bottom() - 48.0 - note_h, pw, 48.0);
-    let free = l.state.choice.free || l.state.choice.line.is_none();
-    let label = if running > 0 && l.state.second_armed.map(|t| t.elapsed().as_secs() < 6).unwrap_or(false) {
-        "Start another game"
-    } else if free && l.state.joined_server.is_none() {
-        "Drive"
-    } else {
-        "Start the duty"
-    };
-    if l.ui.button("launch", btn, label, Some("play_arrow"), ButtonKind::Primary) {
-        start(l);
-    }
-    // where the last game on this map was left (`laststn.osn`): a second way in
-    if l.state.joined_server.is_none() && l.state.has_last_situation() {
-        let cont = Rect::new(btn.x, btn.y - 44.0, pw, 38.0);
-        if l.ui.button("continue", cont, "Continue where you left off", Some("history"), ButtonKind::Normal) {
-            l.state.launch_last_situation();
-        }
-    }
-    if running > 0 {
-        let note = format!("{running} game{} running - see Sessions", if running > 1 { "s" } else { "" });
-        let nr = Rect::new(btn.x, btn.bottom() + 4.0, pw, 20.0);
-        let (h, _, clicked) = l.ui.interact(id_of("running-note"), nr);
-        if clicked {
-            l.go(super::Page::Sessions);
-        }
-        l.ui.text_in(&note, nr, 12.5, Weight::Regular, if h { TEXT } else { OK }, Align::Center);
-    }
-    let _ = fmt_bytes;
 }
 
 /// The phone's Start: as the desktop's.

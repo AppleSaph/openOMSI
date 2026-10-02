@@ -258,8 +258,9 @@ impl Launcher {
             "sheet-livery" => app.phone.sheet = Some(phone::Sheet::Livery),
             _ => {}
         }
-        if let Some(step) = p.split(':').nth(1).and_then(|s| s.parse().ok()) {
-            app.drive.step = step;
+        if let Some(step) = p.split(':').nth(1).and_then(|s| s.parse::<usize>().ok()) {
+            // (the Drive page's second part is which of its two tabs: drive:1 the map)
+            app.drive.tab = step.min(1);
             // (the Controls and Settings pages' second part is their tab: controls:1 the game
             // controllers, settings:3 Sound)
             app.pages.controls_tab = step;
@@ -427,8 +428,9 @@ impl ApplicationHandler for Launcher {
                     MouseButton::Left => {
                         if down {
                             self.ui.input.pressed = true;
-                            // a drag on the preview turns the bus
-                            if self.preview_rect.map(|r| r.contains(self.ui.input.mouse)).unwrap_or(false) {
+                            // a drag on the preview turns the bus (the panels lie over it:
+                            // what the mouse is over is theirs, not the bus's)
+                            if !self.ui.over_ui && self.preview_rect.map(|r| r.contains(self.ui.input.mouse)).unwrap_or(false) {
                                 self.dragging = Some(self.ui.input.mouse);
                             }
                         } else {
@@ -709,16 +711,17 @@ impl Launcher {
                 }
             }
         }
-        // the map picture, drawn again when the chosen map, trip or card size changed
-        if let Some(r) = self.map_rect {
-            let (w, h) = ((r.w * scale) as u32, (r.h * scale) as u32);
-            if let Some(view) = self.mapview.picture(renderer, w, h) {
+        // the map picture, drawn again when what it shows, where it looks or the zoom's own
+        // thinness changed
+        if self.map_rect.is_some() {
+            if let Some(view) = self.mapview.picture(renderer) {
                 if let Some(gpu) = self.gpu.as_mut() {
                     if self.map_gen != self.mapview.generation {
                         self.map_gen = self.mapview.generation;
+                        let size = self.mapview.pixels();
                         match self.map_tex {
-                            Some(id) => gpu.set_view(&renderer.device, id, &view, (w, h)),
-                            None => self.map_tex = Some(gpu.add_view(&renderer.device, &view, (w, h))),
+                            Some(id) => gpu.set_view(&renderer.device, id, &view, size),
+                            None => self.map_tex = Some(gpu.add_view(&renderer.device, &view, size)),
                         }
                     }
                 }
@@ -807,6 +810,17 @@ impl Launcher {
                     self.release_next = true;
                 }
                 "wheel" => self.ui.input.wheel.y += arg.trim().parse::<f32>().unwrap_or(0.0),
+                // a drag: down at a place, `move` with the button still held, `up` at the end
+                "down" => {
+                    self.ui.input.mouse = xy();
+                    self.ui.input.pressed = true;
+                    self.ui.input.down = true;
+                    self.release_next = false;
+                }
+                "up" => {
+                    self.ui.input.released = true;
+                    self.ui.input.down = false;
+                }
                 "type" => self.ui.input.text.push_str(arg),
                 "key" => {
                     let k = match arg.trim() {
@@ -984,34 +998,74 @@ impl Launcher {
         }
     }
 
-    /// The chosen map's picture in `r`: every road the map has, its entry points and the
-    /// route of the chosen trip, read from the tile files (see `mapview`), or a word while
-    /// it is read.
-    pub fn map_preview(&mut self, r: Rect) {
+    /// The chosen map across `r`, the whole page behind the panels: every road the map has,
+    /// its entry points and the chosen trip's route, read from the tile files (see
+    /// `mapview`), or a word while it is read. `map_interact` gives it the mouse afterwards.
+    pub fn map_background(&mut self, r: Rect) {
         self.map_rect = Some(r);
-        self.ui.solid(r);
-        self.ui.p().rounded(r, RADIUS, FIELD);
         let status = self.mapview.status();
         match (self.map_tex, status.is_empty()) {
-            (Some(tex), true) => self.ui.image(r, tex, RADIUS),
+            (Some(tex), true) => self.ui.image(r, tex, 0.0),
             _ => {
+                self.ui.solid(r);
+                self.ui.p().rect(r, omsi_ui::Color::rgba(13, 13, 13, 1.0));
                 let t = if status.is_empty() { "Loading…" } else { status };
-                self.ui.text_in(t, r, 13.0, Weight::Regular, TEXT_FAINT, Align::Center);
+                self.ui.text_in(t, Rect::new(r.x, r.y + r.h * 0.5 - 12.0, r.w, 24.0), 13.5, Weight::Regular, TEXT_FAINT, Align::Center);
             }
         }
         if self.mapview.busy() {
-            let c = Vec2::new(r.right() - 16.0, r.y + 16.0);
+            // (out of the way of the panels: the map is being read, the page is not)
+            let c = Vec2::new(r.right() - 26.0, r.y + r.h - 26.0);
             let a = self.ui.time * 5.0;
             self.ui.p().arc(c, 6.0, 8.0, a, a + 4.2, TEXT_SOFT);
         }
-        // how much map the picture holds, its foot
-        if let Some((roads, stops, entries)) = self.mapview.counts() {
-            let t = format!("{roads} {}  ·  {stops} {}  ·  {entries} {}", omsi_ui::tr("roads"), omsi_ui::tr("stops"), omsi_ui::tr("entry points"));
-            let w = self.ui.width(&t, 11.0, Weight::Regular) + 18.0;
-            let bar = Rect::new(r.x + 10.0, r.bottom() - 30.0, w, 20.0);
-            self.ui.p().rounded(bar, 5.0, omsi_ui::Color::rgba(0, 0, 0, 0.55));
-            self.ui.text_in(&t, bar.pad(9.0, 0.0), 11.0, Weight::Regular, TEXT_SOFT, Align::Left);
+    }
+
+    /// The mouse over the map: what it drags, where it zooms, and the entry point a click
+    /// takes. Called once the page's panels are drawn - they have the first claim on it.
+    pub fn map_interact(&mut self, r: Rect, window: Rect) {
+        let p = mapview::Pointer {
+            at: self.ui.input.mouse,
+            pressed: self.ui.input.pressed,
+            released: self.ui.input.released,
+            down: self.ui.input.down,
+            wheel: self.ui.input.wheel.y,
+            blocked: self.ui.over_ui || !r.contains(self.ui.input.mouse),
+        };
+        self.mapview.think(r, window, self.ui.scale, p);
+        if let Some(i) = self.mapview.take_clicked() {
+            if self.state.choice.entry != i as i32 {
+                log::info!("launcher map: entry point {} taken from the map", i + 1);
+                self.state.choice.entry = i as i32;
+                self.state.touched();
+            }
         }
+    }
+
+    /// The bus across `r`, the whole page behind the panels. `focus` is where the panels end,
+    /// as a share of the window: the showroom frames the bus in what is left of it.
+    pub fn preview_full(&mut self, r: Rect, focus: f32) {
+        self.preview_rect = Some(r);
+        self.showroom.focus_x = focus.clamp(0.2, 0.95);
+        match (self.preview_tex, self.showroom.has_picture()) {
+            (Some(tex), true) => self.ui.image(r, tex, 0.0),
+            _ => {
+                self.ui.solid(r);
+                let t = if self.showroom.error.is_some() { "No preview" } else { "Loading…" };
+                self.ui.text_in(t, Rect::new(r.x, r.y + r.h * 0.5 - 12.0, r.w, 24.0), 13.0, Weight::Regular, TEXT_FAINT, Align::Center);
+            }
+        }
+    }
+
+    /// The wheel and the cursor over the showroom, once the panels have had the mouse.
+    pub fn showroom_pointer(&mut self, r: Rect) {
+        if self.ui.over_ui || !r.contains(self.ui.input.mouse) {
+            return;
+        }
+        if self.ui.input.wheel.y.abs() > 0.0 {
+            self.showroom.zoom_by((1.0 - self.ui.input.wheel.y * 0.08).clamp(0.8, 1.25));
+        }
+        self.ui.cursor = winit::window::CursorIcon::Grab;
     }
 
     pub fn go(&mut self, p: Page) {
