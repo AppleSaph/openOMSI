@@ -9879,6 +9879,16 @@ fn is_vehicle_body_material(
     true
 }
 
+/// The texture whose alpha is a blended slot's coverage: its `[matl_transmap]` file where
+/// it has one (the diffuse alpha is then the reflection mask), else the diffuse texture. A
+/// script texture as the map (`\S:n`) is not known at load time: the diffuse texture then.
+fn coverage_texture<'a>(transmap: Option<&'a str>, diffuse: &'a str) -> &'a str {
+    match transmap.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) if !t.starts_with("\\S:") => t,
+        _ => diffuse,
+    }
+}
+
 /// Side of the square a texture's alpha is kept at for [`slot_is_see_through`].
 const ALPHA_MASK: usize = 256;
 
@@ -11621,9 +11631,16 @@ impl World {
                     // (a tilting window): taken for bodywork they wrote their depth, and the
                     // glow of every lamp and the lit lenses of the traffic lights behind them
                     // were gone - seen only through an opened window.
+                    // The alpha that says so is the [matl_transmap]'s where the slot has one:
+                    // the diffuse alpha is then only the reflection mask (the stock Golf 2's
+                    // body texture is 0 almost everywhere, its transmap opaque). Read from
+                    // the diffuse texture, every transmapped car body wrote no depth, and its
+                    // wheel arches, far wheels and interior drawn after it showed through the
+                    // paint (#928, #932).
+                    let coverage_tex = subst(coverage_texture(ov.iter().find_map(|o| o.transmap.as_deref()), &m.texture));
                     let see_through = !named_pane
                         && declared_alpha == AlphaMode::Blend
-                        && omsi_texture::find_texture(&subst(&m.texture), &dirs_ref).and_then(|p| alpha_mask(&p)).is_some_and(|mask| slot_is_see_through(&vm.data, slot, &mask));
+                        && omsi_texture::find_texture(&coverage_tex, &dirs_ref).and_then(|p| alpha_mask(&p)).is_some_and(|mask| slot_is_see_through(&vm.data, slot, &mask));
                     if see_through {
                         log::debug!("  {} slot {slot} '{}': see-through by its texture's alpha, writes no depth", def.file, m.texture);
                     }
@@ -12297,6 +12314,15 @@ mod tests {
 
     /// An LED panel's light map is one white pixel; a flipdot's is a picture with dark
     /// parts (the Krueger's `vmatrix_leer_LM.bmp`), and does not make an LED panel (#413).
+    #[test]
+    fn a_transmapped_slot_is_see_through_by_its_transmap_not_its_reflection_mask() {
+        // the stock Golf 2: diffuse alpha 0 (reflection mask), transmap opaque (#928, #932)
+        assert_eq!(coverage_texture(Some("Golf2_main1_T.tga"), "Golf2_main1.tga"), "Golf2_main1_T.tga");
+        assert_eq!(coverage_texture(None, "glass.tga"), "glass.tga");
+        assert_eq!(coverage_texture(Some("  "), "glass.tga"), "glass.tga");
+        assert_eq!(coverage_texture(Some("\\S:2"), "led.tga"), "led.tga");
+    }
+
     #[test]
     fn a_lamps_lenses_follow_its_alphascale_and_light_map_variables() {
         // three lenses on one mesh, each faded by its colour's variable and lit by its
