@@ -2208,6 +2208,7 @@ mod settings_tests {
         let mut graphics = vec![
             "s-preset", "s-graphics", "s-msaa", "s-scale", "s-af", "s-shadow", "set-ssao", "set-shadows", "s-casters", "set-detail_textures", "s-led", "s-led-mip", "set-shadow_blobs", "set-reflections", "set-clouds",
             "set-fullscreen", "set-vsync", "s-fps", "s-view", "s-maxobj", "s-minobj", "s-mirror", "s-texmem", "set-texture_compression",
+            "s-gp-sel", "s-gp-name", "s-gp-save", "s-gp-load", "s-gp-del",
         ];
         if !cfg!(target_os = "macos") {
             graphics.push("s-api");
