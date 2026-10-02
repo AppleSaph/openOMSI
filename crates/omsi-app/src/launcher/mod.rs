@@ -133,6 +133,10 @@ pub struct Launcher {
     /// second, hidden not at all (a game started from it is being played).
     focused: bool,
     occluded: bool,
+    /// The player came back to the launcher's window while a game runs (clicked it, Alt+Tab):
+    /// it is drawn and answers again until the game has the focus back. Before, it stood
+    /// still the whole game long, and the session code could not be copied (#825).
+    awake_in_game: bool,
     /// The last mouse or key event (an idle launcher draws less often: it kept the GPU busy
     /// at the screen's rate doing nothing).
     last_input: Instant,
@@ -206,6 +210,7 @@ impl Launcher {
         preview_gen: 0,
         focused: true,
         occluded: false,
+        awake_in_game: false,
         last_input: Instant::now(),
         fingers: Default::default(),
         browser: None,
@@ -399,10 +404,7 @@ impl ApplicationHandler for Launcher {
                 event_loop.exit();
             }
             WindowEvent::Touch(t) => self.touch(t, scale),
-            WindowEvent::Focused(f) => {
-                self.focused = f;
-                if !f { self.pages.pads.cancel_feedback_test(); }
-            }
+            WindowEvent::Focused(f) => self.set_focus(f),
             WindowEvent::Occluded(o) => {
                 self.occluded = o;
                 if o { self.pages.pads.cancel_feedback_test(); }
@@ -527,8 +529,13 @@ impl ApplicationHandler for Launcher {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.check_exit(event_loop);
-        // (a screenshot asked for by a script is drawn even when hidden)
-        let occluded = self.occluded && self.shot.is_none() && !self.script.iter().any(|(_, c)| c.starts_with("shot"));
+        // (a screenshot asked for by a script is drawn even when hidden, and so is the frame
+        // that gives the graphics device up again when the game is back in front: the
+        // game's window hides the launcher's then, and drawn nothing, it kept the device)
+        // (likewise the frame that opens it again for a window brought forward)
+        let resting = !mobile::mobile() && self.renderer.is_some() && self.state.in_game() && !self.awake();
+        let waking = !mobile::mobile() && self.renderer.is_none() && self.state.in_game() && self.awake();
+        let occluded = self.occluded && self.shot.is_none() && !resting && !waking && !self.script.iter().any(|(_, c)| c.starts_with("shot"));
         let interval = if occluded {
             0.5
         } else if !self.focused && omsi_cfg::env::var_os("OMSI_BACKGROUND").is_none() {
@@ -655,6 +662,23 @@ impl Launcher {
         }
     }
 
+    /// The window got or lost the keyboard (`WindowEvent::Focused`, or `focus 0/1` of a
+    /// launcher script).
+    fn set_focus(&mut self, f: bool) {
+        self.focused = f;
+        if !f {
+            self.pages.pads.cancel_feedback_test();
+        }
+        // (only once the game is on its way: the launcher has the focus while Start is
+        // pressed, and gives the device up then as before)
+        self.awake_in_game = f && self.renderer.is_none() && self.state.in_game() && self.state.queued_launch.is_none();
+    }
+
+    /// Looked at while a game runs (see `awake_in_game`): drawn and answering as usual.
+    fn awake(&self) -> bool {
+        self.awake_in_game && self.focused && self.state.queued_launch.is_none()
+    }
+
     fn frame(&mut self, event_loop: &ActiveEventLoop) {
         if self.recover_device() {
             return;
@@ -673,27 +697,39 @@ impl Launcher {
             #[cfg(target_os = "android")]
             { true }
         };
+        // (looked at while a game runs: drawn as usual, see `awake_in_game`)
+        let awake = self.awake();
         if desktop && self.renderer.is_none() {
-            if self.state.in_game() {
+            if self.state.in_game() && !awake {
                 // nothing is drawn while a game runs; what is clicked or typed meanwhile is not
                 // done once the launcher is back (the first frame pressed Start again)
                 let now = Instant::now();
                 let dt = now.duration_since(self.last).as_secs_f32().min(0.1);
                 self.last = now;
+                self.run_script();
                 self.state.update(dt);
                 self.ui.discard_input();
                 #[cfg(not(target_os = "android"))]
                 self.update_discord();
                 return;
             }
-            log::info!("launcher: no game runs any more, the graphics device is opened again");
+            if self.state.in_game() {
+                log::info!("launcher: its window is looked at while a game runs, the graphics device is opened again");
+                // (what was clicked while it stood still is not done: the click that brought
+                // it forward pressed whatever lay under it)
+                self.ui.discard_input();
+            } else {
+                self.awake_in_game = false;
+                log::info!("launcher: no game runs any more, the graphics device is opened again");
+            }
             self.make_surface();
         }
         self.draw_frame(event_loop);
         // a game starts or runs: the frame just drawn says so and stays in the window, and the
         // graphics device is given up until the game ends (with it open, a game on an NVIDIA
         // card without Resizable BAR uploaded at 20 MB/s)
-        if desktop && self.renderer.is_some() && self.state.in_game()
+        // (asked again: a script's `focus 0` comes in the frame just drawn)
+        if desktop && self.renderer.is_some() && self.state.in_game() && !self.awake()
             && (self.state.queued_launch.is_none() || presence_released)
         {
             log::info!("launcher: a game starts or runs, the graphics device is given up until it ends");
@@ -732,7 +768,8 @@ impl Launcher {
         // the preview shows the chosen bus in the chosen light
         let c = &self.state.choice;
         let look = showroom::Look { root: std::path::PathBuf::from(&self.state.config.root), map: c.map.clone(), bus: c.bus.clone(), paint: c.paint.clone(), weather: c.weather.clone(), time: c.time, date: c.date.clone() };
-        if !look.bus.is_empty() && !look.map.is_empty() {
+        // (not while a game runs: the launcher looked at meanwhile loads no bus onto the card)
+        if !look.bus.is_empty() && !look.map.is_empty() && !self.state.in_game() {
             self.showroom.want(look);
         }
         if let Some(r) = self.renderer.as_ref() {
@@ -874,6 +911,8 @@ impl Launcher {
                     }
                 }
                 "shot" => self.shot = Some((0.0, std::path::PathBuf::from(arg.trim()))),
+                // `focus 0` / `focus 1`: the window loses or gets the keyboard
+                "focus" => self.set_focus(arg.trim() != "0"),
                 "page" => {
                     if let Some((pg, _, _)) = PAGES.iter().find(|(_, n, _)| n.eq_ignore_ascii_case(arg.trim())) {
                         self.go(*pg);
@@ -989,7 +1028,7 @@ impl Launcher {
         }
         // a game starts: the last picture before the launcher gives its graphics device up
         // (see `frame`), which stays in the window until the game ends
-        if !mobile && self.state.in_game() {
+        if !mobile && self.state.in_game() && !self.awake() {
             self.draw_game_banner();
         }
     }

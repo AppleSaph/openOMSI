@@ -175,6 +175,16 @@ fn read_list(r: &mut omsi_cfg::CfgReader, base: &Path) -> Vec<PathBuf> {
 }
 
 impl SceneryObject {
+    /// Whether the map stores this object's height as it stands (not over the terrain):
+    /// Omsi.exe sets that flag (+0x194) at the end of loading the .sco for `[absheight]` and
+    /// for every object with a traffic path (0x7b8c66: the path ends `[path]` made, built by
+    /// 0x7ba0d0) - crossings, but also a road piece or an invisible AI-path object of a mod
+    /// that has no `[splinehelper]`. Put on the terrain as well, such a road stood the
+    /// height of the hill above (or under) the ground.
+    pub fn absolute_height(&self) -> bool {
+        self.abs_height || !self.paths.is_empty()
+    }
+
     /// Cutter filenames and their source folders. A separate model.cfg does not replace
     /// the object's own [terrainhole] declarations, which are not render-mesh overrides.
     pub fn terrain_hole_sources<'a>(&'a self, model: &'a Model) -> impl Iterator<Item = (&'a Path, &'a str)> {
@@ -503,6 +513,18 @@ mod tests {
         explicit.inherit_model_tags(&model);
         assert_eq!(explicit.render_type, RenderType::Normal);
         assert!(!explicit.surface);
+    }
+
+    #[test]
+    fn an_object_with_a_path_keeps_the_height_the_map_gives_it() {
+        let path = "[path]\n0\n0\n0\n0\n0\n10\n0\n0\n0\n3.5\n0\n0\n";
+        let road = SceneryObject::parse(&CfgFile::from_str("road.sco", &format!("[mesh]\nroad.o3d\n{path}")));
+        assert!(!road.abs_height && road.spline_helpers.is_empty());
+        assert!(road.absolute_height(), "a road piece without [splinehelper]");
+        let house = SceneryObject::parse(&CfgFile::from_str("house.sco", "[mesh]\nhouse.o3d\n"));
+        assert!(!house.absolute_height());
+        let lifted = SceneryObject::parse(&CfgFile::from_str("bridge.sco", "[absheight]\n[mesh]\nb.o3d\n"));
+        assert!(lifted.absolute_height());
     }
 
     #[test]

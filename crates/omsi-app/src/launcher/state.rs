@@ -185,7 +185,9 @@ pub struct State {
     pub choice: Choice,
     pub choice_dirty: f32,
     /// Map, whether it has a `laststn.osn`, when that was looked up.
-    pub last_sit: Option<(String, bool, std::time::Instant)>,
+    pub last_sit: Option<(String, Vec<core::SavedSituation>, std::time::Instant)>,
+    /// Which of them "Continue" starts (0: the newest, the last situation when there is one).
+    pub save_pick: usize,
     pub profiles: Vec<String>,
     pub profile: Option<core::Profile>,
     pub settings: serde_json::Value,
@@ -258,6 +260,7 @@ impl State {
             choice,
             choice_dirty: 0.0,
             last_sit: None,
+            save_pick: 0,
             profiles: Vec::new(),
             profile: None,
             settings,
@@ -597,23 +600,34 @@ impl State {
         }
     }
 
-    /// Whether a situation to continue lies on the chosen map (looked up at most every
-    /// two seconds: the page asks every frame).
-    pub fn has_last_situation(&mut self) -> bool {
+    /// The situations to continue on the chosen map: the last one and the save slots
+    /// (looked up at most every two seconds: the page asks every frame).
+    pub fn saved_situations(&mut self) -> &[core::SavedSituation] {
         let fresh = self.last_sit.as_ref().is_some_and(|(m, _, t)| *m == self.choice.map && t.elapsed().as_secs_f32() < 2.0);
         if !fresh {
-            let there = core::last_situation(&self.choice.map).is_some();
-            self.last_sit = Some((self.choice.map.clone(), there, std::time::Instant::now()));
+            if self.last_sit.as_ref().is_some_and(|(m, _, _)| *m != self.choice.map) {
+                self.save_pick = 0;
+            }
+            let list = core::saved_situations(&self.choice.map);
+            self.save_pick = self.save_pick.min(list.len().saturating_sub(1));
+            self.last_sit = Some((self.choice.map.clone(), list, std::time::Instant::now()));
         }
-        self.last_sit.as_ref().map(|x| x.1).unwrap_or(false)
+        self.last_sit.as_ref().map(|x| x.1.as_slice()).unwrap_or(&[])
     }
 
-    /// Continue the situation the game left on the chosen map (`laststn.osn`).
+    /// Whether a situation to continue lies on the chosen map.
+    pub fn has_last_situation(&mut self) -> bool {
+        !self.saved_situations().is_empty()
+    }
+
+    /// Continue the situation chosen of the map's (`laststn.osn`, or a save slot, #341).
     pub fn launch_last_situation(&mut self) {
         if !self.save_pending_settings() {
             return;
         }
-        let Some(file) = core::last_situation(&self.choice.map) else {
+        let pick = self.save_pick;
+        let list = self.saved_situations();
+        let Some(file) = list.get(pick).or_else(|| list.first()).map(|s| s.file.clone()) else {
             self.set_status("No situation left on this map yet", true);
             return;
         };

@@ -115,21 +115,24 @@ impl App {
         }
         if let PhysicalKey::Code(code) = event_key {
             let pressed = pressed;
-            // LAN chat: V opens the line, and while it is open the keys are its own
+            // LAN chat: its keys (`chat_open`, '/', and `chat_toggle`, V, in keyboard.cfg's
+            // [game]: the player can move them, #130) open the line and show or hide the
+            // chat, and while the line is open the keys are its own
             if let Some(l) = self.lan.as_mut() {
-                let modifiers = [
-                    KeyCode::ShiftLeft,
-                    KeyCode::ShiftRight,
-                    KeyCode::ControlLeft,
-                    KeyCode::ControlRight,
-                    KeyCode::AltLeft,
-                    KeyCode::AltRight,
-                    KeyCode::SuperLeft,
-                    KeyCode::SuperRight,
-                ]
-                    .iter()
-                    .any(|k| self.keys.contains(k));
-                if lan::chat_key(l, &mut self.remotes, code, pressed, repeat, modifiers) {
+                let held = |a: KeyCode, b: KeyCode| self.keys.contains(&a) || self.keys.contains(&b);
+                let chord = omsi_content::input::chord(
+                    held(KeyCode::ShiftLeft, KeyCode::ShiftRight),
+                    held(KeyCode::ControlLeft, KeyCode::ControlRight),
+                    held(KeyCode::AltLeft, KeyCode::AltRight),
+                );
+                let bound = if held(KeyCode::SuperLeft, KeyCode::SuperRight) {
+                    None
+                } else {
+                    keys::dik_code(code).and_then(|scan| self.game_keys.iter()
+                        .find(|b| b.scan_code == scan && b.matches(chord) && b.action.to_ascii_lowercase().starts_with("chat_"))
+                        .map(|b| b.action.clone()))
+                };
+                if lan::chat_key(l, &mut self.remotes, code, pressed, repeat, bound.as_deref()) {
                     return;
                 }
             }
@@ -252,6 +255,16 @@ impl App {
                     // parking brake put on Space, the stock view_reset_all_directions key,
                     // reset the view and never reached the bus - #745)
                     let vehicle_too = self.player.as_ref().is_some_and(|p| p.bindings.iter().any(|b| b.scan_code == scan && b.matches(m)));
+                    // OMSI's `exit` (Ctrl+Q, or what the player put it on): the game ends as
+                    // the menu's Quit ends it. It was no action here at all, so the key did
+                    // nothing (#817)
+                    if action.as_deref() == Some("exit") {
+                        self.finish_vr_nav_edit();
+                        self.game_menu = None;
+                        self.finish_session();
+                        crate::platform::exit(event_loop);
+                        return;
+                    }
                     if let Some(a) = action {
                         if self.game_action(&a) && !vehicle_too {
                             return;
@@ -767,6 +780,12 @@ impl App {
         self.mouse_look = false;
         self.update_hover();
         true
+    }
+
+    /// Whether the mouse steering (when on) steers in the view shown: every view of the
+    /// player's bus, the map camera (F4) included, but not walking.
+    pub(crate) fn mouse_steers_in_view(&self) -> bool {
+        self.player.is_some() && (matches!(self.view.as_str(), "driver" | "outside" | "pax") || (self.view == "free" && !self.ego))
     }
 
     /// Looking round with the mouse goes by the cursor's way in the window (a view of the
@@ -2333,6 +2352,10 @@ impl App {
                 self.quick_save();
                 self.close_game_menu();
             }
+            "saveslot" => {
+                self.save_slot();
+                self.close_game_menu();
+            }
             "shot" => {
                 self.close_game_menu();
                 self.take_screenshot();
@@ -3211,6 +3234,43 @@ impl App {
         }
     }
 
+    /// A save of its own (#341): the situation into the next free `Saves/Slot <n>.osn` of
+    /// the map's folder in the content folder - none is ever overwritten. The launcher
+    /// offers them, with the last situation, to continue from.
+    pub(crate) fn save_slot(&mut self) {
+        let (Some(w), Some(cam)) = (self.world.as_ref(), self.camera.as_ref()) else { return };
+        let Some(dir) = crate::startup::content_dir().and_then(|base| {
+            std::path::Path::new(&self.args.map.replace('\\', "/")).parent().map(|d| base.join(d).join(SAVES))
+        }) else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(&dir);
+        let Some(n) = (1..10_000).find(|n| !dir.join(format!("Slot {n}.osn")).exists()) else { return };
+        let out = dir.join(format!("Slot {n}.osn"));
+        let bus = self.player.as_ref().map(|p| {
+            let d = &p.vehicle.ty.def;
+            if d.type_name.trim().is_empty() { d.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default() } else { d.type_name.trim().to_string() }
+        });
+        let t = self.clock.time;
+        let what = match (bus, self.duty.as_ref()) {
+            (Some(b), Some(d)) => format!("{b}, line {} / {}", d.line.trim(), d.tour.trim()),
+            (Some(b), None) => b,
+            (None, _) => "on foot".to_string(),
+        };
+        let name = format!("Slot {n}: {what}, {:02}:{:02}", (t / 3600.0) as i32 % 24, ((t % 3600.0) / 60.0) as i32);
+        let sit = build_situation(&self.args, w, &self.clock, self.args.weather.as_deref(), self.player.as_ref(), &self.placed, cam, self.duty.as_ref(), &name);
+        match sit.save(&out) {
+            Ok(()) => {
+                log::info!("saved situation {} ({} vehicles)", out.display(), sit.vehicles.len());
+                self.service_msg = Some((format!("Saved as slot {n}: the launcher continues from it"), 4.0));
+            }
+            Err(e) => {
+                log::warn!("saving {}: {e}", out.display());
+                self.service_msg = Some((format!("Could not save: {e}"), 5.0));
+            }
+        }
+    }
+
     /// OMSI's `screenshot`: the picture into the content folder's `Screenshots`, named by the
     /// date and time.
     pub(crate) fn take_screenshot(&mut self) {
@@ -3251,7 +3311,7 @@ impl App {
     }
 
     pub(crate) fn update_hover(&mut self) {
-        if self.vr_nav_edit.is_some() {
+        if self.vr_nav_edit.is_some() || self.cursor_hidden.is_some() {
             self.hover = None;
             self.hover_part = None;
             self.hover_hand = false;
@@ -3318,7 +3378,7 @@ impl App {
             4
         } else if self.mouse_look && self.game_menu.is_none() {
             3
-        } else if self.mouse_drive && matches!(self.view.as_str(), "driver" | "outside" | "pax") && self.game_menu.is_none() {
+        } else if self.mouse_drive && self.mouse_steers_in_view() && self.game_menu.is_none() {
             2
         } else if self.game_menu.is_some() {
             // (the game menu's own cursor: not overwritten here, or it flips back and forth)
@@ -3589,9 +3649,13 @@ impl crate::App {
     }
 }
 
+/// The folder of a map's save slots, inside the map's folder in the content folder (the
+/// launcher reads it as well: `omsi_launcher_lib::saved_situations`).
+pub(crate) const SAVES: &str = "Saves";
+
 /// The lines of the game menu: (what, label). What can be set is on the pages behind
 /// "Options", "Vehicle options" and "World options" (see `game_lists`).
-pub(crate) const GAME_MENU: [(&str, &str); 11] = [
+pub(crate) const GAME_MENU: [(&str, &str); 12] = [
     ("resume", "Resume"),
     ("options", "Options..."),
     ("vehicle", "Vehicle options..."),
@@ -3600,6 +3664,7 @@ pub(crate) const GAME_MENU: [(&str, &str); 11] = [
     ("duty", "Line and tour..."),
     ("endduty", "End the tour"),
     ("save", "Save the situation"),
+    ("saveslot", "Save to a new slot"),
     ("load", "Load the quicksave"),
     ("shot", "Screenshot"),
     ("quit", "End the session"),

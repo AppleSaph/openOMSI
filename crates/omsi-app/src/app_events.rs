@@ -108,9 +108,12 @@ impl ApplicationHandler for App {
                 // '/' opens the chat's input box wherever the keyboard has it (the key
                 // itself is then swallowed by the chat) - but not Numpad ÷, OMSI's stock
                 // front door key (keyboard.cfg `bus_doorfront0 181`)
+                // (only while `chat_open` is on its own key: one the player moved it to is
+                // the only one, #130)
                 if event.state == ElementState::Pressed
                     && event.text.as_deref() == Some("/")
                     && event.physical_key != PhysicalKey::Code(KeyCode::NumpadDivide)
+                    && self.game_keys.iter().any(|b| b.action.eq_ignore_ascii_case("chat_open") && b.scan_code == 53 && b.chord() == 0)
                     && self.lan.is_some()
                     && !lan::chat_open(&self.remotes)
                 {
@@ -199,6 +202,15 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if self.vr_nav_edit.is_some() { return; }
+                // (both physical pixels)
+                if let Some((x, y)) = self.cursor_hidden {
+                    if (position.x as f32 - x).abs() + (position.y as f32 - y).abs() > 8.0 {
+                        self.cursor_hidden = None;
+                        if let Some(win) = self.window.as_ref() {
+                            win.set_cursor_visible(true);
+                        }
+                    }
+                }
                 // (the on-screen controls on a computer, `OMSI_TOUCH=1`: the mouse is a
                 // finger on them - from #202)
                 if self.touch.enabled {
@@ -558,10 +570,9 @@ impl ApplicationHandler for App {
                     }).unwrap_or(false);
                     // Omsi switches the AI's lights on below a light value of 0.75, before
                     // the street lamps (0.6), and off after them in the morning
-                    t.night = omsi_sim::Daylight::compute(&self.clock, self.envir.as_ref())
-                        .brightness
-                        < 0.75
-                        || gloomy;
+                    let daylight = omsi_sim::Daylight::compute(&self.clock, self.envir.as_ref());
+                    t.night = daylight.brightness < 0.75 || gloomy;
+                    t.daylight = Some(daylight);
                     let __t2 = Instant::now();
                     t.others = lan_outlines(&self.remotes);
                     t.others.extend(own_outlines(self.player.as_ref(), &self.placed));
@@ -634,6 +645,30 @@ impl ApplicationHandler for App {
                 }
                 let analog = ctl.poll();
                 let actions = std::mem::take(&mut ctl.actions);
+                let moved = match (analog.steering, self.last_ctl_steer) {
+                    (Some(x), Some(x0)) => (x - x0).abs() > 0.02,
+                    _ => false,
+                };
+                if analog.steering.is_some() && (moved || self.last_ctl_steer.is_none()) {
+                    self.last_ctl_steer = analog.steering;
+                }
+                #[cfg(windows)]
+                let vr_on = self.vr.is_some();
+                #[cfg(not(windows))]
+                let vr_on = false;
+                let needs_mouse = self.mouse_drive
+                    || self.game_menu.is_some()
+                    || self.chooser.is_some()
+                    || self.list_kind.is_some()
+                    || self.navigator.as_ref().is_some_and(|n| n.map_open())
+                    || !matches!(self.view.as_str(), "driver" | "outside" | "pax");
+                let hide = (moved || actions.iter().any(|a| a.1)) && !needs_mouse && !vr_on;
+                if self.vr_nav_edit.is_none() && hide != self.cursor_hidden.is_some() && (hide || needs_mouse) {
+                    if let Some(win) = self.window.as_ref() {
+                        win.set_cursor_visible(!hide);
+                        self.cursor_hidden = hide.then_some(self.cursor);
+                    }
+                }
                 if let Some(n) = ctl.notice.take() {
                     self.service_msg = Some((n, 8.0));
                 }
@@ -642,11 +677,12 @@ impl ApplicationHandler for App {
                 // passenger view)
                 let driving = self.player.as_ref().filter(|_| matches!(self.view.as_str(), "driver" | "outside" | "pax") && !self.paused);
                 let kmh = driving.map(|p| p.vehicle.physics.velocity_kmh()).unwrap_or(0.0);
+                let wheel_bump = ctl.wheel_bump(driving.and_then(|p| p.vehicle.rigid.as_ref()), kmh, dt);
                 ctl.feedback(crate::controllers::FfInput {
                     on: driving.is_some(),
                     kmh,
                     lateral_accel: driving.and_then(|p| p.vehicle.rigid.as_ref()).map(|r| r.accel_body.x).unwrap_or(0.0),
-                    wheel_bump: driving.and_then(|p| p.vehicle.rigid.as_ref()).map(|r| crate::controllers::wheel_contact_bump(r, kmh)).unwrap_or(0.0),
+                    wheel_bump,
                     wheel_bump_age: 0.0,
                     vib_amp: driving.and_then(|p| p.vehicle.var("FF_Vib_Amp")).unwrap_or(0.0),
                     vib_period: driving.and_then(|p| p.vehicle.var("FF_Vib_Period")).unwrap_or(0.0),
@@ -671,9 +707,11 @@ impl ApplicationHandler for App {
                         analog.steering = Some(now + (target - now).clamp(-step, step));
                     }
                 }
-                // (in every view of the bus - driver, outside, passenger - as in OMSI, where
-                // switching the camera leaves the mouse steering on; not on foot or flying)
-                let bus_view = matches!(self.view.as_str(), "driver" | "outside" | "pax");
+                // (in every view of the bus - driver, outside, passenger and the map camera -
+                // as in OMSI, where switching the camera leaves the mouse steering on: its
+                // mouse steering asks only for a player's vehicle, 0x6f4257; not on foot,
+                // #516)
+                let bus_view = self.mouse_steers_in_view();
                 if let (true, Some(s)) = (self.mouse_drive && bus_view && !self.mouse_look
                                               && self.game_menu.is_none(), self.surface.as_ref()) {
                     let (w, h) = (s.config.width as f32, s.config.height as f32);
@@ -1171,6 +1209,8 @@ impl ApplicationHandler for App {
                         }
                     }
                     if let Some(t) = self.traffic.as_mut() {
+                        let (alighting, waiting) = h.stop_wishes();
+                        t.set_stop_wishes(alighting, waiting);
                         for (id, secs) in h.take_holds() {
                             t.hold_boarding(id, secs);
                         }
@@ -1504,9 +1544,13 @@ impl ApplicationHandler for App {
                 if self.view != "free" {
                     self.ego = false;
                 }
+                // (the free camera flies; with no bus it is the view too - but not out of the
+                // walker's eyes: on foot without a bus of one's own (started on foot, the bus
+                // removed) the keys flew the camera on from where the walk had put it every
+                // frame, and walking jumped about, the more so the lower the frame rate, #807)
                 if let (Some(cam), true) = (
                     self.camera.as_mut(),
-                    self.view == "free" || self.player.is_none(),
+                    self.view == "free" || (self.player.is_none() && self.on_foot.is_none()),
                 ) {
                     let mut v = Vec3::ZERO;
                     let f = cam.forward();
@@ -1598,7 +1642,8 @@ impl ApplicationHandler for App {
                     self.follow_date();
                 }
                 if let Some(p) = self.player.as_mut() {
-                    p.vehicle.set_var("Envir_Brightness", daylight.brightness);
+                    let lm = self.world.as_ref().and_then(|w| w.light_map_light_at(p.vehicle.position));
+                    p.vehicle.set_var("Envir_Brightness", daylight.envir_brightness(lm));
                     p.vehicle.host.sun_alt = daylight.altitude_deg;
                     if let Some(w) = &self.weather {
                         apply_weather(&mut p.vehicle, w, self.wetness);

@@ -157,6 +157,10 @@ struct Seat {
     seated: bool,
     /// The `[passpos]`'s seat height (+0x20; 0: a standing place).
     height: f32,
+    /// Its number for the scripts (`GetHumanCountOnSeat`): Omsi.exe's place in the file
+    /// among the `[passpos]` and `[drivpos]`, the sections behind counted on after those
+    /// in front (0x7d39a4 asks the next one for a number past its own places).
+    omsi_seat: usize,
 }
 
 /// What passengers need to know about one vehicle type's cabin.
@@ -191,6 +195,21 @@ struct Cabin {
     money_point: Option<Vec3>,
     money_var: Option<(Vec3, [f32; 2])>,
     change_point: Option<Vec3>,
+}
+
+/// The people on each seat by the scripts' numbers (`Seat::omsi_seat`, the `[drivpos]`
+/// counted with the `[passpos]`), from the places (indices into `seats`) taken by people
+/// sitting there. (Counted by the `[passpos]` alone, every seat of a cabin with the
+/// driver's place first was one off: a tip-up seat folded down under the next one.)
+fn seat_numbers(seats: &[Seat], sitting: impl Iterator<Item = usize>) -> Vec<u32> {
+    let n = seats.iter().map(|s| s.omsi_seat + 1).max().unwrap_or(0);
+    let mut out = vec![0u32; n];
+    for k in sitting {
+        if let Some(c) = seats.get(k).and_then(|s| out.get_mut(s.omsi_seat)) {
+            *c += 1;
+        }
+    }
+    out
 }
 
 /// A section of an articulated bus in its cabin's unfolded frame.
@@ -251,7 +270,9 @@ impl Cabin {
         // (merged path point or -1, sells tickets, {withbutton}, half width of the section)
         let mut entry_points: Vec<(i32, bool, bool, f32)> = Vec::new();
         let mut exit_points: Vec<(i32, f32)> = Vec::new();
-        let mut places: Vec<(omsi_vehicle::cabin::PassPos, Vec3)> = Vec::new();
+        let mut places: Vec<(omsi_vehicle::cabin::PassPos, Vec3, usize)> = Vec::new();
+        // (the script seat numbers of the sections in front)
+        let mut seat_base = 0usize;
         let mut cabin_parts: Vec<CabinPart> = Vec::new();
         // the point of the section in front that leads on to the next one
         let mut rear_link: Option<usize> = None;
@@ -328,7 +349,8 @@ impl Cabin {
                     .map(|e| (shift(e.path_point), !e.no_ticket_sale, e.with_button, half)),
             );
             exit_points.extend(cab.exits.iter().map(|e| (shift(*e), half)));
-            places.extend(cab.pass_positions.iter().map(|p| (p.clone(), *offset)));
+            places.extend(cab.pass_positions.iter().map(|p| (p.clone(), *offset, seat_base + p.file_index)));
+            seat_base += cab.pass_positions.len() + cab.driver_positions.len();
             cabin_parts.push(CabinPart {
                 offset: *offset,
                 joint_y: *joint_y,
@@ -439,7 +461,7 @@ impl Cabin {
         });
         let seats = places
             .iter()
-            .map(|(p, offset)| {
+            .map(|(p, offset, omsi_seat)| {
                 let pos = Vec3::from(p.pos) + *offset;
                 let seated = p.height > 0.01;
                 let floor = if seated {
@@ -458,6 +480,7 @@ impl Cabin {
                     rot: p.rot,
                     seated,
                     height: p.height,
+                    omsi_seat: *omsi_seat,
                 }
             })
             .collect();
@@ -2406,15 +2429,13 @@ impl Humans {
         }
     }
 
-    /// A person put at a free waiting place of stop `id` (sub_626044) with a destination
-    /// drawn from the stop's (sub_61baa8); they settle there as task 6 does.
-    fn spawn_waiting(&mut self, world: &World, renderer: &Renderer, scene: &mut Scene, id: i64) -> Option<usize> {
-        let k = self.take_spot(id)?;
-        let sp = self.stops[&id].spots[k].clone();
-        // the destination: by weight; none when the weights leave the draw over
+    /// A destination drawn from stop `id`'s (sub_61baa8): by weight; none when the weights
+    /// leave the draw over. Also the stop's line record it matched.
+    fn draw_dest(&mut self, id: i64) -> (Option<String>, Option<usize>) {
         let mut r = self.rand_f() as f32;
         let mut dest: Option<String> = None;
-        for (n, w) in &self.stops[&id].dests {
+        let Some(stop) = self.stops.get(&id) else { return (None, None) };
+        for (n, w) in &stop.dests {
             if r <= 0.0 {
                 break;
             }
@@ -2423,7 +2444,16 @@ impl Humans {
                 dest = Some(n.clone());
             }
         }
-        let line = dest.as_ref().and_then(|d| self.stops[&id].lines.iter().position(|(n, _)| n.trim() == d.trim()));
+        let line = dest.as_ref().and_then(|d| stop.lines.iter().position(|(n, _)| n.trim() == d.trim()));
+        (dest, line)
+    }
+
+    /// A person put at a free waiting place of stop `id` (sub_626044) with a destination
+    /// drawn from the stop's (sub_61baa8); they settle there as task 6 does.
+    fn spawn_waiting(&mut self, world: &World, renderer: &Renderer, scene: &mut Scene, id: i64) -> Option<usize> {
+        let k = self.take_spot(id)?;
+        let sp = self.stops[&id].spots[k].clone();
+        let (dest, line) = self.draw_dest(id);
         let walk = 1.1 + (self.rand_f() as f32 * 2.0 - 1.0) * 0.2;
         let mut pax = Pax::new(walk);
         pax.stop = Some(id);
@@ -3289,6 +3319,31 @@ impl Humans {
         }
     }
 
+    /// Who wants a timetable bus to stop, as Omsi.exe asks before it lets one pull in
+    /// (0x7da91f): the AI buses with somebody aboard on the way to a door to get off
+    /// (task 5), and the stops where somebody is waiting for a bus or walking to one
+    /// (tasks 1 to 3).
+    pub fn stop_wishes(&self) -> (HashSet<u64>, HashSet<i64>) {
+        let (mut alighting, mut waiting) = (HashSet::new(), HashSet::new());
+        for p in &self.people {
+            let State::Pax(x) = &p.state else { continue };
+            match x.task {
+                Task::InBusToExit => {
+                    if let Some(BusId::Ai(id)) = x.inside {
+                        alighting.insert(id);
+                    }
+                }
+                Task::WaitingForBus | Task::ToBus | Task::WalkingToBus => {
+                    if let Some(s) = x.stop {
+                        waiting.insert(s);
+                    }
+                }
+                _ => {}
+            }
+        }
+        (alighting, waiting)
+    }
+
     /// Timetable buses to hold at their stop, for the traffic.
     pub fn take_holds(&mut self) -> Vec<(u64, f32)> {
         std::mem::take(&mut self.holds)
@@ -3321,17 +3376,11 @@ impl Humans {
         let Some(cabin) = self.player_cabin.as_ref() else {
             return Vec::new();
         };
-        let mut out = vec![0u32; cabin.seats.len()];
-        for p in &self.people {
-            if let State::Pax(x) = &p.state {
-                if let (Some(BusId::Player), Task::SittingInBus, Some(seat)) = (x.inside, x.task, x.seat) {
-                    if let Some(c) = out.get_mut(seat) {
-                        *c += 1;
-                    }
-                }
-            }
-        }
-        out
+        let sitting = self.people.iter().filter_map(|p| match &p.state {
+            State::Pax(x) if x.inside == Some(BusId::Player) && x.task == Task::SittingInBus => x.seat,
+            _ => None,
+        });
+        seat_numbers(&cabin.seats, sitting)
     }
 
     /// How many people stand on each `paths.cfg` link inside the player's bus, for the
@@ -5135,6 +5184,13 @@ impl Humans {
         let mut pax = Pax::new(walk);
         pax.task = Task::WaitingForBus;
         pax.stop = Some(stop);
+        // what a waiting person of ours has (sub_626044 and task 6): a destination drawn
+        // from the stop (both sides load the same map) and a distance to ride without one;
+        // with neither they would get off again at once (#813)
+        let (dest, line) = self.draw_dest(stop);
+        pax.dest = dest;
+        pax.line = line;
+        pax.ride_km = self.rand_f() as f32 * 19.0 + 1.0;
         pax.pos = self.people[i].position;
         pax.yaw = self.people[i].heading.to_radians();
         if let Some(sp) = sp {
@@ -5240,6 +5296,15 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn seats_counted_by_the_scripts_numbers() {
+        let seat = |omsi_seat: usize| Seat { pos: Vec3::ZERO, floor: Vec3::ZERO, rot: 0.0, seated: true, height: 0.45, omsi_seat };
+        // the driver's place is seat 0, a second section's numbers follow the first's
+        let seats = [seat(1), seat(2), seat(4), seat(6)];
+        assert_eq!(seat_numbers(&seats, [0, 2, 2, 3].into_iter()), [0, 1, 0, 0, 2, 0, 1]);
+        assert!(seat_numbers(&[], [0].into_iter()).is_empty());
     }
 
     #[test]

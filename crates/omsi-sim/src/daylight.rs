@@ -18,8 +18,13 @@ pub struct Daylight {
     pub night: f32,
     /// Street lights on (the `NightlightA` scenery variable).
     pub lamps_on: bool,
-    /// The `Envir_Brightness` vehicle variable (1 day … 0 night).
+    /// The daylight by the sun's altitude (1 day … 0 night, a ramp from +6 to -6 degrees):
+    /// what the street lamps and the lit windows switch by.
     pub brightness: f32,
+    /// The mean of envir.cfg's light A at this altitude (0..1, as Omsi.exe keeps it at
+    /// weather +0xac): the day's part of the `Envir_Brightness` vehicle variable, see
+    /// [`Daylight::envir_brightness`].
+    pub light_a: f32,
     /// Sun azimuth in radians, clockwise from north.
     pub azimuth_rad: f32,
     /// Blend of the envir sky textures: day, twilight (peaks at sunrise), night.
@@ -163,7 +168,21 @@ impl Daylight {
         // the street lamps come on below a light value of 0.6, as Omsi.exe switches them
         // (FUN_006ff1bc), the same value at which a scenery object's NightlightA does
         let brightness = ((alt + 6.0) / 12.0).clamp(0.0, 1.0);
-        Daylight { sun_dir, altitude_deg: alt, sun_color, secondary, ambient, sky, night, lamps_on: brightness < 0.6, brightness, azimuth_rad: az.to_radians() as f32, sky_weights, envir_tint }
+        let light_a = ((a.x + a.y + a.z) / 3.0).clamp(0.0, 1.0);
+        Daylight { sun_dir, altitude_deg: alt, sun_color, secondary, ambient, sky, night, lamps_on: brightness < 0.6, brightness, light_a, azimuth_rad: az.to_radians() as f32, sky_weights, envir_tint }
+    }
+}
+
+impl Daylight {
+    /// The `Envir_Brightness` vehicle variable as Omsi.exe sets it for every road vehicle
+    /// (0x7d8735): the mean of the light the tile's light map throws on the vehicle (its
+    /// colour at the vehicle's place while the lamps are on, 0x61378c) plus the mean of
+    /// light A, at most 1. The stock buses scale their windows' alpha by it (`[alphascale]
+    /// Envir_Brightness` on Fenster_braun.tga and the like): by the sun's ramp alone it was
+    /// 0 at every night, and a bus under the street lamps had no glass at all (#624).
+    pub fn envir_brightness(&self, light_map: Option<Vec3>) -> f32 {
+        let lm = light_map.filter(|_| self.lamps_on).map(|c| (c.x + c.y + c.z) / 3.0).unwrap_or(0.0);
+        (self.light_a + lm.max(0.0)).clamp(0.0, 1.0)
     }
 }
 
@@ -203,6 +222,20 @@ mod tests {
         c.time = 13.12 * 3600.0;
         let (_, az) = sun_position(&c, &SunPlace::default());
         assert!(az > 195.0, "no DST: az {az:.1}");
+    }
+
+    #[test]
+    fn envir_brightness_is_light_a_plus_the_light_map_under_the_lamps() {
+        // a December midnight: no light A, so only the light map's light counts
+        let night = Daylight::compute(&SimClock { day_of_year: 355, time: 0.0, ..Default::default() }, None);
+        assert!(night.lamps_on);
+        assert_eq!(night.envir_brightness(None), 0.0);
+        let lit = night.envir_brightness(Some(Vec3::new(0.6, 0.5, 0.4)));
+        assert!((lit - 0.5).abs() < 1e-5, "{lit}");
+        // noon: light A alone is (nearly) 1, and the light map is off by day
+        let noon = Daylight::compute(&clock_at(12.0), None);
+        assert!(noon.envir_brightness(None) > 0.95);
+        assert_eq!(noon.envir_brightness(Some(Vec3::ONE)), noon.envir_brightness(None));
     }
 
     #[test]

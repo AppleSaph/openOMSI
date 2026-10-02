@@ -438,6 +438,9 @@ impl DriverFigure {
             }
             let id = renderer.add_mesh(scene, &hm.data);
             let inst = renderer.add_instance(scene, id, v.position, Mat4::IDENTITY, mats);
+            // (hidden until `update` has posed and placed it: drawn as loaded, the figure
+            // stood in the file's T-pose at the bus's origin, in the middle of the aisle)
+            renderer.set_params(scene, inst, &[], false, &[]);
             meshes.push((id, inst));
         }
         let curled = curl_hands(&ty, GRIP_RADIUS);
@@ -501,7 +504,7 @@ impl DriverFigure {
             lean: 0.0,
             base_lean: 0.0,
             show_hands_in_cab: false,
-            shown: true,
+            shown: false,
             settled: false,
             slide: 0.0,
             hands: [Hand::default(); 2],
