@@ -21579,3 +21579,9 @@ _version: 2
   id: "Penuh"
   ms: "Penuh"
   tl: "Buo"
+"Server":
+  fr: "Serveur"
+"Warning":
+  fr: "Avertissement"
+"Alert":
+  fr: "Alerte"
