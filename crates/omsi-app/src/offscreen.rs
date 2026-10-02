@@ -36,8 +36,10 @@ pub(crate) fn run_offscreen(
     // (a player who joins another's game draws the host's traffic in it, whatever their own
     // count says: without it the host's cars had nowhere to go - "passengers, but no
     // traffic" on a server)
-    let mut traffic = if args.traffic > 0 || args.schedule || crate::rail_drive::args_rail(args) || args.lan_join.is_some() {
+    // (and without traffic it still runs the light programs and switches the lamps)
+    let mut traffic = {
         let mut t = traffic::Traffic::new(&args.root, &world, args.traffic)?;
+        t.lights_only = !(args.traffic > 0 || args.schedule || crate::rail_drive::args_rail(args) || args.lan_join.is_some());
         if let Some(seed) = lan_seed {
             t.set_lan_seed(seed);
         }
@@ -45,8 +47,6 @@ pub(crate) fn run_offscreen(
             t.precache_random(&world, &renderer, &mut scene);
         }
         Some(t)
-    } else {
-        None
     };
     let mut schedule = if args.schedule {
         Some(schedule::Schedule::new(
