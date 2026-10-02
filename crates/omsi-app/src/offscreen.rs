@@ -175,6 +175,7 @@ pub(crate) fn run_offscreen(
             * settings.pax_density;
         h.time_of_day = parse_time(&args.time);
         h.stop_targets = schedule.as_ref().map(|s| s.stop_targets());
+        h.stop_names = schedule.as_ref().map(|s| s.stop_names());
         h.populate(&world, &renderer, &mut scene, center);
         if let Some(p) = player.as_ref() {
             if args.riders > 0 {
@@ -196,7 +197,7 @@ pub(crate) fn run_offscreen(
     let mut service_seconds = 0.0f64;
     let daylight0 = omsi_sim::Daylight::compute(&start_clock(args), envir.as_ref());
     if let Some(p) = player.as_mut() {
-        p.vehicle.set_var("Envir_Brightness", daylight0.brightness);
+        p.vehicle.set_var("Envir_Brightness", daylight0.envir_brightness(world.light_map_light_at(p.vehicle.position)));
         let mut clock = p.vehicle.host.clock.clone();
         let was = clock.time;
         let at_station = at_petrol_station(&world, &p.vehicle);
@@ -277,14 +278,14 @@ pub(crate) fn run_offscreen(
     }
     if let Some(t) = traffic.as_mut() {
         t.day_time = parse_time(&args.time);
-        t.night = omsi_sim::Daylight::compute(
+        let daylight = omsi_sim::Daylight::compute(
             &start_clock(args),
             omsi_content::Envir::load(&args.root.join("envir.cfg"))
                 .ok()
                 .as_ref(),
-        )
-            .brightness
-            < 0.75;
+        );
+        t.night = daylight.brightness < 0.75;
+        t.daylight = Some(daylight);
         t.populate(&world, &renderer, &mut scene, center);
     }
     // OMSI_GROUND_SAMPLE=<csv>: what the wheels stand on every metre along the street lanes
@@ -745,6 +746,7 @@ pub(crate) fn run_offscreen(
                         controls.brake = ((speed - kmh - 3.0) / 10.0).clamp(0.0, 1.0);
                     }
                 }
+                player.tick_auto_shift(dt, controls.throttle, controls.brake);
                 player.auto_clutch_bite(controls.throttle);
                 controls.clutch = controls.clutch.max(player.axes.clutch);
                 player.vehicle.set_controls(controls);
@@ -959,6 +961,8 @@ pub(crate) fn run_offscreen(
                 }
             }
             if let Some(t) = traffic.as_mut() {
+                let (alighting, waiting) = h.stop_wishes();
+                t.set_stop_wishes(alighting, waiting);
                 for (id, secs) in h.take_holds() {
                     t.hold_boarding(id, secs);
                 }
@@ -1782,6 +1786,9 @@ pub(crate) fn run_offscreen(
             }
         }
         vehicle_camera(&player, &mut camera);
+        // the driver at the wheel, as the window has him every frame (not posed, he was
+        // not drawn - or stood in the aisle in the file's T-pose)
+        player.sync_driver(&renderer, &mut scene, 1.0 / 30.0, settings.driver, args.view == "driver");
         player_ref = Some(player);
     }
     if let Some(mut h) = humans_off.take() {
@@ -2432,7 +2439,7 @@ pub(crate) fn run_offscreen(
                 camera.position,
                 Vec3::ZERO,
                 &mut scene,
-                &lighting.inside.into_iter().collect::<Vec<_>>(),
+                &player_ref.as_ref().or(player.as_ref()).map(|p| rain::vehicle_boxes(&p.vehicle)).unwrap_or_default(),
             );
         }
         // a moving player's wheels through the puddles the enhanced renderer paints on wet
@@ -2723,10 +2730,7 @@ pub(crate) fn run_offscreen(
             renderer.render(&mut scene, &view, w, h, &camera, &lighting);
             let drawn = t.elapsed().as_secs_f64();
             let t = Instant::now();
-            let _ = renderer.device.poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            });
+            let _ = omsi_render::wait_gpu(&renderer.device, None);
             cpu.push(drawn * 1000.0);
             gpu.push(t.elapsed().as_secs_f64() * 1000.0);
             if omsi_cfg::env::var_os("OMSI_BENCH_FRAMES").is_some() {

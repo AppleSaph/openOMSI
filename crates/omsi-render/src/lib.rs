@@ -378,7 +378,8 @@ struct MaterialUniform {
     /// x: a screen (`MaterialExtra::screen`); y: 1 `[matl_texadress_border]`, 2
     /// `[matl_texadress_mirroronce]`; z the border colour's rgb packed as r * 65536 + g * 256 + b (bytes), w its alpha.
     flags: [f32; 4],
-    /// rgb: the D3D material's ambient colour, which takes the ambient light (C)
+    /// rgb: the D3D material's ambient colour, which takes the ambient light (C); w: 1 for
+    /// a texture that is a season's snow picture (no snow laid over it), 2 the map's water
     ambient: [f32; 4],
 }
 
@@ -794,6 +795,9 @@ pub struct MaterialExtra {
     /// The film of water on a window (`[alphascale] Rain_Window_…`): drawn as drops that sit,
     /// gather and run down the glass instead of the texture sliding down as a whole.
     pub rain_film: bool,
+    /// The map's water (`texture/water.tga`): Enhanced draws it as water - a smooth surface
+    /// mirroring the sky more the flatter it is seen, rippled by small waves.
+    pub water: bool,
     /// `[nomaplighting]`: the map's lamps (`[maplight]`) do not light it - a street lamp
     /// is not lit by its own light.
     pub no_map_lights: bool,
@@ -1059,6 +1063,20 @@ pub struct Scene {
     bind_groups: HashMap<BindKey, (wgpu::BindGroup, wgpu::Buffer)>,
     /// The PBR maps of a diffuse texture (register them before making its materials).
     pub pbr_maps: HashMap<TextureId, PbrMaps>,
+    /// Textures that are a season's snow pictures (`WinterSnow` folders): a material drawn
+    /// with one shows its snow as the map made it, as OMSI 2 shows snow, and gets no snow
+    /// laid over it (register them before making their materials).
+    pub snow_textures: std::collections::HashSet<TextureId>,
+}
+
+/// `MaterialUniform::ambient`'s w: 1 for a material whose texture is a season's snow
+/// picture (`Scene::snow_textures`).
+fn snow_texture_flag(scene: &Scene, texture: Option<TextureId>) -> f32 {
+    if texture.is_some_and(|t| scene.snow_textures.contains(&t)) {
+        1.0
+    } else {
+        0.0
+    }
 }
 
 impl Scene {
@@ -1142,6 +1160,41 @@ pub static ADAPTER_TEXTURE_MB: std::sync::atomic::AtomicU64 = std::sync::atomic:
 
 /// The device runs on OpenGL (set in `Renderer::new`).
 static GL_BACKEND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the device draws on OpenGL (known once a renderer is made).
+pub fn gl_backend() -> bool {
+    GL_BACKEND.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Wait until the GPU has done `submission` (None: everything submitted so far).
+///
+/// On OpenGL wgpu holds the one GL context for the whole of a wait, and every other thread
+/// that wants it meanwhile (a worker making a bus's textures, the poll thread) gives up after
+/// a second with a panic - "Could not lock adapter context. This is most-likely a deadlock."
+/// (wgpu-hal's WGL lock; #843: a slow chip took longer than that for a frame). There the
+/// wait is made of short ones, and the context is free between them.
+pub fn wait_gpu(device: &wgpu::Device, submission: Option<wgpu::SubmissionIndex>) -> Result<(), wgpu::PollError> {
+    if !gl_backend() {
+        return device.poll(wgpu::PollType::Wait { submission_index: submission, timeout: None }).map(|_| ());
+    }
+    loop {
+        match device.poll(wgpu::PollType::Wait { submission_index: submission.clone(), timeout: Some(GL_WAIT_SLICE) }) {
+            Err(wgpu::PollError::Timeout) => std::thread::yield_now(),
+            r => return r.map(|_| ()),
+        }
+    }
+}
+
+/// The longest a single wait for the GPU holds the GL context (see [`wait_gpu`]).
+const GL_WAIT_SLICE: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// On OpenGL, the GPU work of worker threads (textures and meshes of a bus made while the
+/// world loads) goes one thread at a time: a dozen of them queueing for the GL context left
+/// the last one waiting past wgpu's one second (#843). Elsewhere the device takes them all.
+fn gl_worker_turn() -> Option<std::sync::MutexGuard<'static, ()>> {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    gl_backend().then(|| TURN.lock().unwrap_or_else(|e| e.into_inner()))
+}
 
 /// The card's own memory in MB where the system tells it: Windows, through DXGI, for
 /// whichever backend draws (wgpu does not say).
@@ -1320,9 +1373,9 @@ pub struct Renderer {
     /// The screen size each object (origin and radius) was judged by in the main view's last
     /// frame: all its meshes and LOD levels take the same one, so exactly one level of an
     /// object is drawn and it does not flip between levels with the view's jitter.
-    object_sizes: std::cell::RefCell<HashMap<[u64; 4], f32>>,
+    object_sizes: std::cell::RefCell<hashbrown::HashMap<[u64; 4], f32>>,
     /// Cleared and reused as the next main view's object-size history.
-    object_sizes_scratch: std::cell::RefCell<HashMap<[u64; 4], f32>>,
+    object_sizes_scratch: std::cell::RefCell<hashbrown::HashMap<[u64; 4], f32>>,
     /// The far shadow cascade as last drawn: its light matrix, frames since, the render
     /// origin and the sun it was drawn for.
     shadow_far_cache: std::cell::Cell<(Mat4, u32, DVec3, Vec3)>,
@@ -3807,8 +3860,8 @@ impl Renderer {
             dynamic_scale: std::cell::Cell::new(1.0),
             flicker: std::cell::RefCell::new(HashMap::new()),
             cull_drawn: std::cell::RefCell::new(Vec::new()),
-            object_sizes: std::cell::RefCell::new(HashMap::new()),
-            object_sizes_scratch: std::cell::RefCell::new(HashMap::new()),
+            object_sizes: Default::default(),
+            object_sizes_scratch: Default::default(),
             shadow_far_cache: std::cell::Cell::new((Mat4::IDENTITY, 0, DVec3::ZERO, Vec3::ZERO)),
             shadow_near_cache: std::cell::Cell::new((Mat4::IDENTITY, 0, DVec3::ZERO, Vec3::ZERO)),
             xr_shadow_cache: std::cell::Cell::new(None),
@@ -4047,6 +4100,7 @@ impl Renderer {
             last_lights: Vec::new(),
             bind_groups: HashMap::new(),
             pbr_maps: HashMap::new(),
+            snow_textures: Default::default(),
         }
     }
 
@@ -4713,6 +4767,9 @@ impl Renderer {
             .and_then(|id| scene.pbr_maps.get(&id))
             .map(|maps| maps.flags)
             .unwrap_or([0.0; 4]);
+        if uniform.ambient[3] < 1.5 {
+            uniform.ambient[3] = snow_texture_flag(scene, texture);
+        }
         let slot = |t: Option<TextureId>| {
             t.and_then(|t| scene.textures.get(t).map(|g| (t, g.gen)))
                 .unwrap_or((usize::MAX, 0))
@@ -5012,7 +5069,7 @@ impl Renderer {
             },
             ambient: {
                 let a = extra.ambient.unwrap_or([color[0], color[1], color[2]]);
-                [a[0], a[1], a[2], 0.0]
+                [a[0], a[1], a[2], if extra.water { 2.0 } else { snow_texture_flag(scene, texture) }]
             },
         };
         let slot = |t: Option<TextureId>| {
@@ -7324,7 +7381,12 @@ impl Renderer {
         // shader, 12.7 ms of GPU time for one 256-pixel mirror against 5.8 ms for the whole
         // window; plainly shaded it is 0.6 ms, and a mirror's small picture shows no
         // difference worth that. `OMSI_MIRROR_ENHANCED=1` draws them enhanced again.
-        let enhanced_frame = lighting.enhanced && self.hdr_pass.is_some() && omsi_cfg::env::var_os("OMSI_NO_ENHANCED").is_none() && (with_overlays || omsi_cfg::env::var_os("OMSI_MIRROR_ENHANCED").is_some());
+        // The headset's eyes are the real picture as much as the window is (#784: VR showed
+        // the plain graphics with Enhanced on); the first eye is the one that moves the
+        // exposure, the sky cube and the frame clock on, as the window does without VR.
+        let xr_view = projection.is_some();
+        let lead_view = with_overlays || (xr_view && !second_eye);
+        let enhanced_frame = lighting.enhanced && self.hdr_pass.is_some() && omsi_cfg::env::var_os("OMSI_NO_ENHANCED").is_none() && (with_overlays || xr_view || omsi_cfg::env::var_os("OMSI_MIRROR_ENHANCED").is_some());
         // the mirrors are drawn by the same path as the window (their picture graded with
         // the window's exposure, see the post passes)
         let enhanced = enhanced_frame;
@@ -7335,7 +7397,7 @@ impl Renderer {
         let ao_on = with_overlays && self.options.ssao && self.ssao_pipeline.is_some() && omsi_cfg::env::var_os("OMSI_NO_AO").is_none();
         // the enhanced path's shading is costly: the depth prepass keeps it to the visible
         // surface (without multisampling, see `share_depth`)
-        let prepass_on = ao_on || (enhanced && with_overlays);
+        let prepass_on = ao_on || (enhanced && (with_overlays || xr_view));
         if prepass_on && self.ensure_ao(width, height) {
             // a new AO texture: the camera bind group must point at it
             scene.dirty = true;
@@ -7351,7 +7413,7 @@ impl Renderer {
                 .last_frame
                 .map(|t| (now - t).as_secs_f32())
                 .unwrap_or(0.0);
-            if with_overlays {
+            if lead_view {
                 self.last_frame = Some(now);
             }
             dt
@@ -7632,7 +7694,7 @@ impl Renderer {
         // (a mirror takes the window's light - its own call would move the exposure on -
         // unless it comes before the window's first frame)
         let probe_redraw = enhanced
-            && (with_overlays || self.sky_state.is_none())
+            && (lead_view || self.sky_state.is_none())
             && self.prepare_enhanced(lighting, cam_rel, ro, dt);
         let puddles_wanted = enhanced
             && with_overlays
@@ -7844,7 +7906,7 @@ impl Renderer {
         // (the main view's last picture, for the hysteresis; the headset's eyes are main
         // views too: without their previous draw list small meshes and LODs blinked at
         // their thresholds while the head turned)
-        let main_view = with_overlays || projection.is_some();
+        let main_view = with_overlays || xr_view;
         let mut drawn_before = if main_view {
             std::mem::take(&mut *self.cull_drawn.borrow_mut())
         } else {
@@ -7857,7 +7919,7 @@ impl Renderer {
             sizes_now.clear();
             (sizes_before, sizes_now)
         } else {
-            (HashMap::new(), HashMap::new())
+            Default::default()
         };
         let cull_one = |i: usize, sizes: &mut Vec<([u64; 4], f32)>| -> Option<(usize, f32, bool)> {
             let inst = &scene.instances[i];
@@ -8569,7 +8631,7 @@ impl Renderer {
         }
         // --- the enhanced sky cube: a face a frame (all six the first time and for a new
         // sky), drawn in the window's frame only
-        if enhanced && (with_overlays || probe_redraw) {
+        if enhanced && (lead_view || probe_redraw) {
             if let (Some(probe), Some(sky_bg)) = (self.probe.as_mut(), scene.sky_bind_group.as_ref()) {
                 // (face, round, the old picture's share): a whole new cube is every round
                 // of every face averaged; afterwards one face a frame, blended in
@@ -8585,7 +8647,7 @@ impl Renderer {
                     // old place
                     let round = (probe.cube_round / 6) % SKY_CUBE_ROUNDS;
                     (0..6).map(|f| (f, round, 0.0)).collect()
-                } else if (probe.cube_wait >= SKY_CUBE_EVERY && !redraw_near) || probe.cube_wait >= SKY_CUBE_EVERY * 2 || !with_overlays {
+                } else if (probe.cube_wait >= SKY_CUBE_EVERY && !redraw_near) || probe.cube_wait >= SKY_CUBE_EVERY * 2 || !lead_view {
                     // (on a frame that keeps the near shadow map: the two costliest
                     // occasional passes never fall on the same frame)
                     vec![(probe.cube_next, (probe.cube_round / 6) % SKY_CUBE_ROUNDS, SKY_CUBE_HISTORY)]
@@ -8693,13 +8755,19 @@ impl Renderer {
         // central Spandau with 4x MSAA).
         let msaa_prepass = enhanced
             && !has_presurface
-            && with_overlays
+            && (with_overlays || xr_view)
             && !single
             && prepass_on
             && omsi_cfg::env::var_os("OMSI_NO_MSAA_PREPASS").is_none();
+        let parts = if !cfg!(any(target_os = "macos", target_os = "ios")) && main_bundles.len() >= 2 && omsi_cfg::env::var_os("OMSI_NO_MAIN_SPLIT").is_none() {
+            main_bundles.len().min(2)
+        } else {
+            1
+        };
+        let mut lead = (parts > 1).then(|| self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("main part") }));
         if msaa_prepass {
             if let (Some(pipes), Some(t)) = (self.prepass_msaa_pipelines.as_ref(), targets.as_ref()) {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                let mut pass = lead.as_mut().unwrap_or(&mut encoder).begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("msaa depth prepass"),
                     color_attachments: &[],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -8773,30 +8841,34 @@ impl Renderer {
                 depth_slice: None,
                 resolve_target: h.mask_msaa.as_ref().map(|_| &h.mask),
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    load: if parts > 1 { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) },
                     store: if h.mask_msaa.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
                 },
             });
-            let parts = if hdr.is_none() && !msaa_prepass && !cfg!(any(target_os = "macos", target_os = "ios")) && main_bundles.len() >= 2 && omsi_cfg::env::var_os("OMSI_NO_MAIN_SPLIT").is_none() {
-                main_bundles.len().min(2)
-            } else {
-                1
-            };
             let per_part = main_bundles.len().div_ceil(parts.max(1));
             let sky_clear = wgpu::LoadOp::Clear(wgpu::Color { r: sky.x as f64, g: sky.y as f64, b: sky.z as f64, a: 1.0 });
             let depth_first = if share_depth || msaa_prepass { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(0.0) };
             for g in 0..parts.saturating_sub(1) {
                 let first = g == 0;
-                let mut part = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("main part") });
+                let mut part = lead.take().unwrap_or_else(|| self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("main part") }));
                 {
-                    let mut pass = part.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("main part"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    let part_colors = [
+                        Some(wgpu::RenderPassColorAttachment {
                             view: draw_view,
                             depth_slice: None,
                             resolve_target: None,
                             ops: wgpu::Operations { load: if first { sky_clear } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store },
-                        })],
+                        }),
+                        hdr.map(|h| wgpu::RenderPassColorAttachment {
+                            view: h.mask_msaa.as_ref().unwrap_or(&h.mask),
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations { load: if first { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store },
+                        }),
+                    ];
+                    let mut pass = part.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("main part"),
+                        color_attachments: if part_colors[1].is_some() { &part_colors[..] } else { &part_colors[..1] },
                         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                             view: depth_view,
                             depth_ops: Some(wgpu::Operations { load: if first { depth_first } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store }),
@@ -8981,7 +9053,7 @@ impl Renderer {
                 // the exposure: meter the smallest level, move the adapted value towards it
                 // (the window's picture only: a mirror is graded with the window's exposure,
                 // as the eye that looks into it is adapted to the street)
-                if with_overlays {
+                if lead_view {
                     post_pass(
                         &mut encoder,
                         &self.meter_view,
@@ -9305,12 +9377,7 @@ impl Renderer {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(idx),
-                timeout: None,
-            })
-            .map_err(|e| anyhow!("poll: {e:?}"))?;
+        wait_gpu(&self.device, Some(idx)).map_err(|e| anyhow!("poll: {e:?}"))?;
         rx.recv()
             .context("map")?
             .map_err(|e| anyhow!("map: {e:?}"))?;
@@ -9398,6 +9465,7 @@ pub struct PreparedMesh(GpuMesh);
 
 /// Make a mesh's GPU buffers on any thread (the device takes calls from all of them).
 pub fn prepare_mesh(device: &wgpu::Device, queue: &wgpu::Queue, data: &MeshData) -> PreparedMesh {
+    let _turn = gl_worker_turn();
     PreparedMesh(make_mesh(device, queue, data))
 }
 
@@ -9422,6 +9490,7 @@ pub fn prepare_texture(
     if let Some(small) = fit_texture(data, device.limits().max_texture_dimension_2d) {
         return prepare_texture(device, queue, &small);
     }
+    let _turn = gl_worker_turn();
     use omsi_texture::PixelFormat;
     let format = match data.format {
         PixelFormat::Rgba8 => wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -10066,7 +10135,7 @@ fn batch_items(
     out: &mut Vec<Batch>,
 ) {
     if sort {
-        items.sort_unstable_by_key(|d| (d.pipe, d.mesh, d.range, d.material));
+        items.sort_unstable_by_key(|d| (d.pipe, d.material, d.mesh, d.range));
     }
     let mut k = 0;
     while k < items.len() {
@@ -10287,9 +10356,12 @@ impl DevicePoller {
         let thread = std::thread::Builder::new()
             .name("omsi-gpu-poll".into())
             .spawn(move || {
+                // (on OpenGL every poll takes the GL context from the thread drawing, see
+                // `wait_gpu`: a few times a frame is plenty there)
+                let pause = std::time::Duration::from_millis(if gl_backend() { 5 } else { 1 });
                 while !flag.load(std::sync::atomic::Ordering::Relaxed) {
                     let _ = device.poll(wgpu::PollType::Poll);
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    std::thread::sleep(pause);
                 }
             })
             .ok()?;
@@ -10615,6 +10687,7 @@ impl Renderer {
 
     /// Release a texture (a material still using it keeps it alive until it is freed too).
     pub fn free_texture(&self, scene: &mut Scene, id: TextureId) {
+        scene.snow_textures.remove(&id);
         // (its PBR maps go with it: the slot is taken by another texture next)
         if let Some(m) = scene.pbr_maps.remove(&id) {
             for t in [m.normal, m.orm].into_iter().flatten() {

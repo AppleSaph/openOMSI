@@ -469,15 +469,11 @@ impl RemoteVehicle {
     }
 }
 
-/// The key that opens the chat line (without modifiers). Not Y: the stock
-/// `Inputs/keyboard.cfg` gives that scan code (21) to `scendes_set_z` unmodified and to
-/// `view_toggle_informationdisplay` with Ctrl, and a German keyboard's Y is `scendes_set_y`.
-/// V (47) is bound to nothing there, in either section, and openOMSI uses it nowhere.
-pub const CHAT_KEY: KeyCode = KeyCode::KeyV;
-
-/// The key that opens the chat's input box (the '/' character opens it as well, wherever
-/// the keyboard has it).
-pub const CHAT_TYPE_KEY: KeyCode = KeyCode::Slash;
+// The chat's keys are `chat_toggle` and `chat_open` of keyboard.cfg's [game]
+// (`KeyboardCfg::with_game_defaults`: V, and '/' or - where the bus's gear down has '/', as in
+// OMSI's own file - the key left of 1). Not Y for them: the stock file gives that
+// scan code (21) to `scendes_set_z` unmodified and to `view_toggle_informationdisplay` with
+// Ctrl, and a German keyboard's Y is `scendes_set_y`; V (47) is bound to nothing there.
 
 /// The chat: its lines ("Name: text", "* notice"), oldest first, and the line being typed.
 #[derive(Default)]
@@ -486,7 +482,7 @@ pub struct Chat {
     /// The line being typed: '/' or a click on the chat opens it, Enter sends it, Escape
     /// drops it.
     pub typing: Option<String>,
-    /// [`CHAT_KEY`] hides and shows the chat.
+    /// `chat_toggle` (V) hides and shows the chat.
     pub hidden: bool,
     /// The chat is switched off in the settings: no box, no keys.
     pub disabled: bool,
@@ -1189,6 +1185,7 @@ fn host_weather(args: &Args, weather: &str) -> Result<Option<String>, String> {
     if w.is_empty() {
         return Ok(None);
     }
+    if crate::weather_setup::custom_weather(Some(w)).is_some(){return Ok(Some(w.to_string()));}
     // a METAR report's values: made into a weather here, no file and no sync of our own
     if w.starts_with(crate::weather_setup::REPORT) {
         return if crate::weather_setup::from_report(w).is_some() {
@@ -3219,8 +3216,10 @@ fn debug_log(lan: &LanSession, game: &mut LanGame, dt: f32, frame: &Frame) {
 // ---------------------------------------------------------------------------------------
 // chat
 
-/// A key while LAN play runs: [`CHAT_KEY`] opens the chat line, and while it is open every key is
-/// the chat's (Enter sends, Escape drops the line, Backspace takes a character back).
+/// A key while LAN play runs: the key bound to `chat_open` ('/' or '`', see
+/// `KeyboardCfg::with_game_defaults`) opens the chat line, the one bound to `chat_toggle` (V) hides and shows the chat - `bound` is the `[game]` action of `Inputs/keyboard.cfg` the
+/// key makes with the modifiers held. While the line is open every key is the chat's
+/// (Enter sends, Escape drops the line, Backspace takes a character back).
 /// Returns whether the key was taken. Text arrives through `chat_type`.
 pub fn chat_key(
     lan: &mut LanSession,
@@ -3228,15 +3227,17 @@ pub fn chat_key(
     code: KeyCode,
     pressed: bool,
     repeat: bool,
-    modifiers_held: bool,
+    bound: Option<&str>,
 ) -> bool {
     let chat = &mut game.chat;
     if chat.disabled {
         return false;
     }
     if chat.typing.is_none() {
-        if pressed && !repeat && !modifiers_held && (code == CHAT_KEY || code == CHAT_TYPE_KEY) {
-            if code == CHAT_KEY {
+        let toggle = bound.is_some_and(|a| a.eq_ignore_ascii_case("chat_toggle"));
+        let open = bound.is_some_and(|a| a.eq_ignore_ascii_case("chat_open"));
+        if pressed && !repeat && (toggle || open) {
+            if toggle {
                 chat.hidden = !chat.hidden;
             } else {
                 chat.open();

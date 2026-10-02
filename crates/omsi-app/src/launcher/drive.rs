@@ -9,6 +9,7 @@ use super::theme::*;
 use super::ui::{id_of, ButtonKind};
 use super::Launcher;
 use glam::{DVec2, Vec2};
+use omsi_launcher_lib::{display_bus_name, vehicle_type_label};
 use omsi_ui::paint::Align;
 use omsi_ui::{Color, Rect, Weight};
 
@@ -48,6 +49,30 @@ pub struct DriveView {
     /// is what stops a chosen tour from opening it again).
     pub book_open: bool,
     book_shut: bool,
+    /// The buses marked with a star (#524), by file (lower case, '/'), read once from
+    /// `~/.openomsi/favourite-buses.txt`; and whether the list shows only them.
+    favourites: Option<std::collections::BTreeSet<String>>,
+    only_favourites: bool,
+}
+
+fn favourites_file() -> std::path::PathBuf {
+    omsi_launcher_lib::data_dir().join("favourite-buses.txt")
+}
+
+fn fav_key(file: &str) -> String {
+    file.replace('\\', "/").to_lowercase()
+}
+
+/// The starred buses of the file (one bus file a line).
+fn read_favourites() -> std::collections::BTreeSet<String> {
+    std::fs::read_to_string(favourites_file()).map(|t| t.lines().map(str::trim).filter(|l| !l.is_empty()).map(fav_key).collect()).unwrap_or_default()
+}
+
+fn write_favourites(f: &std::collections::BTreeSet<String>) {
+    let text: String = f.iter().map(|l| format!("{l}\n")).collect();
+    if let Err(e) = std::fs::write(favourites_file(), text) {
+        log::warn!("favourite buses not saved: {e}");
+    }
 }
 
 /// The two tabs: what is driven, and where and when.
@@ -162,6 +187,13 @@ fn duty_panel(l: &mut Launcher, r: Rect) {
         l.ui.p().rounded(fr, RADIUS, FIELD);
         l.ui.icon("lock", Vec2::new(fr.x + 16.0, fr.center().y), 15.0, TEXT_DIM);
         l.ui.text_in(&format!("{m} · {name}"), Rect::new(fr.x + 32.0, fr.y, fr.w - 40.0, fr.h), 12.5, Weight::Regular, TEXT_SOFT, Align::Left);
+        y += ROW + 8.0;
+        // (on a server: which one, and the way back to driving alone)
+        let leave = Rect::new(body.x, y, body.w, ROW);
+        if l.ui.button("leave-server", leave, "Leave the server", Some("logout"), ButtonKind::Normal) {
+            l.state.leave_server();
+        }
+        l.ui.tooltip(leave, "Back to driving alone: the map, the clock and the weather are your own again");
         y += ROW + 12.0;
     } else {
         let maps: Vec<(String, String)> = l.state.maps.iter().map(|m| (m.file.clone(), format!("{}{}{}", if l.state.fresh.contains_key(&m.file) { "★ NEW · " } else { "" }, if m.friendly.is_empty() { &m.name } else { &m.friendly }, if m.installed { "  (mod)" } else { "" }))).collect();
@@ -350,6 +382,8 @@ struct Foot {
     card: Rect,
     cont: Option<Rect>,
     btn: Rect,
+    /// The chosen bus needs packs this machine has not got: a line of its own on the card.
+    warn: bool,
 }
 
 fn foot_of(l: &mut Launcher, right: f32, full: Rect) -> Foot {
@@ -357,7 +391,9 @@ fn foot_of(l: &mut Launcher, right: f32, full: Rect) -> Foot {
     let btn = Rect::new(x - 210.0, full.bottom() - 24.0 - GO_H, 210.0, GO_H);
     let cont = (l.state.joined_server.is_none() && l.state.has_last_situation()).then(|| Rect::new(btn.x, btn.y - 44.0, btn.w, 38.0));
     let top = cont.map(|c| c.y).unwrap_or(btn.y);
-    Foot { card: Rect::new(x - 480.0, top - 80.0, 480.0, 72.0), cont, btn }
+    let warn = l.state.bus().is_some_and(|b| !b.missing_packs.is_empty());
+    let h = if warn { 92.0 } else { 72.0 };
+    Foot { card: Rect::new(x - 480.0, top - 8.0 - h, 480.0, h), cont, btn, warn }
 }
 
 /// The foot of the page: what the choice comes to, and the button that goes on with it (to
@@ -368,6 +404,17 @@ fn foot(l: &mut Launcher, f: &Foot, map_tab: bool) {
     l.ui.solid(f.btn);
     if let Some(c) = f.cont {
         l.ui.solid(c);
+    }
+    // the bus would not start as it stands: the packs it wants, on either tab (it is the last
+    // thing read before the button that goes)
+    if f.warn {
+        let text = l
+            .state
+            .bus()
+            .filter(|b| !b.missing_packs.is_empty())
+            .map(|b| omsi_ui::tr("Parts missing: needs %{packs}").replace("%{packs}", &b.missing_packs.join(", ")))
+            .unwrap_or_default();
+        l.ui.text_in(&text, Rect::new(f.card.x + 16.0, f.card.y + f.card.h - 24.0, f.card.w - 32.0, 20.0), 11.5, Weight::Medium, WARN, Align::Right);
     }
     if !map_tab {
         // the day and the bus in short, above the button that goes on to the map
@@ -396,9 +443,20 @@ fn foot(l: &mut Launcher, f: &Foot, map_tab: bool) {
     if l.ui.button("launch", f.btn, label, Some("play_arrow"), ButtonKind::Primary) {
         start(l);
     }
-    // where the last game on this map was left (`laststn.osn`): a second way in
+    // where the last game on this map was left (`laststn.osn`): a second way in, and - when
+    // the map keeps more than one (save slots, #341) - which of them
     if let Some(c) = f.cont {
-        if l.ui.button("continue", c, "Continue where you left off", Some("history"), ButtonKind::Normal) {
+        let saves: Vec<String> = l.state.saved_situations().iter().map(|s| s.name.clone()).collect();
+        if saves.len() > 1 {
+            let sw = (c.w * 0.5).round();
+            let mut pick = l.state.save_pick.min(saves.len() - 1);
+            if l.ui.select("continue-which", Rect::new(c.x, c.y, sw, c.h), &mut pick, &saves) {
+                l.state.save_pick = pick;
+            }
+            if l.ui.button("continue", Rect::new(c.x + sw + 8.0, c.y, c.w - sw - 8.0, c.h), "Continue", Some("history"), ButtonKind::Normal) {
+                l.state.launch_last_situation();
+            }
+        } else if l.ui.button("continue", c, "Continue where you left off", Some("history"), ButtonKind::Normal) {
             l.state.launch_last_situation();
         }
     }
@@ -443,9 +501,22 @@ fn paint_line(l: &Launcher) -> String {
 /// The chosen day and weather in one line (the first tab's own work, summed up on the
 /// second where it is only a backdrop).
 fn start_line(l: &Launcher) -> String {
+    // on a server: its clock and its weather, whatever this machine has chosen
+    if let Some(i) = l.state.joined_server.as_ref().and_then(|a| l.state.server_info.get(a)).and_then(|x| x.1.as_ref().ok()) {
+        let weather = if i.weather.is_empty() {
+            omsi_ui::tr("the map's (the server's)").into_owned()
+        } else {
+            format!("{} {}", i.weather, omsi_ui::tr("(the server's)"))
+        };
+        return format!("{} {} · {weather}", i.time, omsi_ui::tr("(the server's clock)"));
+    }
     let weather = match l.state.choice.weather.strip_prefix("metar:") {
         Some(code) => format!("at {code}"),
         None if l.state.choice.weather == "cycle" => "weather cycle".into(),
+        None if crate::weather_setup::custom_weather(Some(&l.state.choice.weather)).is_some() => {
+            let c = crate::weather_setup::custom_weather(Some(&l.state.choice.weather)).unwrap();
+            format!("{} · {}", omsi_ui::tr("Custom"), custom_weather_summary(&c))
+        }
         None => l.state.weathers.iter().find(|w| w.file == l.state.choice.weather).map(|w| w.name.clone()).unwrap_or_else(|| "the map's weather".into()),
     };
     let (yy, mm, dd) = super::ui::parse_date(&l.state.choice.date);
@@ -531,12 +602,6 @@ fn map_labels(l: &mut Launcher, free: Rect, avoid: &Rect) {
     }
 }
 
-/// Names in older packs often use underscores as spaces. Keep the original file and
-/// friendly name for searching/tooltips, but display readable labels in the picker.
-fn display_bus_name(name: &str) -> String {
-    name.replace('_', " ").split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 /// OMSI takes the manufacturer and the complete type from [friendlyname]. The
 /// vehicle folder and rendering configuration do not define this hierarchy.
 fn build_bus_manufacturers(vehicles: &[omsi_launcher_lib::VehicleInfo], allowed: Option<&std::collections::HashSet<String>>, fresh: &std::collections::HashSet<String>) -> Vec<BusManufacturer> {
@@ -550,9 +615,7 @@ fn build_bus_manufacturers(vehicles: &[omsi_launcher_lib::VehicleInfo], allowed:
         let group = grouped.entry(key.clone()).or_insert_with(|| BusManufacturer {
             key, name: if maker.is_empty() { "Unknown manufacturer".into() } else { display_bus_name(maker) }, variants: Vec::new(),
         });
-        let type_name = if vehicle.type_name.trim().is_empty() {
-            display_bus_name(&std::path::Path::new(&vehicle.file).file_stem().unwrap_or_default().to_string_lossy())
-        } else { display_bus_name(&vehicle.type_name) };
+        let type_name = vehicle_type_label(&vehicle.type_name, std::path::Path::new(&vehicle.file));
         group.variants.push(BusVariant {
             file: vehicle.file.clone(), name: display_bus_name(&vehicle.name), variant: type_name,
             fresh: fresh.contains(&vehicle.file), installed: vehicle.installed,
@@ -654,10 +717,19 @@ fn step_bus(l: &mut Launcher, r: Rect) {
     }
     let models = l.drive.bus_manufacturers.clone();
     let chosen = l.state.choice.bus.clone();
+    let favs = l.drive.favourites.get_or_insert_with(read_favourites).clone();
+    let is_fav = |file: &str| favs.contains(&fav_key(file));
+    // (the starred ones only: a family with one of them, and in it only those - #524)
+    let only = l.drive.only_favourites && !favs.is_empty();
 
-    let visible: Vec<&BusManufacturer> = models.iter().filter(|m| manufacturer_matches(m, &q)).collect();
+    let visible: Vec<&BusManufacturer> = models.iter().filter(|m| manufacturer_matches(m, &q) && (!only || m.variants.iter().any(|v| is_fav(&v.file)))).collect();
     let count = format!("{} {}", visible.len(), omsi_ui::tr(if visible.len() == 1 { "manufacturer" } else { "manufacturers" }));
     l.ui.text_in(&count, Rect::new(r.x, search.bottom() + 6.0, r.w, 20.0), 11.5, Weight::Regular, TEXT_DIM, Align::Left);
+    let mut only_now = l.drive.only_favourites;
+    if l.ui.toggle("bus-only-favourites", Rect::new(r.right() - 190.0, search.bottom() + 4.0, 190.0, 22.0), &mut only_now, "Favourites only") {
+        l.drive.only_favourites = only_now;
+        l.ui.scroll.remove(&id_of("bus-model-list"));
+    }
     let list_y = search.bottom() + 32.0;
     let settings_h = if l.drive.vehicle_settings_open { 164.0 } else { 0.0 };
     let list = Rect::new(r.x, list_y, r.w, (r.bottom() - list_y - 146.0 - settings_h).max(100.0));
@@ -678,6 +750,7 @@ fn step_bus(l: &mut Launcher, r: Rect) {
     let expanded = l.drive.expanded_manufacturer.clone();
     let mut toggle = None;
     let mut pick = None;
+    let mut star: Option<String> = None;
     let loading = l.state.loading_content;
     l.ui.scroll_area("bus-model-list", list, &mut |ui, view| {
         let mut y = view.y + 6.0;
@@ -685,9 +758,15 @@ fn step_bus(l: &mut Launcher, r: Rect) {
             ui.text_in(if loading { "Reading the buses…" } else { "No buses found. Try another search." }, Rect::new(view.x + 12.0, y, view.w - 24.0, 50.0), 12.5, Weight::Regular, TEXT_DIM, Align::Left);
         }
         for model in &visible {
-            let selected = model.variants.iter().find(|v| v.file == chosen);
             let open = model.variants.len() > 1 && expanded.as_deref() == Some(model.key.as_str());
             let row = Rect::new(view.x + 6.0, y, view.w - 18.0, 54.0);
+            // Keep the scroll extent, but avoid shaping text and emitting geometry for
+            // invisible families. The expanded dropdown retains its widget state.
+            if !open && !ui.rect_visible(row) {
+                y += 58.0;
+                continue;
+            }
+            let selected = model.variants.iter().find(|v| v.file == chosen);
             if ui.row(&format!("bus-family-{}", model.key), row, selected.is_some()) {
                 if model.variants.len() == 1 { pick = Some(model.variants[0].file.clone()); }
                 else { toggle = Some(model.key.clone()); }
@@ -704,18 +783,42 @@ fn step_bus(l: &mut Launcher, r: Rect) {
             else if selected.is_some_and(|v| v.installed) { format!("{subtitle} · {}", omsi_ui::tr("MOD")) } else { subtitle };
             ui.text_in(&subtitle, Rect::new(title.x, row.y + 29.0, title.w, 17.0), 11.5, Weight::Regular, TEXT_DIM, Align::Left);
             ui.icon(if model.variants.len() == 1 { if selected.is_some() { "check" } else { "chevron_right" } } else if open { "expand_less" } else { "expand_more" }, Vec2::new(row.right() - 18.0, row.center().y), 18.0, if selected.is_some() { ACCENT } else { TEXT_DIM });
+            // the star: a bus of its own is starred here, a family's types in its list below
+            let starred = model.variants.iter().any(|v| is_fav(&v.file));
+            let sr = Rect::new(row.right() - 62.0, row.center().y - 13.0, 26.0, 26.0);
+            if model.variants.len() == 1 {
+                let (hs, _, cs) = ui.interact(id_of(&format!("bus-star-{}", model.key)), sr);
+                if cs {
+                    star = Some(model.variants[0].file.clone());
+                }
+                ui.icon("star", sr.center(), 16.0, if starred { ACCENT } else if hs { TEXT_SOFT } else { Color::WHITE.alpha(0.16) });
+                ui.tooltip(sr, if starred { "Remove from the favourites" } else { "Add to the favourites" });
+            } else if starred {
+                ui.icon("star", sr.center(), 14.0, ACCENT.alpha(0.8));
+            }
             y += 58.0;
             if open {
-                let variants: Vec<&BusVariant> = model.variants.iter().filter(|variant| q.is_empty() || model.name.to_lowercase().contains(&q) || variant.file == chosen || variant_matches(variant, &q)).collect();
+                let variants: Vec<&BusVariant> = model.variants.iter().filter(|variant| (q.is_empty() || model.name.to_lowercase().contains(&q) || variant.file == chosen || variant_matches(variant, &q)) && (!only || variant.file == chosen || is_fav(&variant.file))).collect();
                 let selected_index = variants.iter().position(|variant| variant.file == chosen);
                 let mut options: Vec<String> = variants.iter().map(|variant| variant.variant.clone()).collect();
                 let offset = if selected_index.is_none() { options.insert(0, "Choose a bus".into()); 1 } else { 0 };
                 let mut sel = selected_index.unwrap_or(0);
                 ui.label(Rect::new(view.x + 38.0, y, view.w - 50.0, 22.0), "Type / variant");
                 y += 26.0;
-                let dropdown = Rect::new(view.x + 38.0, y, view.w - 50.0, ROW);
+                let dropdown = Rect::new(view.x + 38.0, y, view.w - 50.0 - 36.0, ROW);
                 if !options.is_empty() && ui.select(&format!("bus-type-{}", model.key), dropdown, &mut sel, &options) {
                     if let Some(variant) = sel.checked_sub(offset).and_then(|index| variants.get(index)) { pick = Some(variant.file.clone()); }
+                }
+                // the star of the type chosen
+                if let Some(variant) = selected {
+                    let sr = Rect::new(dropdown.right() + 6.0, y, 30.0, ROW);
+                    let on = is_fav(&variant.file);
+                    let (hs, _, cs) = ui.interact(id_of(&format!("bus-star-type-{}", model.key)), sr);
+                    if cs {
+                        star = Some(variant.file.clone());
+                    }
+                    ui.icon("star", sr.center(), 18.0, if on { ACCENT } else if hs { TEXT_SOFT } else { Color::WHITE.alpha(0.2) });
+                    ui.tooltip(sr, if on { "Remove from the favourites" } else { "Add to the favourites" });
                 }
                 if let Some(variant) = selected {
                     ui.tooltip(dropdown, &format!("{}\n{}\n{} {}", variant.name, variant.file, variant.paints, omsi_ui::tr("liveries")));
@@ -734,6 +837,14 @@ fn step_bus(l: &mut Launcher, r: Rect) {
         }
     }
     if let Some(file) = pick { l.state.select_bus(&file); }
+    if let Some(file) = star {
+        let f = l.drive.favourites.get_or_insert_with(read_favourites);
+        let k = fav_key(&file);
+        if !f.remove(&k) {
+            f.insert(k);
+        }
+        write_favourites(f);
+    }
 
     let mut y = list.bottom() + 16.0;
     if let Some(vehicle) = l.state.bus().cloned() {
@@ -922,7 +1033,24 @@ fn step_time(l: &mut Launcher, r: Rect) {
     // weather cards
     l.ui.heading(Rect::new(r.x, y, r.w, 28.0), "Weather", Some("partly_cloudy_day"));
     y += 30.0;
-    let mut items: Vec<(String, String, String, String, bool)> = vec![(String::new(), "Map default".into(), "Whatever the map starts with".into(), "wb_sunny".into(), false)];
+    if selected_weather_as_custom(&l.state.config.root,&l.state.choice.weather).is_some() {
+        if l.ui.button("weather-edit-current",Rect::new(r.x,y,r.w,34.0),"Edit selected weather as custom",Some("tune"),ButtonKind::Normal){
+            if let Some(custom)=selected_weather_as_custom(&l.state.config.root,&l.state.choice.weather){
+                l.state.choice.weather=custom;
+                l.state.touched();
+            }
+        }
+        y+=42.0;
+    }
+    let custom_now = crate::weather_setup::custom_weather(Some(&l.state.choice.weather));
+    let custom_file = custom_now.clone().unwrap_or_default().encode();
+    let custom_meta = custom_now.as_ref()
+        .map(custom_weather_summary)
+        .unwrap_or_else(|| "Set visibility, wind, clouds, rain, temperature and road state".into());
+    let mut items: Vec<(String, String, String, String, bool)> = vec![
+        (String::new(), "Map default".into(), "Whatever the map starts with".into(), "wb_sunny".into(), false),
+        (custom_file, "Custom weather".into(), custom_meta, "tune".into(), false),
+    ];
     // OMSI 2's current weather: an airport's METAR report, fetched when the game starts
     let metar = l.state.choice.weather.strip_prefix("metar:").map(str::to_string);
     // (the airport nearest the map, not Berlin's for every map: Novi Sad got Berlin's rain)
@@ -951,25 +1079,8 @@ fn step_time(l: &mut Launcher, r: Rect) {
         items.push((w.file.clone(), w.name.clone(), format!("{:.0} °C · {} · {vis}", w.temp, w.precip), icon.into(), l.state.fresh.contains_key(&w.file)));
     }
     if let Some(code) = metar.as_ref() {
-        static AIRPORTS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
         let root = std::path::PathBuf::from(&l.state.config.root);
-        let list = AIRPORTS.get_or_init(|| {
-            let text = std::fs::read(root.join("Weather").join("ICAO.txt"))
-                .map(|b| omsi_cfg::codepage::decode(&b))
-                .unwrap_or_default();
-            let mut v: Vec<(String, String)> = text
-                .lines()
-                .filter_map(|l| {
-                    l.split_once(" - ")
-                        .map(|(c, n)| (c.trim().to_string(), format!("{} - {}", c.trim(), n.trim())))
-                })
-                .collect();
-            if !v.iter().any(|a| a.0 == "EDDB") {
-                v.insert(0, ("EDDB".into(), "EDDB - Berlin Brandenburg".into()));
-            }
-
-            v
-        });
+        let list = crate::weather_setup::metar_airports(&root);
 
         let mut airport = code.to_uppercase().chars().take(4).collect::<String>();
 
@@ -1020,6 +1131,80 @@ fn step_time(l: &mut Launcher, r: Rect) {
 
         y += ROW + 8.0;
     }
+    // When Custom weather is selected, the weather cards turn into the editor. The value is
+    // still just `choice.weather`, so it survives launcher restarts and goes to the game
+    // through the normal `--weather` argument.
+    if let Some(mut custom) = crate::weather_setup::custom_weather(Some(&l.state.choice.weather)) {
+        let area = Rect::new(r.x - 4.0, y, r.w + 8.0, r.bottom() - y);
+        let mut changed = false;
+        let mut presets = false;
+        l.ui.scroll_area("custom-weather-editor", area, &mut |ui, v| {
+            let mut yy = v.y + 4.0;
+            if ui.button("weather-presets", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), "Choose a weather preset", Some("arrow_back"), ButtonKind::Normal) {
+                presets = true;
+            }
+            yy += 44.0;
+
+            changed |= ui.slider("custom-vis", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.visibility_m, 50.0, 50_000.0, 50.0, "Visibility", &|x| if x >= 49_950.0 { "unlimited".into() } else if x >= 1000.0 { format!("{:.1} km", x / 1000.0) } else { format!("{x:.0} m") });
+            yy += 40.0;
+            changed |= ui.slider("custom-bright", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.brightness, 0.0, 1.5, 0.05, "Brightness", &|x| format!("{:.0} %", x * 100.0));
+            yy += 40.0;
+            changed |= ui.slider("custom-wdir", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.wind_dir, 0.0, 355.0, 5.0, "Wind direction", &|x| format!("{x:.0}°"));
+            yy += 40.0;
+            changed |= ui.slider("custom-wspeed", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.wind_speed, 0.0, 40.0, 0.5, "Wind speed", &|x| format!("{x:.1} m/s"));
+            yy += 40.0;
+            changed |= ui.slider("custom-temp", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.temp_c, -30.0, 45.0, 1.0, "Temperature", &|x| format!("{x:.0} °C"));
+            yy += 40.0;
+            let temp_for_dew = custom.temp_c;
+            changed |= ui.slider("custom-hum", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.humidity, 0.0, 100.0, 1.0, "Humidity", &|x| format!("{x:.0} % · dew {:.0} °C", crate::weather_setup::dew_point_c(temp_for_dew, x)));
+            yy += 44.0;
+
+            ui.label(Rect::new(v.x + 4.0, yy, 130.0, 32.0), "Cloud type");
+            let cloud_labels: Vec<String> = crate::weather_setup::CUSTOM_CLOUDS.iter().map(|x| (*x).to_string()).collect();
+            let mut cloud = custom.cloud;
+            if ui.select("custom-cloud", Rect::new(v.x + 134.0, yy, v.w - 142.0, 32.0), &mut cloud, &cloud_labels) {
+                custom.cloud = cloud;
+                changed = true;
+            }
+            yy += 44.0;
+
+            ui.label(Rect::new(v.x + 4.0, yy, 130.0, 32.0), "Precipitation");
+            let precip_labels: Vec<String> = crate::weather_setup::CUSTOM_PRECIP.iter().map(|x| (*x).to_string()).collect();
+            let mut precip = custom.precip.clamp(0, 2) as usize;
+            if ui.select("custom-precip", Rect::new(v.x + 134.0, yy, v.w - 142.0, 32.0), &mut precip, &precip_labels) {
+                custom.precip = precip as i32;
+                changed = true;
+            }
+            yy += 40.0;
+            changed |= ui.slider("custom-intensity", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.precip_intensity, 0.0, 255.0, 1.0, "Precipitation intensity", &|x| format!("{x:.0} / 255"));
+            yy += 40.0;
+            changed |= ui.slider("custom-wet", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.road_wetness, 0.0, 1.0, 0.05, "Road wetness", &|x| format!("{:.0} %", x * 100.0));
+            yy += 40.0;
+
+            let mut snow = custom.snow_cover;
+            if ui.toggle("custom-snow", Rect::new(v.x + 4.0, yy, (v.w - 20.0) * 0.5, 32.0), &mut snow, "Snow cover") {
+                custom.snow_cover = snow;
+                changed = true;
+            }
+            let mut snow_road = custom.snow_on_road;
+            if ui.toggle("custom-snow-road", Rect::new(v.x + 12.0 + (v.w - 20.0) * 0.5, yy, (v.w - 20.0) * 0.5, 32.0), &mut snow_road, "Snow on road") {
+                custom.snow_on_road = snow_road;
+                changed = true;
+            }
+            yy += 44.0;
+            yy - v.y
+        });
+        if presets {
+            l.state.choice.weather.clear();
+            l.state.touched();
+        } else if changed {
+            custom.normalize();
+            l.state.choice.weather = custom.encode();
+            l.state.touched();
+        }
+        return;
+    }
+
     let chosen = l.state.choice.weather.clone();
     let mut pick = None;
     let area = Rect::new(r.x - 4.0, y, r.w + 8.0, r.bottom() - y);
@@ -1062,14 +1247,30 @@ fn step_roadbook(l: &mut Launcher, r: Rect) {
     };
     let from = l.state.first_trip().unwrap_or(0);
     l.ui.text_in(&format!("Line {} · tour {} · from {}", line.name, tour.number, hhmm(l.state.choice.time as f64 * 60.0)), Rect::new(r.x, r.y, r.w, 22.0), 14.0, Weight::Bold, TEXT, Align::Left);
-    let trips: Vec<omsi_launcher_lib::TripInfo> = tour.trips.iter().skip(from).cloned().collect();
+    l.ui.text_in("Click a trip to start the tour there.", Rect::new(r.x, r.y + 20.0, r.w, 16.0), 11.5, Weight::Regular, TEXT_DIM, Align::Left);
+    let trips: Vec<omsi_launcher_lib::TripInfo> = tour.trips.clone();
     let ibis_h = 150.0;
-    let list = Rect::new(r.x - 4.0, r.y + 30.0, r.w + 8.0, r.h - 30.0 - ibis_h - 10.0);
+    let list = Rect::new(r.x - 4.0, r.y + 40.0, r.w + 8.0, r.h - 40.0 - ibis_h - 10.0);
+    let mut start_at = None;
     l.ui.scroll_area("roadbook", list, &mut |ui, v| {
         let mut y = v.y;
-        for (k, t) in trips.iter().enumerate() {
+        for (i, t) in trips.iter().enumerate() {
             let head = Rect::new(v.x + 4.0, y, v.w - 12.0, 46.0);
-            ui.p().rounded(head, 6.0, if k == 0 { SELECTED } else { FIELD });
+            if i < from {
+                if ui.row(&format!("roadbook-trip-{i}"), head, false) {
+                    start_at = Some((t.index, t.departure));
+                }
+                ui.text_in(&format!("{} · {} → {}", omsi_ui::tr("Earlier"), if t.from.is_empty() { "?" } else { &t.from }, t.terminus), Rect::new(head.x + 10.0, head.y + 4.0, head.w - 20.0, 20.0), 13.0, Weight::Bold, TEXT_FAINT, Align::Left);
+                ui.text_in(&format!("{} - {} · {}", hhmm(t.departure), hhmm(t.arrival), if t.line.is_empty() { "depot run".to_string() } else { format!("line {}", t.line) }), Rect::new(head.x + 10.0, head.y + 24.0, head.w - 20.0, 18.0), 11.0, Weight::Regular, TEXT_FAINT, Align::Left);
+                y += 52.0;
+                continue;
+            }
+            let k = i - from;
+            if k == 0 {
+                ui.p().rounded(head, 6.0, SELECTED);
+            } else if ui.row(&format!("roadbook-trip-{i}"), head, false) {
+                start_at = Some((t.index, t.departure));
+            }
             ui.text_in(&format!("{} · {} → {}", if k == 0 { "Your first trip" } else { "Then" }, if t.from.is_empty() { "?" } else { &t.from }, t.terminus), Rect::new(head.x + 10.0, head.y + 4.0, head.w - 20.0, 20.0), 13.0, Weight::Bold, TEXT, Align::Left);
             ui.text_in(&format!("{} - {} · {:.1} km · {}{}", hhmm(t.departure), hhmm(t.arrival), t.km, if t.line.is_empty() { "depot run".to_string() } else { format!("line {}", t.line) }, format!(" · {}", t.name)), Rect::new(head.x + 10.0, head.y + 24.0, head.w - 20.0, 18.0), 11.0, Weight::Regular, TEXT_DIM, Align::Left);
             y += 52.0;
@@ -1094,10 +1295,16 @@ fn step_roadbook(l: &mut Launcher, r: Rect) {
         }
         y - v.y
     });
+    if let Some((index, dep)) = start_at {
+        let time = (dep / 60.0).floor() as i32;
+        l.state.choice.time = time;
+        l.state.choice.start_trip = Some((line.name.clone(), tour.number.clone(), index, time));
+        l.state.touched();
+    }
     ibis_box(l, Rect::new(r.x, r.bottom() - ibis_h, r.w, ibis_h));
 }
 
-fn ibis_box(l: &mut Launcher, r: Rect) {
+pub(super) fn ibis_box(l: &mut Launcher, r: Rect) {
     l.ui.p().rounded(r, 6.0, FIELD);
     let inner = l.ui.heading(Rect::new(r.x + 12.0, r.y + 10.0, r.w - 24.0, r.h - 20.0), "IBIS", Some("keyboard"));
     let Some((_, info)) = l.state.ibis.clone() else {
@@ -1181,6 +1388,30 @@ fn start(l: &mut Launcher) {
 
 /// The airport of OMSI's METAR list (`Weather/ICAO.txt`) nearest to where map `map` lies
 /// (its `timezone.txt`), else Berlin's; read once per map.
+pub(super) fn custom_weather_summary(c:&crate::weather_setup::CustomWeather)->String{
+    let precip=match c.precip{
+        1=>format!("rain {:.0}%",c.precip_intensity/255.0*100.0),
+        2=>format!("snow {:.0}%",c.precip_intensity/255.0*100.0),
+        _=>"dry".to_string(),
+    };
+    let vis=if c.visibility_m>=49_950.0{
+        "clear visibility".to_string()
+    }else if c.visibility_m>=1000.0{
+        format!("{:.1} km",c.visibility_m/1000.0)
+    }else{
+        format!("{:.0} m",c.visibility_m)
+    };
+    format!("{:.0} °C · {:.0}% RH · {precip} · {vis}",c.temp_c,c.humidity)
+}
+
+pub(super) fn selected_weather_as_custom(root:&str,file:&str)->Option<String>{
+    if file.is_empty()||file=="cycle"||file.to_ascii_lowercase().starts_with("metar:")||crate::weather_setup::custom_weather(Some(file)).is_some(){return None}
+    let path=omsi_cfg::resolve_path(std::path::Path::new(root),file);
+    let w=omsi_content::weather::Weather::load(&path).ok()?;
+    let wet=(w.ground_wet[0]/255.0).clamp(0.0,1.0);
+    Some(crate::weather_setup::CustomWeather::from_weather(&w,1.0,wet).encode())
+}
+
 pub(crate) fn nearest_airport(root: &str, map: &str) -> String {
     static CACHE: std::sync::Mutex<Option<hashbrown::HashMap<String, String>>> = std::sync::Mutex::new(None);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -1233,6 +1464,18 @@ mod vehicle_picker_tests {
             folder: folder.into(), file: format!("Vehicles/{folder}/{file}.bus"),
             description: String::new(), paints: vec!["Paint".into()], hofs: vec![],
             installed: false, missing_packs: vec![], numbers: vec![], default_paint: "Beige".into(),
+        }
+    }
+
+    #[test]
+    fn empty_vehicle_types_use_the_file_name() {
+        for empty in ["", "   "] {
+            let manufacturers = build_bus_manufacturers(
+                &[vehicle("Pack", "MAN", empty, "NL_202")],
+                None,
+                &Default::default(),
+            );
+            assert_eq!(manufacturers[0].variants[0].variant, "NL 202");
         }
     }
 

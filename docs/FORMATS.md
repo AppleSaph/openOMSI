@@ -280,9 +280,10 @@ saved in a neighbouring tile's file with coordinates beyond the edge. `tile.map.
 The plate is one flat object a couple of hundred metres across, placed at an absolute
 height; the named mesh is a coarse version of the same plate. Every vertex of the object is
 moved by the difference between the ground under it and that base mesh, so the plate keeps
-its kerbs and camber while its arms come down onto the roads that run into them. The ground
-under the plate is then pressed into the base mesh as well, which is what closes the seam
-along its edges.
+its kerbs and camber while its arms come down onto the roads that run into them, and the
+plate's paths take their heights from it (Omsi.exe 0x7ba818). The ground is not pressed into
+it at load: nothing in Omsi.exe reads that mesh for the terrain, and objects stand on the
+`.terrain` heights.
 
 `[spline_terrain_align]` (no parameter) and `[spline_terrain_align_2] <n>` follow a
 `[spline]` in a tile file (Berlin-Spandau: 33 and 203 of 2486 splines). The editor's

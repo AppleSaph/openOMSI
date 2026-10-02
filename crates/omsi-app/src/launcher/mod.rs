@@ -139,6 +139,10 @@ pub struct Launcher {
     /// second, hidden not at all (a game started from it is being played).
     focused: bool,
     occluded: bool,
+    /// The player came back to the launcher's window while a game runs (clicked it, Alt+Tab):
+    /// it is drawn and answers again until the game has the focus back. Before, it stood
+    /// still the whole game long, and the session code could not be copied (#825).
+    awake_in_game: bool,
     /// The last mouse or key event (an idle launcher draws less often: it kept the GPU busy
     /// at the screen's rate doing nothing).
     last_input: Instant,
@@ -151,6 +155,10 @@ pub struct Launcher {
     ime: bool,
     /// Updates from the GitHub releases (see `crate::updater`, `update.rs`).
     pub update: crate::updater::Updater,
+    #[cfg(not(target_os = "android"))]
+    discord: Option<crate::discord::Discord>,
+    #[cfg(not(target_os = "android"))]
+    discord_next_try: Instant,
 }
 
 /// Run the launcher window until it is closed.
@@ -212,6 +220,7 @@ impl Launcher {
         map_gen: 0,
         focused: true,
         occluded: false,
+        awake_in_game: false,
         last_input: Instant::now(),
         fingers: Default::default(),
         browser: None,
@@ -219,6 +228,10 @@ impl Launcher {
         page_max: 0.0,
         ime: false,
         update: Default::default(),
+        #[cfg(not(target_os = "android"))]
+        discord: None,
+        #[cfg(not(target_os = "android"))]
+        discord_next_try: Instant::now(),
     };
     // after an update: the files it set aside go, and the launcher says what happened
     #[cfg(not(target_os = "android"))]
@@ -341,10 +354,18 @@ impl ApplicationHandler for Launcher {
             return;
         }
         // (`OMSI_LAUNCHER_SIZE=WxH`: another window size, for looking at the layout)
-        let (iw, ih) = omsi_cfg::env::var("OMSI_LAUNCHER_SIZE").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?)))).unwrap_or((1440.0, 880.0));
-        let mut attrs = Window::default_attributes().with_title("openOMSI").with_window_icon(crate::startup::window_icon()).with_inner_size(winit::dpi::LogicalSize::new(iw, ih));
+        let asked = omsi_cfg::env::var("OMSI_LAUNCHER_SIZE").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))));
+        let (fit, at) = match asked {
+            Some((iw, ih)) => (winit::dpi::LogicalSize::new(iw, ih), None),
+            None => crate::startup::fit_window(event_loop, 1440.0, 880.0),
+        };
+        let mut attrs = Window::default_attributes().with_title("openOMSI").with_window_icon(crate::startup::window_icon()).with_inner_size(fit);
         if !mobile::mobile() {
-            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(1080.0, 680.0));
+            // (no bigger than the window fitted to the screen: a small one at 150 % has less)
+            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(1080.0f64.min(fit.width), 680.0f64.min(fit.height)));
+            if let Some(at) = at {
+                attrs = attrs.with_position(at);
+            }
         }
         if omsi_cfg::env::var_os("OMSI_BACKGROUND").is_some() {
             attrs = attrs.with_active(false);
@@ -394,10 +415,7 @@ impl ApplicationHandler for Launcher {
                 event_loop.exit();
             }
             WindowEvent::Touch(t) => self.touch(t, scale),
-            WindowEvent::Focused(f) => {
-                self.focused = f;
-                if !f { self.pages.pads.cancel_feedback_test(); }
-            }
+            WindowEvent::Focused(f) => self.set_focus(f),
             WindowEvent::Occluded(o) => {
                 self.occluded = o;
                 if o { self.pages.pads.cancel_feedback_test(); }
@@ -523,8 +541,13 @@ impl ApplicationHandler for Launcher {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.check_exit(event_loop);
-        // (a screenshot asked for by a script is drawn even when hidden)
-        let occluded = self.occluded && self.shot.is_none() && !self.script.iter().any(|(_, c)| c.starts_with("shot"));
+        // (a screenshot asked for by a script is drawn even when hidden, and so is the frame
+        // that gives the graphics device up again when the game is back in front: the
+        // game's window hides the launcher's then, and drawn nothing, it kept the device)
+        // (likewise the frame that opens it again for a window brought forward)
+        let resting = !mobile::mobile() && self.renderer.is_some() && self.state.in_game() && !self.awake();
+        let waking = !mobile::mobile() && self.renderer.is_none() && self.state.in_game() && self.awake();
+        let occluded = self.occluded && self.shot.is_none() && !resting && !waking && !self.script.iter().any(|(_, c)| c.starts_with("shot"));
         let interval = if occluded {
             0.5
         } else if !self.focused && omsi_cfg::env::var_os("OMSI_BACKGROUND").is_none() {
@@ -547,6 +570,8 @@ impl ApplicationHandler for Launcher {
             self.last = Instant::now();
             self.run_script();
             self.state.update(dt);
+            #[cfg(not(target_os = "android"))]
+            self.update_discord();
             self.update_tick(event_loop);
             self.check_exit(event_loop);
         } else if let Some(w) = self.window.as_ref() {
@@ -609,30 +634,123 @@ impl Launcher {
         true
     }
 
+    #[cfg(not(target_os = "android"))]
+    fn update_discord(&mut self) {
+        let enabled = self.state.settings.get("discord_status").and_then(|v| v.as_bool()).unwrap_or(true);
+        let launching = self.state.queued_launch.is_some()
+            || self.state.launch_hold.is_some_and(|at| at.elapsed().as_secs_f32() < 15.0);
+        let game_running = self.state.instances.iter().any(|i| i.running);
+        let presence = crate::discord::Presence::for_launcher(enabled, launching, game_running);
+        if presence.is_none() {
+            if let Some(discord) = self.discord.as_ref() {
+                discord.stop();
+                if discord.is_finished() {
+                    drop(self.discord.take());
+                }
+            }
+            return;
+        }
+        if let Some(discord) = self.discord.as_ref() {
+            if discord.is_stopping() {
+                if !discord.is_finished() {
+                    return;
+                }
+                drop(self.discord.take());
+            }
+        }
+        if self.discord.is_none() {
+            if !self.state.instances_ready() {
+                return;
+            }
+            if Instant::now() < self.discord_next_try {
+                return;
+            }
+            self.discord_next_try = Instant::now() + std::time::Duration::from_secs(5);
+            let app_id = self.state.settings.get("discord_app_id").and_then(|v| v.as_str()).unwrap_or("");
+            self.discord = crate::discord::Discord::start(app_id);
+        }
+        if let Some(discord) = self.discord.as_ref() {
+            discord.set(presence);
+        }
+    }
+
+    /// The window got or lost the keyboard (`WindowEvent::Focused`, or `focus 0/1` of a
+    /// launcher script).
+    fn set_focus(&mut self, f: bool) {
+        self.focused = f;
+        if !f {
+            self.pages.pads.cancel_feedback_test();
+        }
+        // (only once the game is on its way: the launcher has the focus while Start is
+        // pressed, and gives the device up then as before)
+        self.awake_in_game = f && self.renderer.is_none() && self.state.in_game() && self.state.queued_launch.is_none();
+    }
+
+    /// Looked at while a game runs (see `awake_in_game`): drawn and answering as usual.
+    fn awake(&self) -> bool {
+        // (the player asked the launcher not to rest while a game runs: it is always awake)
+        !self.rests() || (self.awake_in_game && self.focused && self.state.queued_launch.is_none())
+    }
+
+    /// Whether the launcher gives the graphics device up while a game runs (#834: the setting
+    /// "The launcher rests while a game runs"; on by default).
+    fn rests(&self) -> bool {
+        self.state.settings.get("launcher_rest").and_then(|v| v.as_bool()).unwrap_or(true)
+    }
+
     fn frame(&mut self, event_loop: &ActiveEventLoop) {
         if self.recover_device() {
             return;
         }
         let desktop = !mobile::mobile() && self.window.is_some();
+        let presence_released = {
+            #[cfg(not(target_os = "android"))]
+            {
+                if self.state.queued_launch.is_some() {
+                    if let Some(discord) = self.discord.as_ref() {
+                        discord.stop();
+                    }
+                }
+                self.discord.as_ref().is_none_or(|discord| discord.is_finished())
+            }
+            #[cfg(target_os = "android")]
+            { true }
+        };
+        // (looked at while a game runs: drawn as usual, see `awake_in_game`)
+        let awake = self.awake();
         if desktop && self.renderer.is_none() {
-            if self.state.in_game() {
+            if self.state.in_game() && !awake {
                 // nothing is drawn while a game runs; what is clicked or typed meanwhile is not
                 // done once the launcher is back (the first frame pressed Start again)
                 let now = Instant::now();
                 let dt = now.duration_since(self.last).as_secs_f32().min(0.1);
                 self.last = now;
+                self.run_script();
                 self.state.update(dt);
                 self.ui.discard_input();
+                #[cfg(not(target_os = "android"))]
+                self.update_discord();
                 return;
             }
-            log::info!("launcher: no game runs any more, the graphics device is opened again");
+            if self.state.in_game() {
+                log::info!("launcher: its window is looked at while a game runs, the graphics device is opened again");
+                // (what was clicked while it stood still is not done: the click that brought
+                // it forward pressed whatever lay under it)
+                self.ui.discard_input();
+            } else {
+                self.awake_in_game = false;
+                log::info!("launcher: no game runs any more, the graphics device is opened again");
+            }
             self.make_surface();
         }
         self.draw_frame(event_loop);
         // a game starts or runs: the frame just drawn says so and stays in the window, and the
         // graphics device is given up until the game ends (with it open, a game on an NVIDIA
         // card without Resizable BAR uploaded at 20 MB/s)
-        if desktop && self.renderer.is_some() && self.state.in_game() {
+        // (asked again: a script's `focus 0` comes in the frame just drawn)
+        if desktop && self.renderer.is_some() && self.state.in_game() && !self.awake()
+            && (self.state.queued_launch.is_none() || presence_released)
+        {
             log::info!("launcher: a game starts or runs, the graphics device is given up until it ends");
             self.surface = None;
             self.gpu = None;
@@ -641,7 +759,10 @@ impl Launcher {
             self.preview_gen = 0;
             self.renderer = None;
         }
-        if let Some(d) = self.state.queued_launch.take() {
+        if let Some(d) = presence_released.then(|| self.state.queued_launch.take()).flatten() {
+            // Finish the Discord handoff in the background before starting the child.
+            #[cfg(not(target_os = "android"))]
+            drop(self.discord.take());
             self.pages.pads.cancel_feedback_test();
             self.state.spawn_launch(d);
         }
@@ -660,11 +781,14 @@ impl Launcher {
 
         self.run_script();
         self.state.update(dt);
+        #[cfg(not(target_os = "android"))]
+        self.update_discord();
         self.update_tick(event_loop);
         // the preview shows the chosen bus in the chosen light
         let c = &self.state.choice;
         let look = showroom::Look { root: std::path::PathBuf::from(&self.state.config.root), map: c.map.clone(), bus: c.bus.clone(), paint: c.paint.clone(), weather: c.weather.clone(), time: c.time, date: c.date.clone() };
-        if !look.bus.is_empty() && !look.map.is_empty() {
+        // (not while a game runs: the launcher looked at meanwhile loads no bus onto the card)
+        if !look.bus.is_empty() && !look.map.is_empty() && !self.state.in_game() {
             self.showroom.want(look);
         }
         if let Some(r) = self.renderer.as_ref() {
@@ -834,6 +958,8 @@ impl Launcher {
                     }
                 }
                 "shot" => self.shot = Some((0.0, std::path::PathBuf::from(arg.trim()))),
+                // `focus 0` / `focus 1`: the window loses or gets the keyboard
+                "focus" => self.set_focus(arg.trim() != "0"),
                 "page" => {
                     if let Some((pg, _, _)) = PAGES.iter().find(|(_, n, _)| n.eq_ignore_ascii_case(arg.trim())) {
                         self.go(*pg);
@@ -949,7 +1075,7 @@ impl Launcher {
         }
         // a game starts: the last picture before the launcher gives its graphics device up
         // (see `frame`), which stays in the window until the game ends
-        if !mobile && self.state.in_game() {
+        if !mobile && self.state.in_game() && !self.awake() {
             self.draw_game_banner();
         }
     }

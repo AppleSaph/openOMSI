@@ -574,7 +574,7 @@ impl LanWorld {
         for (id, ids) in lan.take_claims() {
             let granted = humans
                 .as_deref_mut()
-                .map(|h| h.hand_over(&ids))
+                .map(|h| h.hand_over(id, &ids))
                 .unwrap_or_default();
             let denied: Vec<u32> = ids.iter().copied().filter(|i| !granted.contains(i)).collect();
             if !granted.is_empty() || !denied.is_empty() {
@@ -1245,6 +1245,11 @@ impl LanWorld {
                         if h.grant(id) {
                             m.granted += 1;
                             log::info!("LAN: the host hands waiting passenger {id} over to our bus");
+                        } else {
+                            // the host has let them go (they are ours now, and the host
+                            // says no more of them): a copy kept here would stand at the
+                            // stop for good, one more after every stop
+                            h.mirror_remove(id);
                         }
                         m.people.remove(&id);
                         m.drawn_people.remove(&id);

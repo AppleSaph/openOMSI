@@ -72,6 +72,9 @@ pub(crate) struct App {
     pub(crate) mirror_budget: f32,
     pub(crate) mirrors_seen: usize,
     pub(crate) mirror_turn: usize,
+    /// With no real-time reflections: the bus whose mirrors are frozen (see
+    /// `MIRROR_FREEZE_REDRAW`).
+    pub(crate) frozen_mirrors: Option<FrozenMirrors>,
     /// Cursor and view the hover was last worked out for (see the redraw).
     pub(crate) hover_key: Option<(i32, i32, i32, i32)>,
     pub(crate) view: String,
@@ -125,6 +128,10 @@ pub(crate) struct App {
     pub(crate) pane_scroll: Option<(usize, usize)>,
     /// The digits of a time being typed in the world page of the game menu (None: not typing).
     pub(crate) menu_edit: Option<String>,
+    pub(crate) menu_edit_icao: bool,
+    /// The vehicle being chosen in "Place a vehicle" takes the place of the one driven
+    /// (the game menu's "Swap for another vehicle", #728).
+    pub(crate) swap_pending: bool,
     /// The line of the open list whose slider the mouse button holds (it follows the cursor).
     pub(crate) menu_drag: Option<usize>,
     /// The keyboard chose the line of the menu last (the mouse moved since: false), so the
@@ -145,6 +152,8 @@ pub(crate) struct App {
     pub(crate) discord_t: f32,
     /// Head tracking (Settings → head tracking), started with the first frame that wants it.
     pub(crate) headtrack: Option<crate::headtrack::HeadTracker>,
+    /// When head tracking last failed to start (tried again a few seconds later).
+    pub(crate) headtrack_failed: Option<std::time::Instant>,
     /// Steering wheels, pedals, joysticks and gamepads (`Inputs/gamectrler.cfg`).
     pub(crate) controllers: Option<crate::controllers::Controllers>,
     /// OMSI's mouse control (`toggel_mouse_ctrl`, O): the cursor's place steers (across) and
@@ -165,6 +174,10 @@ pub(crate) struct App {
     /// time (a game started with the mouse steering on: wherever the cursor was, the wheel
     /// turned and the bus drove off on full throttle).
     pub(crate) center_cursor: bool,
+    /// The cursor hidden while a controller drives: where it stood.
+    pub(crate) cursor_hidden: Option<(f32, f32)>,
+    /// The wheel's place when it last counted as moved.
+    pub(crate) last_ctl_steer: Option<f32>,
     /// The mouse's throttle and brake (eased in with the steering).
     pub(crate) mouse_pedals: (f32, f32),
     /// The speed mouse steering divides by, smoothed.
@@ -267,6 +280,8 @@ pub(crate) struct App {
     pub(crate) weather_cycle: Option<crate::weather_cycle::Cycle>,
     /// The METAR sync's download under way (see `tick_metar`), and the seconds to the next one.
     pub(crate) metar_rx: Option<std::sync::mpsc::Receiver<Option<omsi_content::weather::Weather>>>,
+    /// The current METAR receiver is a single manual fetch rather than the continuous sync.
+    pub(crate) metar_once: bool,
     pub(crate) metar_next: f64,
     /// The mouse cursor currently shows the hand (it is over a switch).
     pub(crate) cursor_kind: u8,
@@ -337,10 +352,14 @@ impl App {
                 )
             })
             .unwrap_or((1600, 900));
+        let (fit, at) = crate::startup::fit_window(event_loop, lw as f64, lh as f64);
         let mut attrs = Window::default_attributes()
             .with_title("openOMSI")
-            .with_inner_size(winit::dpi::LogicalSize::new(lw, lh))
+            .with_inner_size(fit)
             .with_window_icon(crate::startup::window_icon());
+        if let Some(at) = at {
+            attrs = attrs.with_position(at);
+        }
         if self.settings.fullscreen {
             attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         }
@@ -765,6 +784,7 @@ impl App {
                 }
             })
             .unwrap_or_default();
+        let mut reconfigure = false;
         if let (Some(ui), Some(s), Some(win)) = (
             self.ui.as_mut(),
             self.surface.as_ref(),
@@ -783,8 +803,14 @@ impl App {
                 "",
                 done as f32 / total.max(1) as f32,
             );
+            let acquired = s.surface.get_current_texture();
+            // a swapchain that no longer fits the window (Vulkan says so after the switch
+            // to full screen, without a resize event) is made again, as the game's own
+            // frames do: left as it was, every later frame of the loading screen failed
+            // the same way and its picture stood still until the map was there (#776)
+            reconfigure = matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost);
             if let wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) = s.surface.get_current_texture()
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) = acquired
             {
                 let view = frame.texture.create_view(&Default::default());
                 // the tiles loaded so far stay out of the picture: the camera looks at nothing
@@ -819,6 +845,12 @@ impl App {
             win.request_redraw();
         } else {
             self.renderer = Some(renderer);
+        }
+        if reconfigure {
+            if let (Some(s), Some(r), Some(win)) = (self.surface.as_mut(), self.renderer.as_ref(), self.window.as_ref()) {
+                let size = win.inner_size();
+                s.resize(r, size.width, size.height);
+            }
         }
         self.scene = Some(scene);
         self.starting = Some(cam);
@@ -1007,6 +1039,12 @@ pub(crate) fn blend_local(a: &omsi_vehicle::Camera, b: &omsi_vehicle::Camera, k:
         pitch,
         extra: b.extra,
     }
+}
+
+/// A bus whose mirrors are frozen, and the seconds since they were first drawn.
+pub(crate) struct FrozenMirrors {
+    pub(crate) bus: u64,
+    pub(crate) since: f32,
 }
 
 #[derive(Default)]

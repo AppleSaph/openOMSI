@@ -1138,6 +1138,9 @@ fn run(job: &Job, content: &Path, root: Option<&Path>) -> Result<()> {
     job.state("moving", "moving the files into the content folder");
     let mut installed_items = Vec::new();
     let mut aside_items = Vec::new();
+    // (the folders this install made: they go again when the mod is taken out of
+    // Mods/installed, see `uninstall_removed`)
+    let mut created = Vec::new();
     for (mi, m) in plan.maps.iter().enumerate() {
         let from = staging.join(format!("{mi}"));
         if !from.exists() {
@@ -1145,6 +1148,11 @@ fn run(job: &Job, content: &Path, root: Option<&Path>) -> Result<()> {
         }
         check_rel(&m.dest)?;
         let dest = if m.aside { content.join("Mods").join(WAITING).join(&source_name).join(&m.dest) } else { case_path(content, &m.dest) };
+        if !m.aside && !dest.exists() && m.dest.contains('/') {
+            if let Ok(rel) = dest.strip_prefix(content) {
+                created.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
         let replaced = move_into(&from, &dest).with_context(|| format!("moving into {}", dest.display()))?;
         if replaced > 0 {
             let line = format!("{}: {replaced} existing file(s) replaced", m.dest);
@@ -1171,6 +1179,8 @@ fn run(job: &Job, content: &Path, root: Option<&Path>) -> Result<()> {
             if src.is_dir() {
                 let _ = std::fs::remove_dir_all(&src);
             }
+        } else {
+            note_installed(content, &src.file_name().unwrap_or_default().to_string_lossy(), &created);
         }
     }
     let summary = match (installed_items.is_empty(), aside_items.is_empty()) {
@@ -1185,6 +1195,85 @@ fn run(job: &Job, content: &Path, root: Option<&Path>) -> Result<()> {
         p.report.push(summary.clone());
     });
     Ok(())
+}
+
+/// Where a mod moved to `Mods/installed` keeps the list of the folders its install made
+/// (`<name>.txt`, one content-relative path a line).
+pub const RECORDS: &str = ".installed-records";
+/// Where the folders of a mod taken out of `Mods/installed` go (nothing is deleted: moved
+/// back into the content folder, or the mod into `Mods`, it is there again).
+pub const UNINSTALLED: &str = "uninstalled";
+
+/// Note the folders the install of `name` made (with those of an earlier install of it that
+/// are still there).
+fn note_installed(content: &Path, name: &str, created: &[String]) {
+    let dir = content.join("Mods").join(RECORDS);
+    let file = dir.join(format!("{name}.txt"));
+    let mut all: Vec<String> = std::fs::read_to_string(&file).map(|t| t.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty() && content.join(l).exists()).collect()).unwrap_or_default();
+    for c in created {
+        if !all.contains(c) {
+            all.push(c.clone());
+        }
+    }
+    if all.is_empty() {
+        let _ = std::fs::remove_file(&file);
+        return;
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(&file, all.join("\n") + "\n");
+}
+
+/// A mod the player deleted from `Mods/installed` is uninstalled (#819): the folders its
+/// install made (a bus's own folder) are moved into `Mods/uninstalled/<name>`, so the
+/// lists no longer show it - and nothing is lost. Folders a mod only added to (an existing
+/// bus, the shared `Sceneryobjects`) stay. Returns the mods uninstalled.
+pub fn uninstall_removed(content: &Path) -> Vec<String> {
+    // (not while an install runs: a mod installed again leaves Mods/installed for a moment)
+    if !content.join("Mods").join(RECORDS).is_dir() || jobs().iter().any(|j| j.finished.is_none()) {
+        return Vec::new();
+    }
+    uninstall_removed_now(content)
+}
+
+fn uninstall_removed_now(content: &Path) -> Vec<String> {
+    let records = content.join("Mods").join(RECORDS);
+    let Ok(rd) = std::fs::read_dir(&records) else { return Vec::new() };
+    let mut done = Vec::new();
+    for e in rd.flatten() {
+        let file = e.path();
+        let Some(name) = file.file_name().map(|n| n.to_string_lossy().to_string()).and_then(|n| n.strip_suffix(".txt").map(str::to_string)) else { continue };
+        let installed = content.join("Mods").join("installed").join(&name);
+        if installed.exists() || installed.is_symlink() {
+            continue;
+        }
+        let list: Vec<String> = std::fs::read_to_string(&file).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+        let mut left = Vec::new();
+        for rel in list {
+            // (only plain paths inside the content folder, never Mods itself)
+            if check_rel(&rel).is_err() || rel.to_ascii_lowercase().starts_with("mods/") {
+                continue;
+            }
+            let from = content.join(&rel);
+            if !from.exists() {
+                continue;
+            }
+            let to = content.join("Mods").join(UNINSTALLED).join(&name).join(&rel);
+            if to.exists() {
+                let _ = std::fs::remove_dir_all(&to);
+            }
+            let moved = to.parent().map(|p| std::fs::create_dir_all(p).is_ok()).unwrap_or(false) && std::fs::rename(&from, &to).is_ok();
+            if !moved {
+                left.push(rel);
+            }
+        }
+        if left.is_empty() {
+            let _ = std::fs::remove_file(&file);
+            done.push(name);
+        } else {
+            let _ = std::fs::write(&file, left.join("\n") + "\n");
+        }
+    }
+    done
 }
 
 /// Whether the game finds what `plan` says is in the zip at `src` when the archive is
@@ -1657,6 +1746,33 @@ mod tests {
     fn links(p: &Path) -> u64 {
         use std::os::unix::fs::MetadataExt;
         std::fs::metadata(p).unwrap().nlink()
+    }
+
+    /// A bus installed from the inbox and then deleted from Mods/installed leaves the
+    /// lists: its folder goes to Mods/uninstalled (#819).
+    #[test]
+    fn a_bus_deleted_from_installed_is_uninstalled() {
+        let dir = tmp("uninstall");
+        let content = dir.join("content");
+        omsi_cfg::ensure_content_layout(&content).unwrap();
+        // a bus that was there before, which the mod only adds to, stays
+        std::fs::create_dir_all(content.join("Vehicles/Old")).unwrap();
+        let src = inbox_bus(&content, 3);
+        let p = wait_done(&start_inner(content.clone(), None, src, InstallMode::Extract, true, 0));
+        assert_eq!(p.state, "done", "{p:?}");
+        assert!(content.join("Vehicles/Big Bus/big.bus").exists());
+        assert!(content.join("Mods/installed/Big Bus").exists());
+        // still in Mods/installed: nothing happens
+        assert!(uninstall_removed_now(&content).is_empty());
+        assert!(content.join("Vehicles/Big Bus/big.bus").exists());
+        std::fs::remove_dir_all(content.join("Mods/installed/Big Bus")).unwrap();
+        assert_eq!(uninstall_removed_now(&content), ["Big Bus"]);
+        assert!(!content.join("Vehicles/Big Bus").exists());
+        assert!(content.join("Mods").join(UNINSTALLED).join("Big Bus/Vehicles/Big Bus/big.bus").exists());
+        assert!(content.join("Vehicles/Old").exists());
+        // once only
+        assert!(uninstall_removed_now(&content).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

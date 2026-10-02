@@ -621,6 +621,66 @@ pub fn outline_crosses_itself(ring: &[DVec2]) -> bool {
     false
 }
 
+/// The outlines of a `[terrainhole]` cutter, seen from above (world x, y): its open rims,
+/// the edges only one face uses, chained into closed rings. OMSI 2 cuts the ground along an
+/// object's cutter as exactly as along a spline's outline, so a junction's ground ends at its
+/// kerb, not a texel short of it. A closed cutter (no rim) or a rim that branches gives no
+/// ring.
+/// Positions are the mesh's after `transform`, relative to `origin`.
+pub fn hole_mesh_outlines(mesh: &MeshData, transform: &Mat4, origin: DVec3) -> Vec<Vec<DVec2>> {
+    use std::collections::HashMap;
+    // (a model repeats a vertex for every face and UV seam: the corners by place, to the mm)
+    let key = |v: Vec3| ((v.x * 1000.0).round() as i64, (v.y * 1000.0).round() as i64, (v.z * 1000.0).round() as i64);
+    let mut place: HashMap<(i64, i64, i64), DVec2> = HashMap::new();
+    let mut edges: HashMap<((i64, i64, i64), (i64, i64, i64)), u32> = HashMap::new();
+    for t in mesh.indices.chunks_exact(3) {
+        let k = [0, 1, 2].map(|i| {
+            let v = mesh.positions[t[i] as usize];
+            let kv = key(v);
+            place.entry(kv).or_insert_with(|| origin.truncate() + transform.transform_point3(v).truncate().as_dvec2());
+            kv
+        });
+        if k[0] == k[1] || k[1] == k[2] || k[2] == k[0] {
+            continue;
+        }
+        for i in 0..3 {
+            let (a, b) = (k[i], k[(i + 1) % 3]);
+            *edges.entry(if a < b { (a, b) } else { (b, a) }).or_insert(0) += 1;
+        }
+    }
+    let mut next: HashMap<(i64, i64, i64), Vec<(i64, i64, i64)>> = HashMap::new();
+    for ((a, b), n) in &edges {
+        if *n == 1 {
+            next.entry(*a).or_default().push(*b);
+            next.entry(*b).or_default().push(*a);
+        }
+    }
+    if next.values().any(|v| v.len() != 2) {
+        return Vec::new();
+    }
+    let mut starts: Vec<_> = next.keys().copied().collect();
+    starts.sort_unstable();
+    let mut used = std::collections::HashSet::new();
+    let mut rings = Vec::new();
+    for s in starts {
+        if !used.insert(s) {
+            continue;
+        }
+        let (mut prev, mut cur) = (s, next[&s][0]);
+        let mut ring = vec![place[&s]];
+        while cur != s && used.insert(cur) {
+            ring.push(place[&cur]);
+            let n = &next[&cur];
+            let step = if n[0] == prev { n[1] } else { n[0] };
+            (prev, cur) = (cur, step);
+        }
+        if cur == s && ring.len() >= 3 {
+            rings.push(ring);
+        }
+    }
+    rings
+}
+
 /// The surface a spline's `[heightprofile]` segments describe, extruded along the curve like
 /// the drawn profile (the same cross-sections, the same skew): what vehicles and wheels stand
 /// on. OMSI keeps it apart from the graphics - a railway's third rail or a tunnel's walls are
@@ -904,7 +964,14 @@ pub fn turns_round(m: &omsi_o3d::Mesh) -> bool {
     // turning them round hid the pressure and trip displays.
     // Turned round, the Urbino's headlamps faced into the bus and the body showed through
     // the holes in their place.
-    let mirrored = m.transform.determinant() > 0.0;
+    // (An identity, or no matrix at all - every `.x`, an `.o3d` of the oldest exporters -
+    // says nothing of a mirror: it is what an exporter writes that never mirrors. Taken
+    // for one, a house whose exporter wrote its normals inward was turned inside out, its
+    // walls seen from within (#874), and the road crossings of Buildings_Alex, wound to
+    // face up with their normals down, faced the ground and left holes in the streets.)
+    let linear = glam::Mat3::from_mat4(m.transform);
+    let identity = linear.abs_diff_eq(glam::Mat3::IDENTITY, 1e-4);
+    let mirrored = m.has_transform && !identity && m.transform.determinant() > 0.0;
     let explained = against_turned * 10 <= counted;
     mirrored && !explained && counted >= 2 && against * 10 >= counted * 9
 }
@@ -1093,6 +1160,50 @@ mod tests {
         road.rasterize_kind(&cutter, &Mat4::IDENTITY, DVec3::ZERO, 0, 0, true);
         assert!(!road.cuts_anything(&|_, _| 2.0, 0.12));
         assert!(!road.cut_at(middle, middle, 2.0, 0.12));
+    }
+
+    #[test]
+    fn a_terrain_hole_is_cut_along_its_rim_not_by_texel() {
+        let side = tile_size() as f32;
+        let cell = side / 64.0;
+        // a cutter from texel 16 to the middle of texel 40 in x, 16..48 in y
+        let (x0, x1, y0, y1) = (16.0 * cell, 40.5 * cell, 16.0 * cell, 48.0 * cell);
+        let cutter = MeshData {
+            positions: vec![Vec3::new(x0, y0, 0.0), Vec3::new(x1, y0, 0.0), Vec3::new(x1, y1, 0.0), Vec3::new(x0, y1, 0.0)],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
+        };
+        let mut ts = TileSurface::new(64);
+        ts.rasterize_hole(&cutter, &Mat4::IDENTITY, DVec3::ZERO, 0, 0);
+        let mask = ts.mask_image(&|_, _| 0.0, 0.12);
+        let a = |i: usize, j: usize| mask[(j * 64 + i) * 4 + 3];
+        // inside up to the rim's texels: no ground left (the old one-texel erosion kept the
+        // rim texels' ground, a strip of grass along the carriageway's edge)
+        assert_eq!(a(16, 30), 0);
+        assert_eq!(a(39, 30), 0);
+        assert_eq!(a(30, 47), 0);
+        // the texel the rim halves keeps half its ground, the one beyond it all
+        assert!((120..=135).contains(&a(40, 30)), "{}", a(40, 30));
+        assert_eq!(a(41, 30), 255);
+        assert_eq!(a(15, 30), 255);
+        // on a fine raster the ground is kept for `HOLE_KEEP` inside the rim: the texel
+        // along the rim keeps a little, the next one none
+        let cell = side / 512.0;
+        let (x0, x1, y0, y1) = (100.0 * cell, 300.0 * cell, 100.0 * cell, 300.0 * cell);
+        let cutter = MeshData {
+            positions: vec![Vec3::new(x0, y0, 0.0), Vec3::new(x1, y0, 0.0), Vec3::new(x1, y1, 0.0), Vec3::new(x0, y1, 0.0)],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
+        };
+        let mut ts = TileSurface::new(512);
+        ts.rasterize_hole(&cutter, &Mat4::IDENTITY, DVec3::ZERO, 0, 0);
+        let mask = ts.mask_image(&|_, _| 0.0, 0.12);
+        let a = |i: usize, j: usize| mask[(j * 512 + i) * 4 + 3];
+        let kept = ((HOLE_KEEP / (cell / 4.0)) + 0.5).floor().min(4.0) as u32;
+        assert_eq!(a(100, 200) as u32, 255 * (4 * kept) / 16, "cell {cell}");
+        assert_eq!(a(299, 200) as u32, 255 * (4 * kept) / 16);
+        assert_eq!(a(102, 200), 0);
+        assert_eq!(a(200, 200), 0);
     }
 
     #[test]
@@ -1342,9 +1453,16 @@ mod tests {
     #[test]
     fn a_backwards_quad_with_an_unmirrored_matrix_can_keep_its_winding() {
         let v = |x: f32, y: f32| omsi_o3d::Vertex { position: Vec3::new(x, y, 1.0), normal: Vec3::new(0.0, 0.0, 1.0), uv: Vec2::ZERO };
-        let o3d = omsi_o3d::Mesh { vertices: vec![v(0.0, 0.0), v(0.0, 1.0), v(1.0, 0.0), v(1.0, 1.0)], triangles: vec![omsi_o3d::Triangle { indices: [0, 1, 2], material: 0 }, omsi_o3d::Triangle { indices: [2, 1, 3], material: 0 }], materials: vec![omsi_o3d::Material::default()], transform: glam::Mat4::IDENTITY, ..Default::default() };
+        let o3d = omsi_o3d::Mesh { vertices: vec![v(0.0, 0.0), v(0.0, 1.0), v(1.0, 0.0), v(1.0, 1.0)], triangles: vec![omsi_o3d::Triangle { indices: [0, 1, 2], material: 0 }, omsi_o3d::Triangle { indices: [2, 1, 3], material: 0 }], materials: vec![omsi_o3d::Material::default()], transform: glam::Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0)), has_transform: true, ..Default::default() };
         assert_eq!(positive_det_faces_forward(&o3d), Some(false));
         assert!(turns_round(&o3d));
+        // the same faces from a file without a matrix (an `.x`, an old `.o3d`) or with the
+        // identity: drawn as wound, as Omsi.exe draws every mesh (#874)
+        let plain = omsi_o3d::Mesh { has_transform: false, ..o3d.clone() };
+        assert!(!turns_round(&plain));
+        assert_eq!(mesh_from_o3d(&plain).indices[..3], [0, 1, 2]);
+        let identity = omsi_o3d::Mesh { transform: glam::Mat4::IDENTITY, ..o3d.clone() };
+        assert!(!turns_round(&identity));
         assert_eq!(mesh_from_o3d(&o3d).indices[..3], [0, 2, 1]);
         let mut kept = mesh_from_o3d_turning(&o3d, false);
         assert_eq!(kept.indices[..3], [0, 1, 2]);
@@ -1802,6 +1920,11 @@ const OUTLINE_EDGE: f32 = 1.2;
 /// edge up to ~7 cm off, and past the outline (3 cm inside the road's edge) the ground gone
 /// shows the sky under a kerb's top - pale slivers every two metres along the kerbs.
 const OUTLINE_KEEP: f32 = 0.08;
+/// How far inside a `[terrainhole]` cutter's rim the ground is still kept (m): the stock
+/// junction cutters reach 10-20 cm past the kerbs and footways they lie under (Spandau,
+/// `Transition_Bahnstr_Hansastr_hole.o3d`), and cut to the rim the ground showed the sky
+/// along them.
+const HOLE_KEEP: f32 = 0.2;
 
 pub struct TileSurface {
     pub size: usize,
@@ -1822,6 +1945,12 @@ pub struct TileSurface {
     /// highest point of the cutter over each texel, in blocks like the surfaces; most
     /// tiles have none. Explicit holes do not use the optional road-cut height heuristic.
     holes: Vec<Option<Box<[f32; BLOCK * BLOCK]>>>,
+    /// Which of 4×4 points over each texel a `[terrainhole]` cutter covers (bit 4y + x):
+    /// the mask cuts the ground along the cutter's rim as exactly as along an aligned
+    /// spline's outline, not by the texels whose middle it covers - eroded by one texel
+    /// besides, a strip of grass up to a metre wide was left standing over the edges of a
+    /// junction's carriageway (#823).
+    hole_cover: Vec<Option<Box<[u16; BLOCK * BLOCK]>>>,
     /// The outlines the splines laid with `[spline_terrain_align]` cut out of the ground
     /// ([`spline_hole_outlines`]), in tile metres, with their bounds (x0, y0, x1, y1): cut
     /// exactly along them, as Omsi.exe cuts the terrain's triangles, not by texel.
@@ -1859,13 +1988,13 @@ impl TileSurface {
         for b in self.blocks.iter().flatten() {
             rasters += n * 5 + b.low.as_ref().map(|_| n * 4).unwrap_or(0) + b.road.as_ref().map(|_| n * 4).unwrap_or(0);
         }
-        rasters += self.holes.iter().flatten().count() * n * 4;
+        rasters += self.holes.iter().flatten().count() * n * 4 + self.hole_cover.iter().flatten().count() * n * 2;
         (rasters, self.drive.heap_bytes())
     }
 
     pub fn new(size: usize) -> TileSurface {
         let blocks = size.div_ceil(BLOCK);
-        TileSurface { size, blocks: (0..blocks * blocks).map(|_| None).collect(), holes: (0..blocks * blocks).map(|_| None).collect(), outlines: Vec::new(), drive: DriveGrid::default() }
+        TileSurface { size, blocks: (0..blocks * blocks).map(|_| None).collect(), holes: (0..blocks * blocks).map(|_| None).collect(), hole_cover: (0..blocks * blocks).map(|_| None).collect(), outlines: Vec::new(), drive: DriveGrid::default() }
     }
 
     /// Block and index within it of texel `k`.
@@ -1921,6 +2050,19 @@ impl TileSurface {
     fn block_mut(&mut self, k: usize) -> (&mut SurfaceBlock, usize) {
         let (b, i) = self.at(k);
         (self.blocks[b].get_or_insert_with(SurfaceBlock::new), i)
+    }
+
+    /// The 4×4 points over texel `k` a cutter covers (see `hole_cover`).
+    #[inline]
+    fn hole_coverage(&self, k: usize) -> u16 {
+        let (b, i) = self.at(k);
+        self.hole_cover[b].as_ref().map(|c| c[i]).unwrap_or(0)
+    }
+
+    fn add_hole_cover(&mut self, k: usize, bits: u16) {
+        let (b, i) = self.at(k);
+        let block = self.hole_cover[b].get_or_insert_with(|| Box::new([0u16; BLOCK * BLOCK]));
+        block[i] |= bits;
     }
 
     fn add_hole(&mut self, k: usize, h: f32) {
@@ -2071,16 +2213,48 @@ impl TileSurface {
         let ident = *transform == Mat4::IDENTITY;
         let off = (origin - DVec3::new(tx as f64 * tile_size(), ty as f64 * tile_size(), 0.0)).as_vec3();
         let (ox, oy) = (-off.x, -off.y);
+        // the triangles in texel units (x, y) with their heights, walls left out
+        let mut tris: Vec<[Vec3; 3]> = Vec::new();
         for tri in mesh.indices.chunks_exact(3) {
             let mut p = [Vec3::ZERO; 3];
             for k in 0..3 {
                 let v = mesh.positions[tri[k] as usize];
-                p[k] = if ident { v } else { transform.transform_point3(v) };
-                p[k].z += off.z;
+                let w = if ident { v } else { transform.transform_point3(v) };
+                p[k] = Vec3::new((w.x - ox) * scale, (w.y - oy) * scale, w.z + off.z);
             }
-            let (x0, y0) = ((p[0].x - ox) * scale, (p[0].y - oy) * scale);
-            let (x1, y1) = ((p[1].x - ox) * scale, (p[1].y - oy) * scale);
-            let (x2, y2) = ((p[2].x - ox) * scale, (p[2].y - oy) * scale);
+            let det = (p[1].x - p[0].x) * (p[2].y - p[0].y) - (p[2].x - p[0].x) * (p[1].y - p[0].y);
+            if det.abs() >= 1e-9 {
+                tris.push(p);
+            }
+        }
+        // The cutter's rim: the edges only one of its faces has (by position, a mesh repeats
+        // its vertices per face). Just inside it the ground is kept (`HOLE_KEEP`), as along
+        // an aligned spline's outline: a junction's cutter reaches a little past its kerbs
+        // and footways, and cut that far the ground left the sky showing along them.
+        let key = |v: Vec3| ((v.x * 256.0).round() as i64, (v.y * 256.0).round() as i64);
+        let mut edges: std::collections::HashMap<((i64, i64), (i64, i64)), (u32, Vec2, Vec2)> = std::collections::HashMap::new();
+        for p in &tris {
+            for k in 0..3 {
+                let (a, b) = (p[k], p[(k + 1) % 3]);
+                let (ka, kb) = (key(a), key(b));
+                if ka == kb {
+                    continue;
+                }
+                let e = if ka < kb { (ka, kb) } else { (kb, ka) };
+                edges.entry(e).or_insert((0, a.truncate(), b.truncate())).0 += 1;
+            }
+        }
+        let rim: Vec<(Vec2, Vec2)> = edges.into_values().filter(|e| e.0 == 1).map(|e| (e.1, e.2)).collect();
+        let keep = HOLE_KEEP * scale;
+        let near_rim = |q: Vec2| {
+            rim.iter().any(|(a, c)| {
+                let e = *c - *a;
+                let t = ((q - *a).dot(e) / e.length_squared().max(1e-12)).clamp(0.0, 1.0);
+                (*a + e * t - q).length_squared() < keep * keep
+            })
+        };
+        for p in &tris {
+            let (x0, y0, x1, y1, x2, y2) = (p[0].x, p[0].y, p[1].x, p[1].y, p[2].x, p[2].y);
             let minx = x0.min(x1).min(x2).floor().max(0.0) as i32;
             let maxx = x0.max(x1).max(x2).ceil().min(n - 1.0) as i32;
             let miny = y0.min(y1).min(y2).floor().max(0.0) as i32;
@@ -2088,11 +2262,8 @@ impl TileSurface {
             if minx > maxx || miny > maxy {
                 continue;
             }
-            let det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
-            if det.abs() < 1e-9 {
-                continue;
-            }
-            let inv = 1.0 / det;
+            let inv = 1.0 / ((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0));
+            let eps = -0.002;
             for py in miny..=maxy {
                 let cy = py as f32 + 0.5;
                 for px in minx..=maxx {
@@ -2100,11 +2271,24 @@ impl TileSurface {
                     let l1 = ((x1 - x0) * (cy - y0) - (cx - x0) * (y1 - y0)) * inv;
                     let l2 = ((cx - x0) * (y2 - y0) - (x2 - x0) * (cy - y0)) * inv;
                     let l0 = 1.0 - l1 - l2;
-                    let eps = -0.002;
+                    let i = py as usize * self.size + px as usize;
                     if l0 >= eps && l1 >= eps && l2 >= eps {
-                        let i = py as usize * self.size + px as usize;
                         let h = l0 * p[0].z + l2 * p[1].z + l1 * p[2].z;
                         self.add_hole(i, h);
+                    }
+                    // the texel's 4×4 points the triangle covers, short of the rim
+                    let mut bits = 0u16;
+                    for q in 0..16 {
+                        let sx = px as f32 + ((q % 4) as f32 + 0.5) / 4.0;
+                        let sy = py as f32 + ((q / 4) as f32 + 0.5) / 4.0;
+                        let m1 = ((x1 - x0) * (sy - y0) - (sx - x0) * (y1 - y0)) * inv;
+                        let m2 = ((sx - x0) * (y2 - y0) - (x2 - x0) * (sy - y0)) * inv;
+                        if m1 >= eps && m2 >= eps && 1.0 - m1 - m2 >= eps && !near_rim(Vec2::new(sx, sy)) {
+                            bits |= 1 << q;
+                        }
+                    }
+                    if bits != 0 {
+                        self.add_hole_cover(i, bits);
                     }
                 }
             }
@@ -2286,6 +2470,16 @@ impl TileSurface {
                 }
             }
         }
+        // the `[terrainhole]` cutters: each texel keeps the part of its ground the cutter
+        // leaves (filtered, the half-way value lies on the cutter's rim), not eroded
+        for k in self.touched() {
+            let c = self.hole_coverage(k);
+            if c != 0 {
+                let kept = (255 * (16 - c.count_ones()) / 16) as u8;
+                let a = &mut out[k * 4 + 3];
+                *a = (*a).min(kept);
+            }
+        }
         out
     }
 
@@ -2323,7 +2517,7 @@ impl TileSurface {
     /// are empty.
     fn touched(&self) -> impl Iterator<Item = usize> + '_ {
         let per_row = self.size.div_ceil(BLOCK);
-        (0..self.blocks.len()).filter(|b| self.blocks[*b].is_some() || self.holes[*b].is_some()).flat_map(move |b| {
+        (0..self.blocks.len()).filter(|b| self.blocks[*b].is_some() || self.holes[*b].is_some() || self.hole_cover[*b].is_some()).flat_map(move |b| {
             let (bx, by) = (b % per_row, b / per_row);
             (0..BLOCK * BLOCK).filter_map(move |i| {
                 let (x, y) = (bx * BLOCK + i % BLOCK, by * BLOCK + i / BLOCK);

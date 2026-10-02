@@ -17,6 +17,16 @@ fn indicator_toggle_action(state: &mut u8, lever: Option<u8>, want: u8) -> &'sta
     }
 }
 
+/// The indicator lever to put back after a frame of the script (None: leave it): where
+/// the settings keep an indicator on (`cancel` off), the script turning it off by itself
+/// in its frame - a bus whose indicator cancels after a turn, on a phone's wheel after a
+/// second or two (#451) - is undone. The player's own keys and clicks run as triggers
+/// between the frames, so they still turn it off.
+fn kept_indicator(cancel: bool, before: Option<f32>, after: Option<f32>) -> Option<f32> {
+    let (before, after) = (before?.round(), after?.round());
+    (!cancel && (before == 1.0 || before == 2.0) && after == 0.0).then_some(before)
+}
+
 pub(crate) fn steering_view_yaw(current: f32, steering: f32, dt: f32, enabled: bool, angle: f32, response: f32) -> f32 {
     let target = if enabled { steering.clamp(-1.0, 1.0) * angle.clamp(0.0, 60.0) } else { 0.0 };
     current + (target - current) * (1.0 - (-dt.max(0.0) / response.clamp(0.05, 1.0)).exp())
@@ -53,6 +63,9 @@ pub(crate) struct Player {
     /// Coupled-part mesh currently pressed.  Articulated buses keep the rear controls in
     /// the trailer model, while their mouse events are still handled by the lead vehicle.
     pub(crate) pressed_trailer_mesh: Option<(usize, usize)>,
+    /// Set while the camera looks at the bus from outside (F3): a switch behind a wall or a
+    /// window of the bus is out of reach there, and is neither named, clicked nor turned.
+    pub(crate) occlude_controls: bool,
     /// The press on `pressed_mesh`: whether the script has a trigger for the click itself,
     /// and how far the mouse has been dragged since (px).
     pub(crate) press_info: (bool, f32),
@@ -100,6 +113,12 @@ pub(crate) struct Player {
     pub(crate) toggled_up: hashbrown::HashSet<String>,
     /// H-pattern actions act as momentary gear buttons when this is enabled.
     pub(crate) momentary_gears: bool,
+    /// The settings' automated manual (#713): a gear lever's gates are worked by the
+    /// engine speed (see [`Player::tick_auto_shift`]).
+    pub(crate) auto_shift: bool,
+    /// Seconds until the automated manual may shift again; the engine's idle speed as seen.
+    pub(crate) auto_shift_wait: f32,
+    pub(crate) auto_shift_idle: f32,
     /// L switched the side lights on with the headlights (see
     /// [`Player::headlights_with_side_lights`]).
     pub(crate) side_lights_by_l: bool,
@@ -125,6 +144,9 @@ pub(crate) struct Player {
     /// (real OMSI's Z/X/C and Shift+numpad 4/6/5 are toggles, not one-shot "set" buttons):
     /// 0 = nothing, 1 = left, 2 = right, 3 = hazard.
     pub(crate) blinker_key_state: u8,
+    /// The settings' "Indicators cancel themselves" (`blinker_cancel`): off, the script's
+    /// own cancelling after a turn is undone (#451).
+    pub(crate) blinker_cancel: bool,
 }
 
 // Putting a bus into service (Shift+U, `--autostart`) is `omsi_sim::startup`: it presses
@@ -1247,6 +1269,65 @@ impl Player {
         }
     }
 
+    /// The gear a gear lever's gates have engaged (`kw_s_1`.. buses and cars): the variable
+    /// the gates store (`antrieb_getr_gang` in the stock cars, `antrieb_getr_aktugang` in the
+    /// LiAZ). None without gates.
+    pub(crate) fn gate_gear(&self) -> Option<i32> {
+        let program = &self.vehicle.ty.program;
+        program.trigger("kw_s_1")?;
+        let v = crate::input_script::gate_gear_var(program).and_then(|v| self.vehicle.var(&v));
+        Some(v.unwrap_or(0.0).round() as i32)
+    }
+
+    /// Put a gear lever into gate `to` (-1 R, 0 N): as a driver does it, the clutch down, the
+    /// gear in, the clutch let up over a second and a half as OMSI's clutch key lets it (let
+    /// go at once, a bus pulling away stalled its engine). False when there is no such gate.
+    pub(crate) fn shift_gate_to(&mut self, to: i32) -> bool {
+        let name = match to {
+            0 => "kw_s_N".to_string(),
+            -1 => "kw_s_R".to_string(),
+            n => format!("kw_s_{n}"),
+        };
+        if to < -1 || self.vehicle.ty.program.trigger(&name).is_none() {
+            return false;
+        }
+        self.vehicle.set_var("Clutch", 1.0);
+        self.axes.clutch = 1.0;
+        self.vehicle.trigger(&name);
+        self.vehicle.trigger(&format!("{name}_off"));
+        true
+    }
+
+    /// The automated manual (the settings' `auto_shift`, #713; not an OMSI feature): on a
+    /// manual gearbox worked through gates, first gear goes in when the throttle is pressed
+    /// in neutral at a standstill, the next gear up once the engine turns well above its idle
+    /// (later the more throttle), and the next down when it falls back towards it. The
+    /// clutch is worked as for a shift by key.
+    pub(crate) fn tick_auto_shift(&mut self, dt: f32, throttle: f32, brake: f32) {
+        self.auto_shift_wait = (self.auto_shift_wait - dt).max(0.0);
+        if !self.auto_shift || !self.vehicle.ty.program.manual_gearbox() {
+            return;
+        }
+        let Some(cur) = self.gate_gear() else { return };
+        let Some(n) = ["engine_n", "antrieb_eng_n", "engine_rpm", "motor_n", "motor_rpm"].iter().find_map(|v| self.vehicle.var(v)) else { return };
+        let kmh = self.vehicle.physics.velocity_kmh().abs();
+        // the idle speed, from the engine running free at a standstill
+        if n > 300.0 && kmh < 1.0 && throttle < 0.02 && (cur == 0 || self.axes.clutch > 0.9) {
+            self.auto_shift_idle = if self.auto_shift_idle > 0.0 { self.auto_shift_idle + (n - self.auto_shift_idle) * (dt / 2.0).min(1.0) } else { n };
+        }
+        // (not while the clutch is still coming up from the last shift - except in neutral,
+        // or rolling to a stop, where the automatic clutch holds it down anyway)
+        if n < 300.0 || self.auto_shift_wait > 0.0 || (self.axes.clutch > 0.5 && cur != 0 && kmh >= 5.0) {
+            return;
+        }
+        let idle = if self.auto_shift_idle > 300.0 { self.auto_shift_idle } else { 700.0 };
+        let top = (1..=12).take_while(|g| self.vehicle.ty.program.trigger(&format!("kw_s_{g}")).is_some()).last().unwrap_or(0);
+        let to = auto_shift_gear(cur, top, n / idle, throttle, brake, kmh);
+        if to != cur && self.shift_gate_to(to) {
+            self.auto_shift_wait = 1.5;
+        }
+    }
+
     pub(crate) fn tick(&mut self, dt: f32, audio: Option<&omsi_audio::AudioEngine>, inside: bool, listener_follows_bus: bool) {
         self.tick_startup(dt);
         self.tick_auto_drag(dt);
@@ -1261,6 +1342,7 @@ impl Player {
             self.axes.brake = 0.0;
         }
         self.auto_clutch_bite(a.throttle.unwrap_or(0.0).max(self.axes.throttle));
+        self.tick_auto_shift(dt, a.throttle.unwrap_or(0.0).max(self.axes.throttle), a.brake.unwrap_or(0.0).max(self.axes.brake));
         self.vehicle.set_controls(omsi_sim::Controls {
             throttle: a.throttle.unwrap_or(self.axes.throttle).max(self.axes.throttle),
             brake: a.brake.unwrap_or(self.axes.brake).max(self.axes.brake),
@@ -1271,7 +1353,11 @@ impl Player {
                 _ => self.axes.steering,
             },
         });
+        let lever = self.vehicle.var("lights_sw_blinker");
         self.vehicle.update(dt);
+        if let Some(keep) = kept_indicator(self.blinker_cancel, lever, self.vehicle.var("lights_sw_blinker")) {
+            self.vehicle.set_var("lights_sw_blinker", keep);
+        }
         // OMSI_SUSP_TRACE_WINDOW=<csv>: each wheel's travel every frame of a window run
         // (the offscreen run has OMSI_SUSP_TRACE)
         if let Some(path) = omsi_cfg::env::var_os("OMSI_SUSP_TRACE_WINDOW") {
@@ -1292,6 +1378,7 @@ impl Player {
             }
         }
         let fired: Vec<String> = std::mem::take(&mut self.vehicle.host.fired_triggers);
+        let fired_vars: Vec<(String, Vec<f32>)> = std::mem::take(&mut self.vehicle.host.fired_trigger_vars);
         let fired_files: Vec<(String, String)> =
             std::mem::take(&mut self.vehicle.host.fired_file_triggers);
         for (t, f) in &fired_files {
@@ -1308,7 +1395,12 @@ impl Player {
             // how open the bus is to the outside (doors, driver's window) for every outside
             // sound heard in it - this bus's own and the traffic's
             omsi_audio::soundset::set_outside_open(if inside { v.var("Snd_OutsideVol") } else { None });
-            ss.update(a, &|n| v.var(n), &xf, &fired);
+            // (the last time a trigger fired this frame: its sounds start with that moment)
+            let at_fire = |t: &str, n: &str| -> Option<f32> {
+                let vals = &fired_vars.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(t))?.1;
+                v.var_slot(n).and_then(|i| vals.get(i).copied())
+            };
+            ss.update_fired(a, &|n| v.var(n), &xf, &fired, &at_fire);
             ss.update_parts(
                 a,
                 &|n| v.var(n),
@@ -1379,6 +1471,9 @@ impl Player {
                             Err(e) => log::warn!("{e}"),
                         }
                     }
+                    // (the variables its triggered sounds' volume curves read are kept as
+                    // they stand when the trigger fires, see `SoundSet::update_fired`)
+                    self.vehicle.host.snapshot_triggers = ss.curve_triggers().into_iter().collect();
                     self.sounds = Some(ss);
                 }
                 Err(e) => log::warn!("{e}"),
@@ -1397,7 +1492,11 @@ impl Player {
     /// `spread` is the half-angle of those rings in radians; the window passes the angle
     /// six pixels subtend, so aiming is equally forgiving at any resolution.
     pub(crate) fn pick(&self, origin: DVec3, dir: Vec3, spread: f32) -> Option<usize> {
-        pick_in(&self.vehicle, origin, dir, spread)
+        let i = pick_in(&self.vehicle, origin, dir, spread)?;
+        if self.occlude_controls && self.control_hidden(origin, dir, None, i) {
+            return None;
+        }
+        Some(i)
     }
 
     /// The page (`[htmltexture]`) under a ray and where it lands on it: the script texture
@@ -1414,7 +1513,11 @@ impl Player {
 
     /// The same forgiving pick as `pick`, for the coupled sections of an articulated bus.
     pub(crate) fn pick_trailer(&self, origin: DVec3, dir: Vec3, spread: f32) -> Option<(usize, usize)> {
-        pick_trailer_in(&self.vehicle, origin, dir, spread)
+        let (ti, i) = pick_trailer_in(&self.vehicle, origin, dir, spread)?;
+        if self.occlude_controls && self.control_hidden(origin, dir, Some(ti), i) {
+            return None;
+        }
+        Some((ti, i))
     }
 
     /// Exact surface under a VR pointer, including meshes without a mouse event.
@@ -1430,6 +1533,32 @@ impl Player {
     /// How far along a ray the bus (any visible mesh, trailers too) is.
     pub(crate) fn body_hit(&self, origin: DVec3, dir: Vec3) -> Option<f32> {
         Some(self.nearest_hits(origin, dir).0).filter(|t| t.is_finite())
+    }
+
+    /// Seen from outside: the body of the bus (a wall, a window) is hit before the control
+    /// mesh `i` (of coupled part `trailer`, or of the bus itself), so it cannot be reached.
+    fn control_hidden(&self, origin: DVec3, dir: Vec3, trailer: Option<usize>, i: usize) -> bool {
+        let (ty, position, xf) = match trailer {
+            None => (&self.vehicle.ty, self.vehicle.position, self.vehicle.mesh_local_transform(i)),
+            Some(ti) => {
+                let t = &self.vehicle.trailers[ti];
+                (&t.ty, t.position, t.mesh_local_transform(i))
+            }
+        };
+        let Some(&(c, r)) = ty.mesh_bounds.get(i) else {
+            return false;
+        };
+        let dir = dir.normalize_or_zero();
+        let o = (origin - position).as_vec3();
+        let scale = xf
+            .x_axis
+            .truncate()
+            .length()
+            .max(xf.y_axis.truncate().length())
+            .max(xf.z_axis.truncate().length());
+        let along = (xf.transform_point3(c) - o).dot(dir);
+        let nearest = self.nearest_hits(origin, dir).0;
+        nearest < along - r * scale - 0.1
     }
 
     /// The nearest hit of a ray on the bus, and the nearest on a mesh with a mouse event
@@ -1606,6 +1735,17 @@ impl Player {
         self.repair_roller_blind(&format!("{ev}_drag"));
         self.vehicle.host.mouse = (0.0, 0.0);
         self.vehicle.trigger(&format!("{ev}_off"));
+    }
+
+    /// The left button let go while the right one is held: Omsi.exe sends no `_off`, so a
+    /// momentary switch stays where the hand left it (a pedal held down for the steering
+    /// column's adjustment, #769) until it is clicked and let go again.
+    pub(crate) fn release_keeping(&mut self) {
+        if let Some(i) = self.pressed_mesh.take() {
+            let def = &self.vehicle.ty.model.meshes[self.vehicle.ty.meshes[i].def_index];
+            log::info!("mouse event {:?}: let go with the right button held, the switch stays", def.mouse_event);
+        }
+        self.pressed_trailer_mesh = None;
     }
 
     pub(crate) fn release(&mut self) {
@@ -2204,6 +2344,23 @@ pub(crate) fn mouse_pedal(current: f32, target: f32, k: f32) -> f32 {
 }
 
 #[cfg(test)]
+mod kept_indicator_tests {
+    use super::kept_indicator;
+
+    #[test]
+    fn a_kept_indicator_is_put_back_when_the_script_cancels_it() {
+        // the script's own cancelling stands by default
+        assert_eq!(kept_indicator(true, Some(1.0), Some(0.0)), None);
+        // kept: left and right come back, the hazard lever and a change of side stay
+        assert_eq!(kept_indicator(false, Some(1.0), Some(0.0)), Some(1.0));
+        assert_eq!(kept_indicator(false, Some(2.0), Some(0.0)), Some(2.0));
+        assert_eq!(kept_indicator(false, Some(1.0), Some(2.0)), None);
+        assert_eq!(kept_indicator(false, Some(0.0), Some(0.0)), None);
+        assert_eq!(kept_indicator(false, None, Some(0.0)), None);
+    }
+}
+
+#[cfg(test)]
 mod orbit_pivot_tests {
     use super::orbit_pivot;
     use glam::DVec3;
@@ -2361,5 +2518,50 @@ mod steering_view_tests {
         let centered = steering_view_yaw(30.0, 1.0, 0.1, false, 45.0, 0.25);
         assert!(centered > 0.0 && centered < 30.0);
         assert_eq!(steering_view_yaw(30.0, 0.0, 0.0, true, 45.0, 0.25), 30.0);
+    }
+}
+
+/// The automated manual's choice (#713) from gear `cur` (of `top`), the engine speed as a
+/// multiple of its idle, the pedals and the road speed.
+pub(crate) fn auto_shift_gear(cur: i32, top: i32, n_over_idle: f32, throttle: f32, brake: f32, kmh: f32) -> i32 {
+    if cur == 0 {
+        return if throttle > 0.1 && brake < 0.05 && kmh < 3.0 && top >= 1 { 1 } else { 0 };
+    }
+    if cur < 1 {
+        return cur;
+    }
+    // stopping: back to first, ready to pull away
+    if cur > 1 && kmh < 5.0 {
+        return 1;
+    }
+    let up = 2.2 + 1.2 * throttle.clamp(0.0, 1.0);
+    if cur < top && throttle > 0.05 && n_over_idle > up {
+        cur + 1
+    } else if cur > 1 && n_over_idle < 1.35 {
+        cur - 1
+    } else {
+        cur
+    }
+}
+
+#[cfg(test)]
+mod auto_shift_tests {
+    use super::auto_shift_gear as g;
+
+    #[test]
+    fn the_automated_manual_shifts_by_the_engine_speed() {
+        // pulling away: first gear in from neutral, never reverse
+        assert_eq!(g(0, 5, 1.0, 0.5, 0.0, 0.0), 1);
+        assert_eq!(g(0, 5, 1.0, 0.0, 0.0, 0.0), 0);
+        assert_eq!(g(-1, 5, 3.0, 1.0, 0.0, 5.0), -1);
+        // up early with a light foot, late with a heavy one
+        assert_eq!(g(2, 5, 2.8, 0.3, 0.0, 30.0), 3);
+        assert_eq!(g(2, 5, 2.8, 1.0, 0.0, 30.0), 2);
+        assert_eq!(g(2, 5, 3.7, 1.0, 0.0, 30.0), 3);
+        // never past the top gear, down near the idle, not below first
+        assert_eq!(g(5, 5, 4.0, 1.0, 0.0, 90.0), 5);
+        assert_eq!(g(3, 5, 1.2, 0.0, 0.5, 20.0), 2);
+        assert_eq!(g(1, 5, 1.0, 0.0, 1.0, 2.0), 1);
+        assert_eq!(g(4, 5, 1.0, 0.0, 1.0, 3.0), 1);
     }
 }

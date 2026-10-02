@@ -31,6 +31,9 @@ const STARTER_NAMES: &[&str] = &[
 const POWER_VARIABLES: &[&str] = &[
     "elec_busbar_main_sw",
     "elec_busbar_main",
+    // Hong Kong Volvo B9TL variants expose the key position as `elec_real_main`
+    // and only raise `elec_busbar_main` after the first starter/ignition press.
+    "elec_real_main",
     "elec_battery_on",
     "battery_on",
     "batterie_on",
@@ -52,10 +55,16 @@ const GAP: f32 = 0.5;
 const PRESSES_PER_TRIGGER: u32 = 4;
 /// How long the starter is held at most (the NL202's cold engine needs a good 3.5 s).
 const MAX_CRANK: f32 = 8.0;
+/// LECIP/DDU scripts normally accept login after their power-up timer expires.
+const DDU_LOGIN_DELAY: f32 = 7.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
     Power,
+    /// Vehicle systems such as the Hong Kong LECIP DDU must be logged in before cranking.
+    Login,
+    /// Return selector-style gear controls to neutral before the starter is pressed.
+    Neutral,
     Ignition,
     Crank,
     /// The starter was let go with the engine running: watch it for a moment, a cold
@@ -125,6 +134,73 @@ mod tests {
         assert!(power_on(&v), "{:?}", start.report);
         assert!(engine_running(&v), "{:?}", start.report);
         assert!(start.report.iter().any(|s| s.contains("engine started")), "{:?}", start.report);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn logs_in_and_selects_neutral_before_starting() {
+        let dir = std::env::temp_dir().join(format!(
+            "omsi-startup-login-neutral-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("login.bus"),
+            "[model]\nmodel.cfg\n[varnamelist]\n1\nvars.txt\n[script]\n1\nmain.osc\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("model.cfg"), "").unwrap();
+        std::fs::write(
+            dir.join("vars.txt"),
+            "battery_on\nddu_login\nddu_power_timer\ncockpit_gangN\nengine_on\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("main.osc"),
+            "{init}\n0 (S.L.battery_on) 0 (S.L.ddu_login) 0 (S.L.ddu_power_timer) 0.7 (S.L.cockpit_gangN) 0 (S.L.engine_on)\n{end}\n\\
+             {trigger:master_battery}\n1 (S.L.battery_on)\n{end}\n\\
+             {trigger:ddu_login}\n(L.L.ddu_power_timer) 1 > {if} 1 (S.L.ddu_login) {endif}\n{end}\n\\
+             {trigger:automatic_N}\n0 (S.L.cockpit_gangN)\n{end}\n\\
+             {trigger:kw_m_enginestart}\n(L.L.ddu_login) (L.L.cockpit_gangN) 0 = && {if} 1 (S.L.engine_on) {endif}\n{end}\n\\
+             {frame}\n(L.L.battery_on) 1 = {if} (L.L.ddu_power_timer) (L.S.Timegap) + (S.L.ddu_power_timer) {endif}\n{end}\n",
+        )
+        .unwrap();
+
+        let ty = Arc::new(VehicleType::load(&dir, &dir.join("login.bus")).unwrap());
+        let mut v = VehicleInstance::new(ty, VehicleHost::new(SimClock::default()));
+        let mut start = StartUp::new(&v, &[]);
+        for _ in 0..900 {
+            let running = start.tick(&mut v, &[], 1.0 / 30.0);
+            v.update(1.0 / 30.0);
+            if !running {
+                break;
+            }
+        }
+        assert!(engine_running(&v), "{:?}", start.report);
+        assert!(start.report.iter().any(|s| s.contains("DDU login")), "{:?}", start.report);
+        assert!(start.report.iter().any(|s| s.contains("neutral")), "{:?}", start.report);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn treats_real_main_as_power_before_two_stage_starter() {
+        let dir = std::env::temp_dir().join(format!("omsi-startup-real-main-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("real.bus"), "[model]\nmodel.cfg\n[varnamelist]\n1\nvars.txt\n[script]\n1\nmain.osc\n").unwrap();
+        std::fs::write(dir.join("model.cfg"), "").unwrap();
+        std::fs::write(dir.join("vars.txt"), "elec_real_main\nelec_busbar_main\nengine_on\n").unwrap();
+        std::fs::write(dir.join("main.osc"), "{init}\n0 (S.L.elec_real_main) 0 (S.L.elec_busbar_main) 0 (S.L.engine_on)\n{end}\n\\
+             {trigger:master_battery}\n1 (S.L.elec_real_main)\n{end}\n\\
+             {trigger:kw_m_enginestart}\n(L.L.elec_busbar_main) 0 = {if} 1 (S.L.elec_busbar_main) {else} 1 (S.L.engine_on) {endif}\n{end}\n\\
+             {frame}\n{end}\n").unwrap();
+        let ty = Arc::new(VehicleType::load(&dir, &dir.join("real.bus")).unwrap());
+        let mut v = VehicleInstance::new(ty, VehicleHost::new(SimClock::default()));
+        let mut start = StartUp::new(&v, &[]);
+        for _ in 0..300 {
+            if !start.tick(&mut v, &[], 1.0 / 30.0) { break; }
+            v.update(1.0 / 30.0);
+        }
+        assert!(engine_running(&v), "{:?}", start.report);
         std::fs::remove_dir_all(&dir).ok();
     }
 }
@@ -591,10 +667,39 @@ impl StartUp {
                             self.presses, self.candidates[self.candidate]
                         ));
                     }
-                    self.enter(v, bound, Step::Ignition);
+                    self.enter(v, bound, Step::Login);
                 } else {
                     self.press_loop(v, bound, Step::Ignition, "electrics");
                 }
+            }
+            Step::Login => {
+                let needs_login = v.var("ddu_login").is_some_and(|n| n < 0.5)
+                    && v.ty.program.trigger("ddu_login").is_some();
+                if !needs_login {
+                    self.enter(v, bound, Step::Neutral);
+                } else {
+                    let timer_ready = v
+                        .var("ddu_power_timer")
+                        .is_none_or(|n| n >= DDU_LOGIN_DELAY)
+                        || self.t >= DDU_LOGIN_DELAY + 1.0;
+                    if timer_ready {
+                        v.trigger("ddu_login");
+                        v.trigger("ddu_login_off");
+                        self.report.push("DDU login".to_string());
+                        self.enter(v, bound, Step::Neutral);
+                    }
+                }
+            }
+            Step::Neutral => {
+                if let Some(n) = ["automatic_N"]
+                    .into_iter()
+                    .find(|n| v.ty.program.trigger(n).is_some())
+                {
+                    v.trigger(n);
+                    v.trigger(&format!("{n}_off"));
+                    self.report.push(format!("neutral ({n})"));
+                }
+                self.enter(v, bound, Step::Ignition);
             }
             Step::Ignition => {
                 // the optional ignition switches of some mods: one press each

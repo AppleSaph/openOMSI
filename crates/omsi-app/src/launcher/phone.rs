@@ -36,9 +36,17 @@ pub enum Sheet {
     Map,
     Bus,
     Livery,
+    /// HOF, fleet number and registration plate.
+    Vehicle,
     Duty,
     Tour,
     Time,
+    /// Spawn and service options that the desktop Drive page exposes.
+    Start,
+    /// The selected duty's roadbook and IBIS hint.
+    Roadbook,
+    /// Saved dedicated servers.
+    Servers,
 }
 
 /// The pages More opens.
@@ -60,6 +68,9 @@ pub struct PhoneView {
     pub page: Option<Page>,
     pub filter: String,
     pub code: String,
+    /// Fields of the phone's saved-server manager.
+    pub server_addr: String,
+    pub server_name: String,
 }
 
 /// The whole launcher on a phone (instead of the rail and the desktop pages).
@@ -163,9 +174,26 @@ fn time_text(l: &Launcher) -> String {
     let weather = match l.state.choice.weather.strip_prefix("metar:") {
         Some(c) => format!("live {c}"),
         None if l.state.choice.weather == "cycle" => "weather cycle".into(),
+        None if crate::weather_setup::custom_weather(Some(&l.state.choice.weather)).is_some() => {
+            let c=crate::weather_setup::custom_weather(Some(&l.state.choice.weather)).unwrap();
+            format!("custom · {:.0}°C · {:.0}% RH",c.temp_c,c.humidity)
+        },
         None => l.state.weathers.iter().find(|w| w.file == l.state.choice.weather).map(|w| w.name.clone()).unwrap_or_else(|| "map weather".into()),
     };
     format!("{:02}:{:02} · {d} {} {y} · {weather}", l.state.choice.time / 60, l.state.choice.time % 60, &super::ui::MONTHS[(m as usize).clamp(1, 12) - 1][..3])
+}
+
+fn start_text(l: &Launcher) -> String {
+    let where_ = if l.state.choice.entry < 0 {
+        "Automatic".to_string()
+    } else {
+        l.state
+            .map()
+            .and_then(|m| m.entry_points.get(l.state.choice.entry as usize))
+            .map(|e| if e.name.is_empty() { format!("entry {}", e.index + 1) } else { e.name.clone() })
+            .unwrap_or_else(|| "Automatic".into())
+    };
+    format!("{where_} · {:.0} cars", l.state.choice.traffic)
 }
 
 fn play(l: &mut Launcher, body: Rect) {
@@ -181,6 +209,19 @@ fn play(l: &mut Launcher, body: Rect) {
         (Rect::new(inner.x, inner.y, inner.w, ph), Rect::new(inner.x, inner.y + ph + pad, inner.w, inner.h - ph - pad))
     };
     l.preview(pr);
+    // The phone has its own Play page, so keep the less frequently used desktop choices
+    // close to the bus without making the main card stack taller.
+    if l.state.bus().is_some() {
+        if l.ui.icon_button("p-vehicle-settings", Vec2::new(pr.right() - 26.0, pr.y + 26.0), 18.0, "settings", "Vehicle settings") {
+            open(l, Sheet::Vehicle);
+        }
+    }
+    if !l.state.choice.free && l.state.choice.line.is_some() && l.state.choice.tour.is_some() {
+        if l.ui.icon_button("p-roadbook", Vec2::new(pr.right() - 26.0, pr.y + 72.0), 18.0, "receipt_long", "Roadbook and IBIS") {
+            l.state.load_ibis();
+            open(l, Sheet::Roadbook);
+        }
+    }
     // the bus's name over the foot of its picture, the livery as a chip beside it
     let shade = Rect::new(pr.x, pr.bottom() - 58.0, pr.w, 58.0);
     l.ui.p().rounded(shade, RADIUS, Color::rgba(0, 0, 0, 0.55));
@@ -216,15 +257,21 @@ fn play(l: &mut Launcher, body: Rect) {
     }
     // the duty as four cards, the start under them
     let start_h = 54.0;
-    let n = 4.0;
+    let n = 5.0;
     let gap = 8.0;
-    let card_h = ((col.h - start_h - gap * n) / n).clamp(44.0, 64.0);
+    let card_h = ((col.h - start_h - gap * n) / n).clamp(42.0, 64.0);
     let map = l.state.map().map(|m| if m.friendly.is_empty() { m.name.clone() } else { m.friendly.clone() }).unwrap_or_else(|| "Choose a map".into());
     let incomplete = l.state.bus().is_some_and(|b| !b.missing_packs.is_empty());
     let bus = l.state.bus().map(|b| b.name.clone()).unwrap_or_else(|| "Choose a bus".into());
-    let (duty, time) = (duty_text(l), time_text(l));
+    let (duty, time, start_opts) = (duty_text(l), time_text(l), start_text(l));
     let mut y = col.y;
-    let cards = [("p-map", "map", "Map", map, false, Sheet::Map), ("p-bus", "directions_bus", "Bus", bus, incomplete, Sheet::Bus), ("p-duty", "route", "Duty", duty, false, Sheet::Duty), ("p-time", "partly_cloudy_day", "Time & weather", time, false, Sheet::Time)];
+    let cards = [
+        ("p-map", "map", "Map", map, false, Sheet::Map),
+        ("p-bus", "directions_bus", "Bus", bus, incomplete, Sheet::Bus),
+        ("p-duty", "route", "Duty", duty, false, Sheet::Duty),
+        ("p-time", "partly_cloudy_day", "Time & weather", time, false, Sheet::Time),
+        ("p-start-options", "tune", "Start options", start_opts, false, Sheet::Start),
+    ];
     for (id, icon, label, value, warn, s) in cards {
         if card(l, id, Rect::new(col.x, y, col.w, card_h), icon, label, &value, warn) {
             if s == Sheet::Time && l.state.joined_server.is_some() {
@@ -302,9 +349,13 @@ fn sheet(l: &mut Launcher, s: Sheet, full: Rect) {
         Sheet::Map => "Choose the map",
         Sheet::Bus => "Choose the bus",
         Sheet::Livery => "Choose the livery",
+        Sheet::Vehicle => "Vehicle settings",
         Sheet::Duty => "Line or free drive",
         Sheet::Tour => "Choose the tour",
         Sheet::Time => "Time and weather",
+        Sheet::Start => "Start options",
+        Sheet::Roadbook => "Roadbook and IBIS",
+        Sheet::Servers => "Saved servers",
     };
     let search = matches!(s, Sheet::Map | Sheet::Bus | Sheet::Duty);
     let barr = Rect::new(full.x, full.y, full.w, BAR_H);
@@ -313,9 +364,13 @@ fn sheet(l: &mut Launcher, s: Sheet, full: Rect) {
         Sheet::Map => map_sheet(l, list),
         Sheet::Bus => bus_sheet(l, list),
         Sheet::Livery => livery_sheet(l, list),
+        Sheet::Vehicle => vehicle_sheet(l, list),
         Sheet::Duty => duty_sheet(l, list),
         Sheet::Tour => tour_sheet(l, list),
         Sheet::Time => time_sheet(l, list),
+        Sheet::Start => start_sheet(l, list),
+        Sheet::Roadbook => roadbook_sheet(l, list),
+        Sheet::Servers => servers_sheet(l, list),
     };
     // (the bar drawn last: the list scrolls under it)
     if bar(l, barr, title, search) || back {
@@ -426,6 +481,279 @@ fn livery_sheet(l: &mut Launcher, r: Rect) -> bool {
     false
 }
 
+
+fn vehicle_sheet(l: &mut Launcher, r: Rect) -> bool {
+    let Some(vehicle) = l.state.bus().cloned() else {
+        l.ui.text_in("Choose a bus first.", Rect::new(r.x + 16.0, r.y, r.w - 32.0, 40.0), 14.0, Weight::Regular, TEXT_DIM, Align::Left);
+        return false;
+    };
+    let inner = r.pad(10.0, 8.0);
+    let field = (inner.w * 0.62).max(190.0);
+    let label_w = (inner.w - field - 10.0).max(100.0);
+    let mut y = inner.y;
+
+    let auto = l.state.default_hof();
+    let mut hof_options = vec![format!("Automatic ({auto})")];
+    hof_options.extend(vehicle.hofs.iter().cloned());
+    let mut hof_sel = if l.state.choice.hof_manual {
+        vehicle.hofs.iter().position(|h| h.eq_ignore_ascii_case(&l.state.choice.hof)).map(|i| i + 1).unwrap_or(0)
+    } else {
+        0
+    };
+    l.ui.label(Rect::new(inner.x, y, label_w, ROW), "Depot file");
+    if l.ui.select("pv-hof", Rect::new(inner.x + label_w + 10.0, y, field, ROW), &mut hof_sel, &hof_options) {
+        l.state.choice.hof_manual = hof_sel != 0;
+        l.state.choice.hof = if hof_sel == 0 { auto.clone() } else { vehicle.hofs[hof_sel - 1].clone() };
+        l.state.load_ibis();
+        l.state.touched();
+    }
+    y += ROW + 12.0;
+
+    if !vehicle.numbers.is_empty() {
+        let number_options: Vec<String> = vehicle
+            .numbers
+            .iter()
+            .map(|(number, plate)| if plate.trim().is_empty() { number.clone() } else { format!("{number}  ({})", plate.trim()) })
+            .collect();
+        let mut sel = vehicle.numbers.iter().position(|(number, _)| *number == l.state.choice.number).unwrap_or(0);
+        l.ui.label(Rect::new(inner.x, y, label_w, ROW), "Fleet number");
+        if l.ui.select("pv-number", Rect::new(inner.x + label_w + 10.0, y, field, ROW), &mut sel, &number_options) {
+            l.state.choice.number = vehicle.numbers[sel].0.clone();
+            l.state.touched();
+        }
+        y += ROW + 12.0;
+    }
+
+    let mut plate = l.state.choice.plate.clone();
+    l.ui.label(Rect::new(inner.x, y, label_w, ROW), "Number plate");
+    if l.ui.text_input("pv-plate", Rect::new(inner.x + label_w + 10.0, y, field, ROW), &mut plate, "Automatic", Some("badge")) {
+        l.state.choice.plate = plate;
+        l.state.touched();
+    }
+    y += ROW + 18.0;
+
+    if !vehicle.missing_packs.is_empty() {
+        y += l.ui.paragraph(
+            &omsi_ui::tr("Parts missing: needs %{packs}").replace("%{packs}", &vehicle.missing_packs.join(", ")),
+            Vec2::new(inner.x, y),
+            inner.w,
+            12.5,
+            Weight::Regular,
+            WARN,
+        ) + 12.0;
+    }
+    let description = vehicle.description.replace('\t', " ").lines().map(str::trim).collect::<Vec<_>>().join("\n").trim().to_string();
+    if !description.is_empty() {
+        y += l.ui.paragraph(&description, Vec2::new(inner.x, y), inner.w, 12.0, Weight::Regular, TEXT_DIM) + 12.0;
+    }
+    l.ui.text_in(&vehicle.file, Rect::new(inner.x, y, inner.w, 22.0), 10.5, Weight::Regular, TEXT_FAINT, Align::Left);
+    false
+}
+
+fn start_sheet(l: &mut Launcher, r: Rect) -> bool {
+    let inner = r.pad(10.0, 8.0);
+    let mut y = inner.y;
+    if let Some(m) = l.state.map().cloned() {
+        let mut labels = vec![if l.state.choice.free { "Automatic (the map's first)".to_string() } else { "Automatic (nearest to the first stop)".to_string() }];
+        labels.extend(m.entry_points.iter().map(|e| if e.name.is_empty() { format!("entry {}", e.index + 1) } else { e.name.clone() }));
+        let mut es = if l.state.choice.entry < 0 { 0 } else { (l.state.choice.entry as usize + 1).min(labels.len().saturating_sub(1)) };
+        l.ui.label(Rect::new(inner.x, y, 112.0, ROW), "Start at");
+        if labels.len() > 1 && l.ui.select("ps-start-at", Rect::new(inner.x + 112.0, y, inner.w - 112.0, ROW), &mut es, &labels) {
+            l.state.choice.entry = es as i32 - 1;
+            l.state.touched();
+        }
+        y += ROW + 14.0;
+    }
+
+    // A joined server owns the world traffic/weather. The spawn point is still the local
+    // bus's choice, just as on the desktop Drive page.
+    if l.state.joined_server.is_some() {
+        l.ui.paragraph("Traffic, passengers and the world's clock are set by the server.", Vec2::new(inner.x, y), inner.w, 13.0, Weight::Regular, TEXT_DIM);
+        return false;
+    }
+
+    let seasons = ["auto", "spring", "summer", "autumn", "winter"];
+    let labels: Vec<String> = ["By date", "Spring", "Summer", "Autumn", "Winter"].iter().map(|s| (*s).to_string()).collect();
+    let mut season = seasons.iter().position(|s| *s == l.state.choice.season).unwrap_or(0);
+    l.ui.label(Rect::new(inner.x, y, 112.0, ROW), "Season");
+    if l.ui.select("ps-season", Rect::new(inner.x + 112.0, y, inner.w - 112.0, ROW), &mut season, &labels) {
+        l.state.choice.season = seasons[season].to_string();
+        if season > 0 {
+            let month = ["", "04", "07", "10", "01"][season];
+            let date = l.state.choice.date.clone();
+            let (yy, dd) = (date.get(0..4).unwrap_or("1989").to_string(), date.get(8..10).unwrap_or("15").to_string());
+            l.state.choice.date = format!("{yy}-{month}-{dd}");
+            l.state.load_lines();
+        }
+        let weather = l.state.choice.weather.clone();
+        if let Some(w) = l.state.weathers.iter().find(|x| x.file == weather).cloned() {
+            if !l.state.weather_fits(&w) {
+                l.state.choice.weather.clear();
+            }
+        }
+        l.state.touched();
+    }
+    y += ROW + 14.0;
+
+    let mut traffic = l.state.choice.traffic;
+    if l.ui.slider("ps-traffic", Rect::new(inner.x, y, inner.w, 36.0), &mut traffic, 0.0, 120.0, 1.0, "Cars around", &|v| format!("{v:.0}")) {
+        l.state.choice.traffic = traffic;
+        l.state.touched();
+    }
+    y += 44.0;
+
+    let half = (inner.w - 12.0) * 0.5;
+    let mut passengers = l.state.choice.passengers;
+    if l.ui.toggle("ps-passengers", Rect::new(inner.x, y, half, 34.0), &mut passengers, "Passengers") {
+        l.state.choice.passengers = passengers;
+        l.state.touched();
+    }
+    let mut schedule = l.state.choice.schedule;
+    if l.ui.toggle("ps-schedule", Rect::new(inner.x + half + 12.0, y, half, 34.0), &mut schedule, "Timetable buses") {
+        l.state.choice.schedule = schedule;
+        l.state.touched();
+    }
+    y += 42.0;
+
+    let mut autostart = l.state.choice.autostart;
+    if l.ui.toggle("ps-autostart", Rect::new(inner.x, y, inner.w, 34.0), &mut autostart, "Put the bus into service on start (Shift+U)") {
+        l.state.choice.autostart = autostart;
+        l.state.touched();
+    }
+    y += 42.0;
+
+    let mut on_foot = l.state.choice.on_foot;
+    if l.ui.toggle("ps-on-foot", Rect::new(inner.x, y, inner.w, 34.0), &mut on_foot, "Start on foot (place a bus from the game menu)") {
+        l.state.choice.on_foot = on_foot;
+        l.state.touched();
+    }
+    false
+}
+
+fn roadbook_sheet(l: &mut Launcher, r: Rect) -> bool {
+    let ibis_h = 154.0;
+    let (Some(line), Some(tour), false) = (l.state.line().cloned(), l.state.tour().cloned(), l.state.choice.free) else {
+        l.ui.paragraph("Choose a line and a tour to see the roadbook and the IBIS codes.", Vec2::new(r.x + 12.0, r.y + 8.0), r.w - 24.0, 13.0, Weight::Regular, TEXT_DIM);
+        super::drive::ibis_box(l, Rect::new(r.x + 8.0, r.bottom() - ibis_h, r.w - 16.0, ibis_h));
+        return false;
+    };
+    let from = l.state.first_trip().unwrap_or(0);
+    let trips: Vec<omsi_launcher_lib::TripInfo> = tour.trips.iter().skip(from).cloned().collect();
+    let list = Rect::new(r.x + 4.0, r.y + 4.0, r.w - 8.0, (r.h - ibis_h - 14.0).max(80.0));
+    l.ui.scroll_area("phone-roadbook", list, &mut |ui, v| {
+        let mut y = v.y;
+        for (k, trip) in trips.iter().enumerate() {
+            let head = Rect::new(v.x, y, v.w - 8.0, 54.0);
+            ui.p().rounded(head, 8.0, if k == 0 { SELECTED } else { FIELD });
+            ui.text_in(
+                &format!("{} · {} → {}", if k == 0 { "Your first trip" } else { "Then" }, if trip.from.is_empty() { "?" } else { &trip.from }, trip.terminus),
+                Rect::new(head.x + 12.0, head.y + 7.0, head.w - 24.0, 20.0),
+                13.0,
+                Weight::Bold,
+                TEXT,
+                Align::Left,
+            );
+            ui.text_in(
+                &format!("{} - {} · {:.1} km · {}", super::state::hhmm(trip.departure), super::state::hhmm(trip.arrival), trip.km, if trip.line.is_empty() { "depot run" } else { trip.line.as_str() }),
+                Rect::new(head.x + 12.0, head.y + 30.0, head.w - 24.0, 18.0),
+                11.5,
+                Weight::Regular,
+                TEXT_DIM,
+                Align::Left,
+            );
+            y += 62.0;
+            for stop in &trip.stops {
+                let row = Rect::new(v.x + 6.0, y, v.w - 20.0, 30.0);
+                ui.text_in(&super::state::hhmm(stop.arr), Rect::new(row.x, row.y, 52.0, row.h), 11.5, Weight::Condensed, TEXT_SOFT, Align::Left);
+                ui.text_in(&stop.name, Rect::new(row.x + 58.0, row.y, row.w - 62.0, row.h), 12.5, Weight::Regular, TEXT, Align::Left);
+                y += 30.0;
+            }
+            y += 10.0;
+        }
+        y - v.y + 4.0
+    });
+    let _ = line;
+    super::drive::ibis_box(l, Rect::new(r.x + 8.0, r.bottom() - ibis_h, r.w - 16.0, ibis_h));
+    false
+}
+
+fn servers_sheet(l: &mut Launcher, r: Rect) -> bool {
+    let inner = r.pad(10.0, 8.0);
+    let row = Rect::new(inner.x, inner.y, inner.w, ROW);
+    let add_w = 112.0;
+    let name_w = (inner.w * 0.28).clamp(120.0, 220.0);
+    let addr_w = (inner.w - name_w - add_w - 16.0).max(150.0);
+
+    l.ui.text_input("pserver-addr", Rect::new(row.x, row.y, addr_w, row.h), &mut l.phone.server_addr, "Server address", Some("dns"));
+    l.ui.text_input("pserver-name", Rect::new(row.x + addr_w + 8.0, row.y, name_w, row.h), &mut l.phone.server_name, "Name", None);
+    if l.ui.button("pserver-add", Rect::new(row.right() - add_w, row.y, add_w, row.h), "Add", Some("add"), ButtonKind::Primary) {
+        let addr = l.phone.server_addr.trim().to_string();
+        if addr.is_empty() {
+            l.state.set_status("Type the server's address first", true);
+        } else if l.state.servers.iter().any(|s| s.address.eq_ignore_ascii_case(&addr)) {
+            l.state.set_status("That server is in the list already", true);
+        } else {
+            l.state.servers.push(super::state::ServerEntry { name: l.phone.server_name.trim().to_string(), address: addr.clone() });
+            l.state.save_servers();
+            l.state.ask_server(&addr, 0.0);
+            l.phone.server_addr.clear();
+            l.phone.server_name.clear();
+        }
+    }
+
+    let controls = Rect::new(inner.x, row.bottom() + 8.0, inner.w, 38.0);
+    if l.ui.button("pserver-refresh", Rect::new(controls.x, controls.y, 132.0, controls.h), "Refresh", Some("refresh"), ButtonKind::Normal) {
+        let addresses: Vec<String> = l.state.servers.iter().map(|s| s.address.clone()).collect();
+        for address in addresses {
+            l.state.ask_server(&address, 0.0);
+        }
+    }
+
+    let entries: Vec<super::state::ServerEntry> = l.state.servers.iter().filter(|s| !omsi_net::official::is_alias(&s.address)).cloned().collect();
+    for entry in &entries {
+        l.state.ask_server(&entry.address, 15.0);
+    }
+    let list = Rect::new(inner.x, controls.bottom() + 8.0, inner.w, inner.bottom() - controls.bottom() - 8.0);
+    let mut join_addr: Option<String> = None;
+    let mut remove_addr: Option<String> = None;
+    l.ui.scroll_area("pserver-list", list, &mut |ui, v| {
+        if entries.is_empty() {
+            ui.text_in("No saved servers yet.", Rect::new(v.x + 12.0, v.y, v.w - 24.0, 40.0), 13.0, Weight::Regular, TEXT_DIM, Align::Left);
+        }
+        for (k, entry) in entries.iter().enumerate() {
+            let rr = Rect::new(v.x, v.y + k as f32 * (ROW_H + 8.0), v.w - 8.0, ROW_H);
+            ui.p().rounded(rr, 10.0, FIELD);
+            let info = l.state.server_info.get(&entry.address).map(|x| x.1.clone());
+            let name = if !entry.name.is_empty() { entry.name.clone() } else { info.as_ref().and_then(|x| x.as_ref().ok()).map(|x| x.name.clone()).unwrap_or_else(|| entry.address.clone()) };
+            let sub = match info {
+                Some(Ok(i)) => format!("{} / {} players · {}", i.players, i.max_players, i.motd),
+                Some(Err(e)) => format!("Can't reach it: {e}"),
+                None => "Asking…".into(),
+            };
+            ui.text_in(&name, Rect::new(rr.x + 14.0, rr.y + 7.0, rr.w - 190.0, 21.0), 14.0, Weight::Bold, TEXT, Align::Left);
+            ui.text_in(&sub, Rect::new(rr.x + 14.0, rr.y + 31.0, rr.w - 190.0, 18.0), 11.5, Weight::Regular, TEXT_DIM, Align::Left);
+            if ui.button(&format!("pserver-join-{k}"), Rect::new(rr.right() - 142.0, rr.y + 12.0, 92.0, 38.0), "Join", Some("login"), ButtonKind::Primary) {
+                join_addr = Some(entry.address.clone());
+            }
+            if ui.icon_button(&format!("pserver-del-{k}"), Vec2::new(rr.right() - 24.0, rr.center().y), 16.0, "delete", "Remove server") {
+                remove_addr = Some(entry.address.clone());
+            }
+        }
+        entries.len().max(1) as f32 * (ROW_H + 8.0)
+    });
+    if let Some(addr) = remove_addr {
+        if let Some(k) = l.state.servers.iter().position(|s| s.address == addr) {
+            l.state.servers.remove(k);
+            l.state.save_servers();
+        }
+    }
+    if let Some(addr) = join_addr {
+        join(l, &addr);
+        return l.state.joined_server.as_deref() == Some(addr.as_str());
+    }
+    false
+}
+
 fn duty_sheet(l: &mut Launcher, r: Rect) -> bool {
     let q = l.phone.filter.to_lowercase();
     let lines: Vec<(String, String, usize)> = l.state.lines.iter().filter(|x| x.user_allowed).filter(|x| matches(&q, &format!("{} {}", x.name, x.termini.join(" ")))).map(|x| (x.name.clone(), x.termini.join(" – "), x.tours.len())).collect();
@@ -522,26 +850,165 @@ fn time_sheet(l: &mut Launcher, r: Rect) -> bool {
     let mut d = l.state.choice.date.clone();
     if l.ui.date_field("p-date", Rect::new(left.x, left.y + 106.0, left.w, 48.0), &mut d) {
         l.state.choice.date = d;
+        l.state.choice.season = "auto".into();
         l.state.load_lines();
         l.state.touched();
     }
     let done = l.ui.button("p-time-done", Rect::new(left.x, left.bottom() - 52.0, left.w, 52.0), "Done", Some("check"), ButtonKind::Primary);
-    // the weather: the map's, or one of the weather files
+    // Weather has a phone/tablet layout of its own; keep the same choices and editors as
+    // the desktop launcher instead of silently losing Custom weather / METAR on Android.
     let right = Rect::new(left.right() + 16.0, r.y, r.right() - left.right() - 16.0, r.h);
-    let items: Vec<(String, String, String)> = [(String::new(), "The map's weather".to_string(), "As the map sets it".to_string()), ("cycle".to_string(), "Weather cycle".to_string(), "Changes every 25-60 minutes, as the month allows".to_string())].into_iter().chain(l.state.weathers.iter().map(|w| (w.file.clone(), w.name.clone(), format!("{:.0} °C · {} · {}", w.temp, if w.clouds.is_empty() { "clear" } else { w.clouds.as_str() }, if w.precip.is_empty() { "dry" } else { w.precip.as_str() })))).collect();
+    if right.w <= 120.0 {
+        return done;
+    }
+
+    if let Some(mut custom) = crate::weather_setup::custom_weather(Some(&l.state.choice.weather)) {
+        let mut changed = false;
+        let mut back = false;
+        l.ui.scroll_area("ps-custom-weather", right, &mut |ui, v| {
+            let mut yy = v.y + 4.0;
+            if ui.button("ps-weather-back", Rect::new(v.x, yy, v.w - 8.0, 42.0), "Choose another weather", Some("arrow_back"), ButtonKind::Normal) {
+                back = true;
+            }
+            yy += 52.0;
+            changed |= ui.slider("ps-custom-vis", Rect::new(v.x, yy, v.w - 8.0, 40.0), &mut custom.visibility_m, 50.0, 50_000.0, 50.0, "Visibility", &|x| if x >= 49_950.0 { "unlimited".into() } else if x >= 1000.0 { format!("{:.1} km", x / 1000.0) } else { format!("{x:.0} m") });
+            yy += 46.0;
+            changed |= ui.slider("ps-custom-bright", Rect::new(v.x, yy, v.w - 8.0, 40.0), &mut custom.brightness, 0.0, 1.5, 0.05, "Brightness", &|x| format!("{:.0} %", x * 100.0));
+            yy += 46.0;
+            changed |= ui.slider("ps-custom-wdir", Rect::new(v.x, yy, v.w - 8.0, 40.0), &mut custom.wind_dir, 0.0, 355.0, 5.0, "Wind direction", &|x| format!("{x:.0}°"));
+            yy += 46.0;
+            changed |= ui.slider("ps-custom-wspeed", Rect::new(v.x, yy, v.w - 8.0, 40.0), &mut custom.wind_speed, 0.0, 40.0, 0.5, "Wind speed", &|x| format!("{x:.1} m/s"));
+            yy += 46.0;
+            changed |= ui.slider("ps-custom-temp", Rect::new(v.x, yy, v.w - 8.0, 40.0), &mut custom.temp_c, -30.0, 45.0, 1.0, "Temperature", &|x| format!("{x:.0} °C"));
+            yy += 46.0;
+            let t = custom.temp_c;
+            changed |= ui.slider("ps-custom-hum", Rect::new(v.x, yy, v.w - 8.0, 40.0), &mut custom.humidity, 0.0, 100.0, 1.0, "Humidity", &|x| format!("{x:.0} % · dew {:.0} °C", crate::weather_setup::dew_point_c(t, x)));
+            yy += 50.0;
+
+            ui.label(Rect::new(v.x, yy, 120.0, 38.0), "Cloud type");
+            let cloud_labels: Vec<String> = crate::weather_setup::CUSTOM_CLOUDS.iter().map(|x| (*x).to_string()).collect();
+            let mut cloud = custom.cloud;
+            if ui.select("ps-custom-cloud", Rect::new(v.x + 122.0, yy, v.w - 130.0, 38.0), &mut cloud, &cloud_labels) {
+                custom.cloud = cloud;
+                changed = true;
+            }
+            yy += 48.0;
+
+            ui.label(Rect::new(v.x, yy, 120.0, 38.0), "Precipitation");
+            let precip_labels: Vec<String> = crate::weather_setup::CUSTOM_PRECIP.iter().map(|x| (*x).to_string()).collect();
+            let mut precip = custom.precip.clamp(0, 2) as usize;
+            if ui.select("ps-custom-precip", Rect::new(v.x + 122.0, yy, v.w - 130.0, 38.0), &mut precip, &precip_labels) {
+                custom.precip = precip as i32;
+                changed = true;
+            }
+            yy += 48.0;
+
+            changed |= ui.slider("ps-custom-intensity", Rect::new(v.x, yy, v.w - 8.0, 40.0), &mut custom.precip_intensity, 0.0, 255.0, 1.0, "Precipitation intensity", &|x| format!("{x:.0} / 255"));
+            yy += 46.0;
+            changed |= ui.slider("ps-custom-wet", Rect::new(v.x, yy, v.w - 8.0, 40.0), &mut custom.road_wetness, 0.0, 1.0, 0.05, "Road wetness", &|x| format!("{:.0} %", x * 100.0));
+            yy += 46.0;
+
+            let mut snow = custom.snow_cover;
+            if ui.toggle("ps-custom-snow", Rect::new(v.x, yy, v.w - 8.0, 38.0), &mut snow, "Snow cover") {
+                custom.snow_cover = snow;
+                changed = true;
+            }
+            yy += 44.0;
+            let mut snow_road = custom.snow_on_road;
+            if ui.toggle("ps-custom-snowroad", Rect::new(v.x, yy, v.w - 8.0, 38.0), &mut snow_road, "Snow on road") {
+                custom.snow_on_road = snow_road;
+                changed = true;
+            }
+            yy += 48.0;
+            yy - v.y
+        });
+        if back {
+            l.state.choice.weather.clear();
+            l.state.touched();
+        } else if changed {
+            custom.normalize();
+            l.state.choice.weather = custom.encode();
+            l.state.touched();
+        }
+        return done;
+    }
+
+    if let Some(code) = l.state.choice.weather.strip_prefix("metar:").map(str::to_string) {
+        let mut airport = code.to_ascii_uppercase().chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>();
+        let airport_list = crate::weather_setup::metar_airports(std::path::Path::new(&l.state.config.root));
+        let mut changed = false;
+        let mut back = false;
+        l.ui.scroll_area("ps-real-weather", right, &mut |ui, v| {
+            let mut yy = v.y + 4.0;
+            if ui.button("ps-real-back", Rect::new(v.x, yy, v.w - 8.0, 42.0), "Choose another weather", Some("arrow_back"), ButtonKind::Normal) {
+                back = true;
+            }
+            yy += 56.0;
+            ui.heading(Rect::new(v.x, yy, v.w - 8.0, 28.0), "Current weather (METAR)", Some("public"));
+            yy += 38.0;
+            ui.label(Rect::new(v.x, yy, 90.0, 42.0), "ICAO");
+            if ui.text_input("ps-metar-icao", Rect::new(v.x + 92.0, yy, v.w - 100.0, 42.0), &mut airport, "ICAO", None) {
+                airport = airport.chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>().to_ascii_uppercase();
+                changed = true;
+            }
+            yy += 52.0;
+
+            let labels: Vec<String> = airport_list.iter().map(|a| a.1.clone()).collect();
+            if !labels.is_empty() {
+                let mut sel = airport_list.iter().position(|a| a.0.eq_ignore_ascii_case(&airport)).unwrap_or(0);
+                if ui.select("ps-metar-list", Rect::new(v.x, yy, v.w - 8.0, 42.0), &mut sel, &labels) {
+                    if let Some(a) = airport_list.get(sel) {
+                        airport = a.0.clone();
+                        changed = true;
+                    }
+                }
+                yy += 52.0;
+            }
+            ui.paragraph("The METAR is fetched when the game starts.", Vec2::new(v.x, yy), v.w - 8.0, 12.0, Weight::Regular, TEXT_DIM);
+            yy += 48.0;
+            yy - v.y
+        });
+        if back {
+            l.state.choice.weather.clear();
+            l.state.touched();
+        } else if changed {
+            l.state.choice.weather = format!("metar:{airport}");
+            l.state.touched();
+        }
+        return done;
+    }
+
+    if let Some(custom)=super::drive::selected_weather_as_custom(&l.state.config.root,&l.state.choice.weather){
+        if l.ui.button("ps-edit-current-weather",Rect::new(right.x,right.y,right.w,42.0),"Edit selected weather as custom",Some("tune"),ButtonKind::Normal){
+            l.state.choice.weather=custom;
+            l.state.touched();
+            return done;
+        }
+    }
+
+    let home = super::drive::nearest_airport(&l.state.config.root, &l.state.choice.map);
+    let custom = crate::weather_setup::CustomWeather::default().encode();
+    let items: Vec<(String, String, String)> = [
+        (String::new(), "The map's weather".to_string(), "As the map sets it".to_string()),
+        (custom, "Custom weather".to_string(), "Visibility, wind, temperature, rain, snow and road state".to_string()),
+        (format!("metar:{home}"), "Current weather".to_string(), format!("Real weather from {home} (ICAO can be changed)")),
+        ("cycle".to_string(), "Weather cycle".to_string(), "Changes every 25-60 minutes, as the month allows".to_string()),
+    ]
+    .into_iter()
+    .chain(l.state.weathers.iter().map(|w| (w.file.clone(), w.name.clone(), format!("{:.0} °C · {} · {}", w.temp, if w.clouds.is_empty() { "clear" } else { w.clouds.as_str() }, if w.precip.is_empty() { "dry" } else { w.precip.as_str() }))))
+    .collect();
+
     let chosen = l.state.choice.weather.clone();
     let mut pick = None;
-    if right.w > 120.0 {
-        l.ui.scroll_area("ps-weather", right, &mut |ui, v| {
-            for (k, (file, name, sub)) in items.iter().enumerate() {
-                let rr = Rect::new(v.x, v.y + k as f32 * (ROW_H + 6.0), v.w - 8.0, ROW_H);
-                if big_row(ui, &format!("pw-{k}"), rr, name, sub, *file == chosen, None) {
-                    pick = Some(file.clone());
-                }
+    l.ui.scroll_area("ps-weather", right, &mut |ui, v| {
+        for (k, (file, name, sub)) in items.iter().enumerate() {
+            let rr = Rect::new(v.x, v.y + k as f32 * (ROW_H + 6.0), v.w - 8.0, ROW_H);
+            if big_row(ui, &format!("pw-{k}"), rr, name, sub, *file == chosen, None) {
+                pick = Some(file.clone());
             }
-            items.len() as f32 * (ROW_H + 6.0)
-        });
-    }
+        }
+        items.len() as f32 * (ROW_H + 6.0)
+    });
     if let Some(f) = pick {
         l.state.choice.weather = f;
         l.state.touched();
@@ -631,9 +1098,13 @@ fn online(l: &mut Launcher, body: Rect) {
             l.state.set_status("Your next game is hosted: its code shows in the game for your friends", false);
         }
     }
-    // the other servers of the list
+    // the other servers of the list, plus the phone-native manager for adding/removing them.
+    let manage = Rect::new(inner.x, hr.bottom() + 10.0, inner.w, 38.0);
+    if l.ui.button("po-manage-servers", manage, "Manage saved servers", Some("dns"), ButtonKind::Normal) {
+        open(l, Sheet::Servers);
+    }
     let others: Vec<super::state::ServerEntry> = l.state.servers.iter().filter(|s| !omsi_net::official::is_alias(&s.address)).cloned().collect();
-    let list = Rect::new(inner.x, hr.bottom() + 12.0, inner.w, inner.bottom() - hr.bottom() - 12.0);
+    let list = Rect::new(inner.x, manage.bottom() + 8.0, inner.w, inner.bottom() - manage.bottom() - 8.0);
     for e in &others {
         l.state.ask_server(&e.address, 15.0);
     }
@@ -654,7 +1125,7 @@ fn online(l: &mut Launcher, body: Rect) {
     if list.h > 40.0 {
         l.ui.scroll_area("po-servers", list, &mut |ui, v| {
             if rows.is_empty() {
-                ui.text_in("More servers: add them by their address in the desktop launcher, or type one above.", Rect::new(v.x + 8.0, v.y, v.w - 16.0, 30.0), 12.0, Weight::Regular, TEXT_FAINT, Align::Left);
+                ui.text_in("No saved servers yet. Add one with Manage saved servers above.", Rect::new(v.x + 8.0, v.y, v.w - 16.0, 30.0), 12.0, Weight::Regular, TEXT_FAINT, Align::Left);
             }
             for (k, (addr, name, sub)) in rows.iter().enumerate() {
                 let rr = Rect::new(v.x, v.y + k as f32 * (ROW_H + 6.0), v.w - 8.0, ROW_H);

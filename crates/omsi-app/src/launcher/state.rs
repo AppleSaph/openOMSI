@@ -95,6 +95,7 @@ pub struct Choice {
     pub free: bool,
     /// Minutes of the day.
     pub time: i32,
+    pub start_trip: Option<(String, String, usize, i32)>,
     pub date: String,
     /// "auto", spring, summer, autumn, winter.
     pub season: String,
@@ -127,6 +128,7 @@ impl Default for Choice {
             tour: None,
             free: false,
             time: 9 * 60,
+            start_trip: None,
             date: "1989-05-30".into(),
             season: "auto".into(),
             weather: String::new(),
@@ -183,7 +185,9 @@ pub struct State {
     pub choice: Choice,
     pub choice_dirty: f32,
     /// Map, whether it has a `laststn.osn`, when that was looked up.
-    pub last_sit: Option<(String, bool, std::time::Instant)>,
+    pub last_sit: Option<(String, Vec<core::SavedSituation>, std::time::Instant)>,
+    /// Which of them "Continue" starts (0: the newest, the last situation when there is one).
+    pub save_pick: usize,
     pub profiles: Vec<String>,
     pub profile: Option<core::Profile>,
     pub settings: serde_json::Value,
@@ -256,6 +260,7 @@ impl State {
             choice,
             choice_dirty: 0.0,
             last_sit: None,
+            save_pick: 0,
             profiles: Vec::new(),
             profile: None,
             settings,
@@ -317,6 +322,10 @@ impl State {
     /// A game is about to start, starting (not in the list of games yet) or running.
     pub fn in_game(&self) -> bool {
         self.queued_launch.is_some() || self.launch_hold.is_some_and(|t| t.elapsed().as_secs_f32() < 15.0) || self.instances.iter().any(|i| i.running)
+    }
+
+    pub fn instances_ready(&self) -> bool {
+        self.stamp.is_some()
     }
 
     pub fn spawn_launch(&mut self, d: core::Duty) {
@@ -572,7 +581,8 @@ impl State {
             entry: Some(c.entry),
             line: if c.free { None } else { c.line.clone() },
             tour: if c.free { None } else { c.tour.clone() },
-            trip: None,
+            trip: if c.free { None } else { self.picked_trip().map(|i| i.to_string()) },
+            whole_tour: !c.free && self.picked_trip().is_some(),
             time: format!("{:02}:{:02}", c.time / 60, c.time % 60),
             date: Some(c.date.clone()),
             weather: Some(c.weather.clone()).filter(|w| !w.is_empty()),
@@ -590,23 +600,34 @@ impl State {
         }
     }
 
-    /// Whether a situation to continue lies on the chosen map (looked up at most every
-    /// two seconds: the page asks every frame).
-    pub fn has_last_situation(&mut self) -> bool {
+    /// The situations to continue on the chosen map: the last one and the save slots
+    /// (looked up at most every two seconds: the page asks every frame).
+    pub fn saved_situations(&mut self) -> &[core::SavedSituation] {
         let fresh = self.last_sit.as_ref().is_some_and(|(m, _, t)| *m == self.choice.map && t.elapsed().as_secs_f32() < 2.0);
         if !fresh {
-            let there = core::last_situation(&self.choice.map).is_some();
-            self.last_sit = Some((self.choice.map.clone(), there, std::time::Instant::now()));
+            if self.last_sit.as_ref().is_some_and(|(m, _, _)| *m != self.choice.map) {
+                self.save_pick = 0;
+            }
+            let list = core::saved_situations(&self.choice.map);
+            self.save_pick = self.save_pick.min(list.len().saturating_sub(1));
+            self.last_sit = Some((self.choice.map.clone(), list, std::time::Instant::now()));
         }
-        self.last_sit.as_ref().map(|x| x.1).unwrap_or(false)
+        self.last_sit.as_ref().map(|x| x.1.as_slice()).unwrap_or(&[])
     }
 
-    /// Continue the situation the game left on the chosen map (`laststn.osn`).
+    /// Whether a situation to continue lies on the chosen map.
+    pub fn has_last_situation(&mut self) -> bool {
+        !self.saved_situations().is_empty()
+    }
+
+    /// Continue the situation chosen of the map's (`laststn.osn`, or a save slot, #341).
     pub fn launch_last_situation(&mut self) {
         if !self.save_pending_settings() {
             return;
         }
-        let Some(file) = core::last_situation(&self.choice.map) else {
+        let pick = self.save_pick;
+        let list = self.saved_situations();
+        let Some(file) = list.get(pick).or_else(|| list.first()).map(|s| s.file.clone()) else {
             self.set_status("No situation left on this map yet", true);
             return;
         };
@@ -667,10 +688,31 @@ impl State {
     }
 
     /// Work done each frame: results of background work, the regular poll, saving.
+    fn follow_clock(&mut self) {
+        let on = |k: &str| self.settings.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+        let (time, date, year) = (on("use_real_time"), on("use_real_date"), on("use_real_year"));
+        if !time && !date {
+            return;
+        }
+        let Some((y, mo, d, h, m)) = core::local_now() else { return };
+        if time {
+            self.choice.time = h * 60 + m;
+        }
+        if date {
+            let y = if year { y } else { self.choice.date.get(..4).and_then(|x| x.parse().ok()).unwrap_or(y) };
+            let today = format!("{y:04}-{mo:02}-{d:02}");
+            if self.choice.date != today {
+                self.choice.date = today;
+                self.load_lines();
+            }
+        }
+    }
+
     pub fn update(&mut self, dt: f32) {
         while let Ok(m) = self.rx.try_recv() {
             self.handle(m);
         }
+        self.follow_clock();
         self.poll_t -= dt;
         if self.poll_t <= 0.0 {
             self.poll_t = 2.5;
@@ -1072,8 +1114,18 @@ impl State {
     /// that left a minute or two ago still counts), else the tour's last.
     pub fn first_trip(&self) -> Option<usize> {
         let t = self.tour()?;
+        if let Some(i) = self.picked_trip() {
+            if let Some(k) = t.trips.iter().position(|x| x.index == i) {
+                return Some(k);
+            }
+        }
         let now = self.choice.time as f64 * 60.0;
         trip_index_at(t, now)
+    }
+
+    pub fn picked_trip(&self) -> Option<usize> {
+        let (line, tour, index, time) = self.choice.start_trip.as_ref()?;
+        (self.choice.line.as_ref() == Some(line) && self.choice.tour.as_ref() == Some(tour) && *time == self.choice.time).then_some(*index)
     }
 }
 

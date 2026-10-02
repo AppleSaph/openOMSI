@@ -160,6 +160,30 @@ impl Launcher {
     }
 }
 
+/// The run went down while a Vulkan driver compiled the shaders: the LAST it said was a stage
+/// of that, and it drew with Vulkan (as the phone's shell decides it, `android.rs`). Any
+/// compile stage anywhere in the log said so of every silent end - a phone run out of memory
+/// 75 % into loading a map on OpenGL was told its Vulkan driver had failed (#848).
+pub(crate) fn died_compiling_on_vulkan(log: &str) -> bool {
+    let last = log.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let compiling = last.contains("renderer: compiling") || last.contains("cloud noise made") || last.contains("opening graphics device") || last.contains("compiling renderer pipelines");
+    let vulkan = log.lines().any(|l| (l.contains("renderer: ") || l.contains("opening graphics device")) && l.contains("(Vulkan")) || log.lines().any(|l| l.contains("graphics: ") && l.to_ascii_uppercase().contains("VULKAN"));
+    compiling && vulkan
+}
+
+#[cfg(test)]
+mod hint_tests {
+    #[test]
+    fn only_a_run_that_died_compiling_on_vulkan_is_told_so() {
+        let compiled = "[t INFO r] opening graphics device: Mali (Vulkan, vendor 0x13b5)\n[t INFO r] renderer: compiling the scene shaders\n";
+        assert!(super::died_compiling_on_vulkan(compiled));
+        // compiled long ago, then ran out of memory loading
+        assert!(!super::died_compiling_on_vulkan(&format!("{compiled}[t INFO g] status: 63 fps, view driver\n[t INFO m] loading tiles 75 %\n")));
+        // on OpenGL it is never the Vulkan driver
+        assert!(!super::died_compiling_on_vulkan("[t INFO r] opening graphics device: Mali (Gl, vendor 0x13b5)\n[t INFO r] renderer: compiling the scene shaders\n"));
+    }
+}
+
 impl Launcher {
     /// A game started from here ended on an error: what it said, and the ways to report it
     /// (the end of its log copied, or a GitHub issue opened with it).
@@ -172,7 +196,7 @@ impl Launcher {
         let w = (size.x - 48.0).min(640.0);
         let lost = what.contains("graphics device was lost");
         let silent = what.contains("closed without a word");
-        let compiling = silent && (tail.contains("renderer: compiling") || tail.contains("cloud noise made") || tail.contains("opening graphics device") || tail.contains("compiling renderer pipelines"));
+        let compiling = silent && died_compiling_on_vulkan(&tail);
         let hint = if lost {
             if cfg!(windows) {
                 "The graphics driver stopped the game. Updating the graphics driver usually helps; you can also let the game draw with DirectX 12 instead of Vulkan (the button below, or Settings → Graphics API)."
