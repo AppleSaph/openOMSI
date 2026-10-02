@@ -1528,11 +1528,11 @@ fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     // at 2 of 255 instead of 8.)
     let classic = camera.sky_color.w > 0.5;
     // (the terrain's night map is its tile light map: light, not a glow - see below)
-    let terrain_night = classic
-        && material.params.y < 0.5
+    let terrain_map = material.params.y < 0.5
         && material.extra.x > 0.5
         && material.extra.w > 0.5
         && material.extra.w < 1.5;
+    let terrain_night = classic && terrain_map;
     if (classic && material.params.y < 0.5) {
         var v = clamp(material.emissive.rgb + mat_light + material.color.rgb * interior_lamps(in.world, n, in.params2.z), vec3<f32>(0.0), vec3<f32>(1.0));
         if (light_mapped) {
@@ -1586,7 +1586,8 @@ fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     if (!light_mapped && !classic) {
         lit = lit + tex.rgb * interior_lamps(in.world, n, in.params2.z);
     }
-    if (material.extra.w > 0.5 && !terrain_night) {
+    // (Vanilla+: the map's lamps light the ground, as they light the roads)
+    if (material.extra.w > 0.5 && !terrain_map) {
         // [matl_nightmap]: self-illumination that fades in with the night
         // terrain: the tile light map in tile space (north at the top row)
         let nuv = select(buv, vec2<f32>(in.uv.x, 1.0 - in.uv.y), material.extra.x > 0.5);
