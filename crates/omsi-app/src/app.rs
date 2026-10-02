@@ -771,6 +771,7 @@ impl App {
                 }
             })
             .unwrap_or_default();
+        let mut reconfigure = false;
         if let (Some(ui), Some(s), Some(win)) = (
             self.ui.as_mut(),
             self.surface.as_ref(),
@@ -789,8 +790,14 @@ impl App {
                 "",
                 done as f32 / total.max(1) as f32,
             );
+            let acquired = s.surface.get_current_texture();
+            // a swapchain that no longer fits the window (Vulkan says so after the switch
+            // to full screen, without a resize event) is made again, as the game's own
+            // frames do: left as it was, every later frame of the loading screen failed
+            // the same way and its picture stood still until the map was there (#776)
+            reconfigure = matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost);
             if let wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) = s.surface.get_current_texture()
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) = acquired
             {
                 let view = frame.texture.create_view(&Default::default());
                 // the tiles loaded so far stay out of the picture: the camera looks at nothing
@@ -825,6 +832,12 @@ impl App {
             win.request_redraw();
         } else {
             self.renderer = Some(renderer);
+        }
+        if reconfigure {
+            if let (Some(s), Some(r), Some(win)) = (self.surface.as_mut(), self.renderer.as_ref(), self.window.as_ref()) {
+                let size = win.inner_size();
+                s.resize(r, size.width, size.height);
+            }
         }
         self.scene = Some(scene);
         self.starting = Some(cam);
