@@ -464,7 +464,7 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
             let step = matches!(mv, Move::Next);
             match verb {
                 // (the preset, the clouds and the precipitation are picked from a drop-down: `App::chooser_pick`)
-                "weather" | "cloudkind" | "precipkind" | "metar_src" => {}
+                "weather" | "cloudkind" | "precipkind" | "metar_src" | "sel" | "preset" | "gfxprofile" | "reset" => {}
                 // the exact time: Enter starts typing it, and sets it when typed
                 "time_edit" if step => {
                     if app.menu_edit.is_some() {
@@ -701,6 +701,14 @@ fn steps_of(verb: &str) -> Option<Vec<f32>> {
         "volume" => VOLUME.to_vec(),
         "led_glow" => (0..16).map(|v| v as f32).collect(),
         "led_mips" => (0..=80).map(|v| v as f32 * 0.05).collect(),
+        "ui_scale" => (10..=40).map(|v| v as f32 * 0.05).collect(),
+        "ui_opacity" => (4..=20).map(|v| v as f32 * 0.05).collect(),
+        "vol_ai" | "vol_scenery" => (0..=20).map(|v| v as f32 * 0.05).collect(),
+        "wheel_range" => (6..=60).map(|v| v as f32 * 30.0).collect(),
+        "wheel_lock" => std::iter::once(0.0).chain((2..=60).map(|v| v as f32 * 30.0)).collect(),
+        "fov" => std::iter::once(0.0).chain((20..=120).map(|v| v as f32)).collect(),
+        "steer_look_angle" => (0..=60).map(|v| v as f32).collect(),
+        "steer_look_response" => (1..=20).map(|v| v as f32 * 0.05).collect(),
         "pedal_t" | "pedal_b" => PEDAL.to_vec(),
         "mouse_sens" => (10..=300).map(|v| v as f32 / 100.0).collect(),
         "seat" => (-50..=50).map(|v| v as f32 / 100.0).collect(),
@@ -792,6 +800,15 @@ fn option_now(app: &App, verb: &str, arg: &str) -> Option<f32> {
         "pedal_t" => s.pedal_throttle,
         "pedal_b" => s.pedal_brake,
         "mouse_sens" => s.mouse_sens,
+        "ui_scale" => s.ui_scale,
+        "ui_opacity" => s.ui_opacity,
+        "vol_ai" => s.vol_ai,
+        "vol_scenery" => s.vol_scenery,
+        "wheel_range" => s.wheel_range,
+        "wheel_lock" => s.wheel_lock,
+        "fov" => s.fov,
+        "steer_look_angle" => s.steer_look_angle,
+        "steer_look_response" => s.steer_look_response,
         "seat" => s.seat[arg.trim().parse::<usize>().unwrap_or(0).min(2)],
         "hour" => ((app.clock.time / 3600.0) as i64).rem_euclid(24) as f32,
         "minute" => (((app.clock.time / 60.0) as i64) % 60) as f32,
@@ -849,6 +866,42 @@ fn option_set(app: &mut App, verb: &str, arg: &str, v: f32) -> Option<(&'static 
         "mouse_sens" => {
             app.settings.mouse_sens = (v * 100.0).round() / 100.0;
             Some(("mouse_sens", app.settings.mouse_sens.to_string()))
+        }
+        "ui_scale" => {
+            app.settings.ui_scale = (v * 100.0).round() / 100.0;
+            Some(("ui_scale", app.settings.ui_scale.to_string()))
+        }
+        "ui_opacity" => {
+            app.settings.ui_opacity = (v * 100.0).round() / 100.0;
+            Some(("ui_opacity", app.settings.ui_opacity.to_string()))
+        }
+        "vol_ai" => {
+            app.settings.vol_ai = (v * 100.0).round() / 100.0;
+            Some(("vol_ai", app.settings.vol_ai.to_string()))
+        }
+        "vol_scenery" => {
+            app.settings.vol_scenery = (v * 100.0).round() / 100.0;
+            Some(("vol_scenery", app.settings.vol_scenery.to_string()))
+        }
+        "wheel_range" => {
+            app.settings.wheel_range = v.round();
+            Some(("wheel_range", app.settings.wheel_range.to_string()))
+        }
+        "wheel_lock" => {
+            app.settings.wheel_lock = if v < 45.0 { 0.0 } else { v.round() };
+            Some(("wheel_lock", app.settings.wheel_lock.to_string()))
+        }
+        "fov" => {
+            app.settings.fov = if v < 20.0 { 0.0 } else { v.round() };
+            Some(("fov", app.settings.fov.to_string()))
+        }
+        "steer_look_angle" => {
+            app.settings.steer_look_angle = v.round();
+            Some(("steer_look_angle", app.settings.steer_look_angle.to_string()))
+        }
+        "steer_look_response" => {
+            app.settings.steer_look_response = (v * 100.0).round() / 100.0;
+            Some(("steer_look_response", app.settings.steer_look_response.to_string()))
         }
         "seat" => {
             let k: usize = arg.trim().parse().unwrap_or(0).min(2);
@@ -927,6 +980,32 @@ fn toggle_now(app: &App, id: &str) -> Option<bool> {
         "headtrack" => s.head_tracking,
         "timetable_win" => app.timetable,
         "info_bar" => app.info_bar,
+        "nav_arrows" => app.navigator.as_ref().map_or(s.nav_arrows, |n| n.arrows),
+        "exact_fare" => s.exact_fare,
+        "collision_pedestrians" => s.collision_pedestrians,
+        "ssao" => s.ssao,
+        "detail_textures" => s.detail_textures,
+        "reflections" => s.reflections,
+        "clouds" => s.clouds,
+        "fullscreen" => s.fullscreen,
+        "vsync" => s.vsync,
+        "texture_compression" => s.texture_compression,
+        "driver" => s.driver,
+        "alt_view" => s.alt_view,
+        "vr" => s.vr,
+        "vr_desktop_mirror" => s.vr_desktop_mirror,
+        "doppler" => s.doppler,
+        "steering_linear" => s.steering_linear,
+        "old_steering" => s.old_steering,
+        "red_steer_spd" => s.red_steer_spd,
+        "momentary_gears" => s.momentary_gears,
+        "ff_invert" => s.ff_invert,
+        "machine_translation" => s.machine_translation,
+        "ui_scale_window" => s.ui_scale_window,
+        "tooltips" => s.tooltips,
+        "notes" => s.notes,
+        "chat" => s.chat,
+        "name_tags" => s.name_tags,
         _ => return None,
     })
 }
@@ -1056,6 +1135,114 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
             app.info_bar = on;
             None
         }
+        "nav_arrows" => {
+            app.settings.nav_arrows = on;
+            Some(("nav_arrows", bit))
+        }
+        "exact_fare" => {
+            app.settings.exact_fare = on;
+            Some(("exact_fare", bit))
+        }
+        "collision_pedestrians" => {
+            app.settings.collision_pedestrians = on;
+            Some(("collision_pedestrians", bit))
+        }
+        "ssao" => {
+            app.settings.ssao = on;
+            Some(("ssao", bit))
+        }
+        "detail_textures" => {
+            app.settings.detail_textures = on;
+            Some(("detail_textures", bit))
+        }
+        "reflections" => {
+            app.settings.reflections = on;
+            Some(("reflections", bit))
+        }
+        "clouds" => {
+            app.settings.clouds = on;
+            Some(("clouds", bit))
+        }
+        "fullscreen" => {
+            app.settings.fullscreen = on;
+            if let Some(w) = app.window.as_ref() {
+                w.set_fullscreen(on.then_some(winit::window::Fullscreen::Borderless(None)));
+            }
+            Some(("fullscreen", bit))
+        }
+        "vsync" => {
+            app.settings.vsync = on;
+            Some(("vsync", bit))
+        }
+        "texture_compression" => {
+            app.settings.texture_compression = on;
+            Some(("texture_compression", bit))
+        }
+        "driver" => {
+            app.settings.driver = on;
+            Some(("driver", bit))
+        }
+        "alt_view" => {
+            app.settings.alt_view = on;
+            Some(("alt_view", bit))
+        }
+        "vr" => {
+            app.settings.vr = on;
+            Some(("vr", bit))
+        }
+        "vr_desktop_mirror" => {
+            app.settings.vr_desktop_mirror = on;
+            Some(("vr_desktop_mirror", bit))
+        }
+        "doppler" => {
+            app.settings.doppler = on;
+            Some(("doppler", bit))
+        }
+        "steering_linear" => {
+            app.settings.steering_linear = on;
+            Some(("steering_linear", bit))
+        }
+        "old_steering" => {
+            app.settings.old_steering = on;
+            Some(("old_steering", bit))
+        }
+        "red_steer_spd" => {
+            app.settings.red_steer_spd = on;
+            Some(("red_steer_spd", bit))
+        }
+        "momentary_gears" => {
+            app.settings.momentary_gears = on;
+            Some(("momentary_gears", bit))
+        }
+        "ff_invert" => {
+            app.settings.ff_invert = on;
+            Some(("ff_invert", bit))
+        }
+        "machine_translation" => {
+            app.settings.machine_translation = on;
+            crate::mt::enable(on);
+            Some(("machine_translation", bit))
+        }
+        "ui_scale_window" => {
+            app.settings.ui_scale_window = on;
+            Some(("ui_scale_window", bit))
+        }
+        "tooltips" => {
+            app.settings.tooltips = on;
+            Some(("tooltips", bit))
+        }
+        "notes" => {
+            app.settings.notes = on;
+            Some(("notes", bit))
+        }
+        "chat" => {
+            app.settings.chat = on;
+            Some(("chat", bit))
+        }
+        "name_tags" => {
+            app.settings.name_tags = on;
+            Some(("name_tags", bit))
+        }
         _ => None,
     }
 }
@@ -1078,6 +1265,7 @@ fn option_do(app: &mut App, verb: &str, arg: &str, mv: Move) -> bool {
             if let Some((k, v)) = toggle_set(app, verb, on) {
                 remember_setting(k, &v);
             }
+            sync_live(app);
         }
         return true;
     }
@@ -1089,6 +1277,7 @@ fn option_do(app: &mut App, verb: &str, arg: &str, mv: Move) -> bool {
                 if let Some((k, v)) = option_set(app, verb, arg, to) {
                     remember_setting(k, &v);
                 }
+                sync_live(app);
             }
         }
         return true;
@@ -1164,6 +1353,18 @@ pub(crate) fn dropdown_for(app: &App, row: usize, id: &str) -> Option<Dropdown> 
             current = app.weather.as_ref().map(|w| (w.precip.first().copied().unwrap_or(0.0).max(0.0) as usize).min(PRECIP_KINDS.len() - 1));
             PRECIP_KINDS.iter().enumerate().map(|(i, n)| (tr(*n), format!("precip {i}"))).collect()
         }
+        "preset" => {
+            current = preset_now(&settings_file());
+            presets().iter().enumerate().map(|(i, p)| (tr(p.0), format!("preset {i}"))).collect()
+        }
+        "gfxprofile" => omsi_launcher_lib::graphics_profiles().into_keys().map(|n| (n.clone(), format!("gfxprofile {n}"))).collect(),
+        "reset" => vec![(tr("Cancel"), "noop".to_string()), (tr("Reset all settings"), "reset_all".to_string())],
+        key if key.starts_with("sel ") => {
+            let key = &key[4..];
+            let (options, at, _) = select_state(&settings_file(), key);
+            current = at;
+            options.iter().map(|o| (tr(o.1), format!("pick {key} {}", o.0))).collect()
+        }
         _ => return None,
     };
     if items.is_empty() {
@@ -1211,6 +1412,35 @@ pub(crate) fn dropdown_apply(app: &mut App, action: &str) {
                 set_precip(app, i);
             }
         }
+        "pick" => {
+            if let Some((key, value)) = arg.split_once(' ') {
+                remember_setting(key, value);
+                reload_settings(app);
+            }
+        }
+        "preset" => {
+            if let Some(p) = arg.trim().parse::<usize>().ok().and_then(|i| presets().into_iter().nth(i)) {
+                store_with(app, |v| {
+                    if let Some(o) = p.1.as_object() {
+                        for (k, x) in o {
+                            v[k.as_str()] = x.clone();
+                        }
+                    }
+                });
+            }
+        }
+        "gfxprofile" => {
+            if let Some(p) = omsi_launcher_lib::graphics_profiles().get(arg) {
+                store_with(app, |v| omsi_launcher_lib::apply_graphics_profile(p, v));
+            }
+        }
+        "reset_all" => store_with(app, |v| {
+            let language = v.get("language").cloned();
+            *v = omsi_launcher_lib::settings_from_text(None);
+            if let Some(l) = language {
+                v["language"] = l;
+            }
+        }),
         _ => {}
     }
 }
@@ -1236,28 +1466,193 @@ fn weather_name(app: &App) -> String {
     }
 }
 
+fn settings_file() -> serde_json::Value {
+    let text = std::fs::read_to_string(omsi_launcher_lib::data_dir().join("settings.cfg")).ok();
+    omsi_launcher_lib::settings_from_text(text.as_deref())
+}
+
+fn value_text(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(x) => x.clone(),
+        serde_json::Value::Bool(b) => (*b as u8).to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn same_value(a: &str, b: &str) -> bool {
+    a == b || a.parse::<f64>().ok().zip(b.parse::<f64>().ok()).is_some_and(|(x, y)| (x - y).abs() < 1e-6)
+}
+
+fn select_options(key: &str) -> Vec<(&'static str, &'static str)> {
+    match key {
+        "graphics" => vec![("vanilla", "Vanilla (as OMSI 2)"), ("vanilla_plus", "Vanilla+"), ("enhanced", "Enhanced")],
+        "msaa" => vec![("1", "Off"), ("2", "2x MSAA"), ("4", "4x MSAA")],
+        "render_scale" => vec![("auto", "Auto"), ("1", "100%"), ("0.85", "85%"), ("0.75", "75%"), ("0.67", "67%"), ("0.5", "50%")],
+        "anisotropy" => vec![("1", "Off"), ("2", "2x"), ("4", "4x"), ("8", "8x")],
+        "shadow_size" => vec![("1024", "1024"), ("2048", "2048"), ("4096", "4096")],
+        "shadow_casters" => vec![("all", "Every solid mesh"), ("omsi", "[shadow] meshes, as OMSI")],
+        "max_fps" => vec![("0", "Screen refresh rate"), ("30", "30 fps"), ("45", "45 fps"), ("60", "60 fps"), ("120", "120 fps"), ("144", "144 fps"), ("1000", "Unlimited")],
+        "view_distance" => vec![("auto", "Default (1200 m)"), ("600", "600 m - fastest"), ("900", "900 m"), ("1200", "1200 m"), ("1500", "1500 m"), ("2000", "2000 m"), ("2500", "2500 m")],
+        "max_obj_dist" => vec![("auto", "Automatic"), ("500", "500 m"), ("750", "750 m"), ("900", "900 m"), ("1500", "1500 m"), ("3000", "3000 m")],
+        "min_obj_size" => vec![("0.005", "All"), ("0.013", "Normal"), ("0.02", "Fewer (faster)"), ("0.03", "Few (fastest)")],
+        "mirror_size" => vec![("0", "Off"), ("128", "Low (128)"), ("256", "Normal (256)"), ("512", "High (512)"), ("1024", "Very high (1024)")],
+        "texture_memory" => vec![("0", "Automatic"), ("500", "500 MB"), ("1000", "1 GB"), ("1500", "1.5 GB"), ("2000", "2 GB"), ("3000", "3 GB"), ("4000", "4 GB"), ("6000", "6 GB")],
+        "drive_keys" => vec![("omsi", "Custom controls (Controls page)"), ("simple", "W A S D + arrows"), ("wasd", "W A S D only"), ("arrows", "Arrow keys only")],
+        "navigator_corner" => vec![("top-left", "Top left"), ("top-right", "Top right"), ("bottom-left", "Bottom left"), ("bottom-right", "Bottom right")],
+        "boarding" => vec![("auto", "Pay and take the ticket"), ("pay", "The driver sells the ticket"), ("walk", "Just walk in")],
+        "pax_voices" => vec![("all", "Greetings and tickets"), ("tickets", "Only the ticket asked for"), ("off", "Silent")],
+        "maintenance" => vec![("0", "Infinite (no wear)"), ("1", "Very bad"), ("2", "Bad"), ("3", "Normal"), ("4", "Good")],
+        "ai_unsched_factor" => vec![("25", "25%"), ("50", "50%"), ("75", "75%"), ("100", "100%"), ("150", "150%"), ("200", "200%")],
+        "ai_max_scheduled" => vec![("0", "All"), ("10", "At most 10"), ("25", "At most 25"), ("50", "At most 50")],
+        "ai_max_parked" => vec![("0", "Every space"), ("35", "At most 35"), ("100", "At most 100"), ("250", "At most 250")],
+        "language" => omsi_launcher_lib::LANGUAGES.iter().map(|l| (l.0, l.1)).collect(),
+        "vr_scale" => vec![("0.5", "50%"), ("0.65", "65%"), ("0.8", "80%"), ("1", "100%")],
+        "vr_head_smoothing_ms" => vec![("0", "Off"), ("5", "5 ms"), ("10", "10 ms"), ("20", "20 ms"), ("30", "30 ms")],
+        "vr_mirror_rate" => vec![("0", "Off"), ("8", "8/s"), ("16", "16/s"), ("24", "24/s"), ("32", "32/s"), ("48", "48/s"), ("60", "60/s"), ("90", "90/s"), ("120", "120/s"), ("180", "180/s"), ("240", "240/s"), ("360", "360/s"), ("-1", "Every frame")],
+        _ => Vec::new(),
+    }
+}
+
+fn select_state(file: &serde_json::Value, key: &str) -> (Vec<(&'static str, &'static str)>, Option<usize>, String) {
+    let options = select_options(key);
+    let cur = value_text(file.get(key).unwrap_or(&serde_json::Value::Null));
+    let at = options.iter().position(|o| same_value(o.0, &cur));
+    (options, at, cur)
+}
+
+fn select_row(file: &serde_json::Value, key: &str, name: &str, desc: &str) -> Option<(String, String)> {
+    let (options, at, cur) = select_state(file, key);
+    if options.is_empty() {
+        return None;
+    }
+    let label = at.map(|i| omsi_ui::tr(options[i].1).into_owned()).unwrap_or(cur);
+    Some((row(name, 'o', &label, desc, None), format!("sel {key}")))
+}
+
+fn presets() -> [(&'static str, serde_json::Value); 4] {
+    [
+        ("Low", serde_json::json!({"msaa": 1, "anisotropy": 2, "shadow_size": 1024, "ssao": false, "shadows": false, "detail_textures": false, "clouds": false, "view_distance": "600", "min_obj_size": 0.03, "max_obj_dist": "500", "mirror_size": 128, "render_scale": "0.75", "texture_memory": 800})),
+        ("Medium", serde_json::json!({"msaa": 2, "anisotropy": 4, "shadow_size": 2048, "ssao": false, "shadows": true, "detail_textures": true, "clouds": true, "view_distance": "900", "min_obj_size": 0.02, "max_obj_dist": "750", "mirror_size": 256, "render_scale": "auto", "texture_memory": 1200})),
+        ("High", serde_json::json!({"msaa": 4, "anisotropy": 8, "shadow_size": 2048, "ssao": true, "shadows": true, "detail_textures": true, "clouds": true, "view_distance": "auto", "min_obj_size": 0.013, "max_obj_dist": "auto", "mirror_size": 256, "render_scale": "auto", "texture_memory": 0})),
+        ("Ultra", serde_json::json!({"msaa": 4, "anisotropy": 8, "shadow_size": 4096, "ssao": true, "shadows": true, "detail_textures": true, "clouds": true, "view_distance": "2000", "min_obj_size": 0.005, "max_obj_dist": "1500", "mirror_size": 512, "render_scale": "auto", "texture_memory": 0})),
+    ]
+}
+
+fn preset_now(file: &serde_json::Value) -> Option<usize> {
+    presets().iter().position(|p| {
+        p.1.as_object().is_some_and(|o| o.iter().all(|(k, v)| same_value(&value_text(v), &value_text(file.get(k).unwrap_or(&serde_json::Value::Null)))))
+    })
+}
+
+fn preset_row(file: &serde_json::Value, name: &str, desc: &str) -> Option<(String, String)> {
+    let label = omsi_ui::tr(preset_now(file).map(|i| presets()[i].0).unwrap_or("Custom")).into_owned();
+    Some((row(name, 'o', &label, desc, None), "preset".to_string()))
+}
+
+fn store_with(app: &mut App, change: impl FnOnce(&mut serde_json::Value)) {
+    let Ok(mut v) = omsi_launcher_lib::get_settings() else { return };
+    change(&mut v);
+    match omsi_launcher_lib::save_settings(&v) {
+        Ok(()) => reload_settings(app),
+        Err(e) => log::warn!("settings not saved: {e:#}"),
+    }
+}
+
+fn reload_settings(app: &mut App) {
+    app.settings = crate::settings::Settings::load();
+    crate::ui_language(&app.settings.language);
+    sync_live(app);
+}
+
+fn sync_live(app: &mut App) {
+    let s = &app.settings;
+    crate::startup::SOUND_AI.store(s.vol_ai.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    crate::startup::SOUND_SCENERY.store(s.vol_scenery.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    omsi_audio::DOPPLER.store(s.doppler, std::sync::atomic::Ordering::Relaxed);
+    if let Some(n) = app.navigator.as_mut() {
+        n.arrows = s.nav_arrows;
+    }
+    if let Some(h) = app.humans.as_mut() {
+        h.exact_fare = s.exact_fare;
+        h.boarding = s.boarding.clone();
+        h.voices = match s.pax_voices.as_str() {
+            "off" => 2,
+            "tickets" => 1,
+            _ => 0,
+        };
+    }
+}
+
 fn options_pages(app: &App) -> Vec<Page> {
     let s = &app.settings;
+    let file = settings_file();
+    let pick = |key: &str, name: &str, desc: &str| select_row(&file, key, name, desc);
     let pct = |v: f32| format!("{:.0} %", v * 100.0);
     let cm = |v: f32| format!("{:+.0} cm", v * 100.0);
+    let later = "Takes effect when the game starts the next time";
     let game: Vec<(String, String)> = vec![
         switch_row(app, "navigator", "Navigator", "Enables/Disables the Minimap"),
         switch_row(app, "nav_ai", "AI vehicles on the map", "Shows/hides the other (AI) vehicles on the Minimap and the city map"),
+        switch_row(app, "nav_arrows", "Route arrows (as in OMSI 2)", "Shows OMSI 2's route arrows over the road"),
+        pick("navigator_corner", "Corner", later),
         switch_row(app, "get_up", "Ability to get up (Ctrl+Shift+G)", "Allows you to get out of the car and explore the world"),
         switch_row(app, "coll_objects", "Collisions with objects", "Enables/disables collisions with objects such as buildings, streetlights, etc."),
         switch_row(app, "coll_vehicles", "Collisions with vehicles", "Enables/Disables Collisions with Other Vehicles"),
+        switch_row(app, "collision_pedestrians", "Collisions with people", "Enables/disables knocking down people"),
         switch_row(app, "timetable_win", "Timetable window", "Displays a list of all stops (only when a tour is active)"),
         switch_row(app, "info_bar", "Information bar", "Displays information such as the time, speed, and other details at the top of the screen"),
+        switch_row(app, "exact_fare", "Passengers pay the exact fare", "No change is given at the cash desk"),
+        pick("boarding", "Boarding", "How passengers get their tickets"),
+        pick("maintenance", "Maintenance", later),
+        pick("ai_unsched_factor", "Random traffic", later),
+        pick("ai_max_scheduled", "Timetable vehicles", later),
+        pick("ai_max_parked", "Parked cars", later),
     ]
         .into_iter()
         .flatten()
         .collect();
-    let picture: Vec<(String, String)> = vec![
-        slider_row(app, "volume", "Volume", "Set how loud the game should be", &pct),
+    let graphics: Vec<(String, String)> = vec![
+        preset_row(&file, "Quality preset", "Sets most of the graphics options at once"),
+        pick("graphics", "Graphics", later),
+        pick("msaa", "Anti-aliasing", later),
+        pick("render_scale", "Render scale", later),
+        pick("anisotropy", "Anisotropic", later),
         switch_row(app, "shadows", "Sun shadows", "Enables/Disabled shadows"),
-        switch_row(app, "fps", "Frame rate", "Show the frames per second in the top right corner"),
+        pick("shadow_size", "Shadow map", later),
+        switch_row(app, "ssao", "Ambient occlusion", later),
+        pick("shadow_casters", "Shadows cast by", later),
+        switch_row(app, "detail_textures", "Detail texturing up close", "The ground and large walls get fine grain when close"),
         slider_row(app, "led_glow", "LED glow", "How strongly the dots of LED destination displays glow", &|v| format!("{}/15", v as i64)),
         slider_row(app, "led_mips", "LED mask mipmaps", "Keep the mip chain of the LED masks (smoother from a distance).", &|v| format!("{v:.2}")),
+        switch_row(app, "reflections", "Reflection maps (paint, chrome, glass)", later),
+        switch_row(app, "clouds", "Clouds", later),
+    ]
+        .into_iter()
+        .flatten()
+        .collect();
+    let display: Vec<(String, String)> = vec![
+        switch_row(app, "fullscreen", "Fullscreen", "Switches the window between windowed and fullscreen"),
+        switch_row(app, "vsync", "V-sync", "Waits for the screen's refresh"),
+        pick("max_fps", "Frame limit", "Frames a second at most"),
+        switch_row(app, "fps", "Frame rate", "Show the frames per second in the top right corner"),
+        pick("view_distance", "View distance", later),
+        pick("max_obj_dist", "Object distance", later),
+        pick("min_obj_size", "Small objects", later),
+        pick("mirror_size", "Mirrors", later),
+        pick("texture_memory", "Texture memory", later),
+        switch_row(app, "texture_compression", "Compress textures on loading", later),
+        (!omsi_launcher_lib::graphics_profiles().is_empty()).then(|| opens("Load graphics profile", "Applies a graphics profile saved in the launcher", "gfxprofile")),
+    ]
+        .into_iter()
+        .flatten()
+        .collect();
+    let sound: Vec<(String, String)> = vec![
+        slider_row(app, "volume", "Volume", "Set how loud the game should be", &pct),
+        slider_row(app, "vol_ai", "Traffic", "How loud the other vehicles are", &pct),
+        slider_row(app, "vol_scenery", "Surroundings", "How loud the sounds of the scenery are", &pct),
+        switch_row(app, "doppler", "Doppler effect", "Approaching sounds higher, receding ones lower"),
+        pick("pax_voices", "Passenger voices", "What passengers say"),
     ]
         .into_iter()
         .flatten()
@@ -1267,8 +1662,13 @@ fn options_pages(app: &App) -> Vec<Page> {
         switch_row(app, "cam_smooth", "Smooth viewpoint changes", "Enables a smooth transition between camera perspectives"),
         switch_row(app, "camcoll", "Camera collisions", "The outside camera cannot pass through objects"),
         switch_row(app, "steer_look", "View turns with steering", "Camera turns with the steering wheel (cockpit only)"),
+        slider_row(app, "steer_look_angle", "Steering view angle", "How far the view turns at full steering lock", &|v| format!("{v:.0}°")),
+        slider_row(app, "steer_look_response", "Steering view response", "How quickly the view follows the steering", &|v| format!("{:.0} ms", v * 1000.0)),
         switch_row(app, "hands_in_cab", "Driver's hands in the cab view", "Shows the driver's hand on the steering wheel (Cockpit only)"),
+        switch_row(app, "driver", "Driver at the wheel (outside views)", "Shows the driver in the outside views and in the mirrors"),
         switch_row(app, "headtrack", "Head tracking", &format!("Head tracking with opentrack (UDP port {})", s.head_tracking_port)),
+        switch_row(app, "alt_view", "Right mouse button turns the view", "Shift+right zooms; off: right zooms as in OMSI, the wheel button turns"),
+        slider_row(app, "fov", "Field of view", "The view angle of the views from the vehicle", &|v| if v < 20.0 { "Default".to_string() } else { format!("{v:.0}°") }),
         slider_row(app, "seat 1", "Seat forward and back", "Adjust the driver's seat position forward or backward", &cm),
         slider_row(app, "seat 2", "Seat height", "Adjust the driver's seat height", &cm),
         slider_row(app, "seat 0", "Seat left and right", "Adjust the driver's seat position from side to side", &cm),
@@ -1277,19 +1677,55 @@ fn options_pages(app: &App) -> Vec<Page> {
         .flatten()
         .collect();
     camera.push(button("Reset the seat position", "Reset", "Put the seat back where the vehicle has it.", "seat_reset"));
+    if cfg!(windows) {
+        camera.extend(
+            vec![
+                switch_row(app, "vr", "Use OpenXR headset", later),
+                if s.vr { pick("vr_scale", "Eye resolution", later) } else { None },
+                if s.vr { pick("vr_head_smoothing_ms", "Head tracking smoothing", later) } else { None },
+                if s.vr { pick("vr_mirror_rate", "Bus mirror refresh", later) } else { None },
+                if s.vr { switch_row(app, "vr_desktop_mirror", "Show headset picture on monitor", later) } else { None },
+            ]
+                .into_iter()
+                .flatten(),
+        );
+    }
     let controls: Vec<(String, String)> = vec![
+        pick("drive_keys", "Driving keys", "Which keys drive the vehicle"),
         switch_row(app, "mouse", "Steering with the mouse", "Steer and control the pedals using the mouse"),
         slider_row(app, "mouse_sens", "Mouse steering sensitivity", "Adjust how much the steering wheel turns based on mouse movement", &pct),
+        switch_row(app, "steering_linear", "Steering linearity (keys at OMSI's steady pace)", "Keyboard steering at OMSI's steady pace"),
+        switch_row(app, "old_steering", "Old Steering (the wheel stays, turn it back yourself)", "The wheel stays where the keys left it"),
+        switch_row(app, "red_steer_spd", "Dynamic steering (slower keys at speed, OMSI's redSteerSpd)", "The steering keys act slower at speed"),
         switch_row(app, "ff", "Force feedback and vibration", "Enable force feedback for the steering wheel and vibration for controllers"),
+        switch_row(app, "ff_invert", "Invert force feedback by default", "For wheels without a saved direction"),
+        slider_row(app, "wheel_range", "Wheel rotation", "The steering wheel's own rotation, lock to lock", &|v| format!("{v:.0}°")),
+        slider_row(app, "wheel_lock", "Full lock at", "How far the wheel turns for the vehicle's full lock", &|v| if v < 45.0 { "OMSI".to_string() } else { format!("{v:.0}°") }),
+        slider_row(app, "pedal_t", "Throttle pedal strength", "Adjust how strongly pedal input affects the throttle", &|v| format!("x{v}")),
+        slider_row(app, "pedal_b", "Brake pedal strength", "Adjust how strongly pedal input affects the brake", &|v| format!("x{v}")),
         switch_row(app, "brake_hold", "Keyboard brake stays on", "Keep the brake applied until the throttle is pressed"),
         switch_row(app, "auto_clutch", "Automatic clutch", "Automatically operate the clutch for you"),
-        slider_row(app, "pedal_t", "Throttle pedal strength", "Adjust how strongly pedal input affects the throttle", &|v| format!("x{v}")),
-        slider_row(app, "pedal_b", "Brake pedal strength", "Adjust how strongly pedal input affects the brake", &|v| format!("x{v}"))
+        switch_row(app, "momentary_gears", "Hold manual gear buttons (release returns to neutral)", later),
     ]
         .into_iter()
         .flatten()
         .collect();
-    vec![("Gameplay", game), ("Graphics and sound", picture), ("Camera", camera), ("Controls", controls)]
+    let interface: Vec<(String, String)> = vec![
+        pick("language", "Language", "The language of the game's interface"),
+        switch_row(app, "machine_translation", "Translate the remaining texts automatically (offline, downloads 620 MB once)", "Translates texts nobody has translated, on this machine"),
+        slider_row(app, "ui_scale", "Game interface size", "The size of the texts, the menu, the timetable and the navigator", &pct),
+        switch_row(app, "ui_scale_window", "Interface grows with the window", "On a window taller than 1080p the interface grows with it"),
+        slider_row(app, "ui_opacity", "Interface opacity", "How much of the interface's backgrounds shows", &pct),
+        switch_row(app, "tooltips", "Name of the button under the mouse", "Shows the name of what the cursor points at"),
+        switch_row(app, "notes", "Notes in the top-left corner", "Why the vehicle does not move, the change due, what a service did"),
+        switch_row(app, "chat", "Chat in online games", "Shows the chat of a LAN session"),
+        switch_row(app, "name_tags", "Other players' names above their buses", "Shows the names of the other players"),
+        Some(opens("Reset all settings...", "Everything but the language, the key bindings and the game folder goes back to how it came", "reset")),
+    ]
+        .into_iter()
+        .flatten()
+        .collect();
+    vec![("Gameplay", game), ("Graphics", graphics), ("Display and memory", display), ("Sound", sound), ("Camera", camera), ("Controls", controls), ("Interface", interface)]
 }
 
 fn vehicle_pages(app: &App) -> Vec<Page> {
