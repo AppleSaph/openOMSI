@@ -1641,6 +1641,34 @@ impl App {
         self.refresh_list();
     }
 
+    /// A key while a route number is typed in the destination list (#836): letters and
+    /// digits ("5E", "N41"), Backspace, Enter sets it, Escape drops it.
+    fn route_edit_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Escape => self.menu_edit = None,
+            KeyCode::Backspace | KeyCode::Delete => {
+                if let Some(t) = self.menu_edit.as_mut() {
+                    t.pop();
+                }
+            }
+            KeyCode::Enter | KeyCode::NumpadEnter => {
+                if let Some(t) = self.menu_edit.take() {
+                    crate::game_lists::set_route_by_hand(self, &t);
+                    self.close_game_menu();
+                }
+                return;
+            }
+            _ => {
+                if let (Some(c), Some(t)) = (route_char(code), self.menu_edit.as_mut()) {
+                    if t.chars().count() < 8 {
+                        t.push(c);
+                    }
+                }
+            }
+        }
+        self.refresh_list();
+    }
+
     /// Set the clock to the time typed (digits: hh, hhmm or hhmmss; what is missing is 0).
     pub(crate) fn apply_time_edit(&mut self) {
         let Some(d) = self.menu_edit.take() else { return };
@@ -1817,7 +1845,13 @@ impl App {
             return;
         }
         if self.menu_edit.is_some() {
-            if self.menu_edit_icao { self.icao_edit_key(code); } else { self.time_edit_key(code); }
+            if self.menu_edit_icao {
+                self.icao_edit_key(code);
+            } else if matches!(self.list_kind, Some(crate::game_lists::ListKind::RouteNumbers)) {
+                self.route_edit_key(code);
+            } else {
+                self.time_edit_key(code);
+            }
             return;
         }
         let n = self.admin_list.as_ref().unwrap_or(&self.vehicle_list).len().max(1);
@@ -3541,6 +3575,15 @@ impl App {
     }
 }
 
+/// The character a key types into a route number (digits and capital letters), if any.
+fn route_char(code: KeyCode) -> Option<char> {
+    let name = format!("{code:?}");
+    let c = name.strip_prefix("Digit").or_else(|| name.strip_prefix("Numpad")).or_else(|| name.strip_prefix("Key"))?;
+    let mut chars = c.chars();
+    let ch = chars.next()?;
+    (chars.next().is_none() && ch.is_ascii_alphanumeric()).then(|| ch.to_ascii_uppercase())
+}
+
 /// Degrees the view turns per (logical) pixel of the cursor's way while looking round:
 /// Omsi.exe's fov / 78.75 (TForm_main.Panel1MouseMove 0x82c5f8).
 fn look_deg_per_px(fov_deg: f32) -> f32 {
@@ -3572,6 +3615,16 @@ mod look_tests {
         assert!(!super::key_left_free(Some(59), "view_set_driver", &own, &[]));
         assert!(!super::key_left_free(Some(59), "view_set_driver", &none, &[kb("view_set_driver", 2)]));
         assert!(super::key_left_free(Some(59), "view_set_driver", &none, &[kb("view_set_passenger", 60)]));
+    }
+
+    #[test]
+    fn a_route_number_takes_digits_and_letters() {
+        use winit::keyboard::KeyCode;
+        assert_eq!(super::route_char(KeyCode::Digit5), Some('5'));
+        assert_eq!(super::route_char(KeyCode::Numpad0), Some('0'));
+        assert_eq!(super::route_char(KeyCode::KeyE), Some('E'));
+        assert_eq!(super::route_char(KeyCode::NumpadAdd), None);
+        assert_eq!(super::route_char(KeyCode::Space), None);
     }
 
     #[test]

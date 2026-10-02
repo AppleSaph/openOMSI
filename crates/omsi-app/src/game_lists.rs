@@ -71,6 +71,25 @@ fn route_numbers(app: &App) -> Vec<String> {
     out
 }
 
+/// The route number on the bus's IBIS and display, as picked or typed in the destination
+/// list (the destination stays: the one on the display now, else the first).
+pub(crate) fn set_route_by_hand(app: &mut App, line: &str) {
+    let line = line.trim();
+    if line.is_empty() {
+        return;
+    }
+    if let Some(p) = app.player.as_mut() {
+        let hof = p.vehicle.host.hof.clone();
+        let code = p.vehicle.var("IBIS_TerminusCode").unwrap_or(-1.0) as i32;
+        let named = |t: &&omsi_vehicle::hof::Terminus| t.strings.first().is_some_and(|s| !s.trim().is_empty());
+        let term = hof.as_ref().and_then(|h| h.termini.iter().filter(named).find(|t| t.code == code).or_else(|| h.termini.iter().find(named)));
+        let name = term.and_then(|t| t.strings.first().cloned()).unwrap_or_default();
+        crate::schedule::set_player_destination_directly(&mut p.vehicle, hof.as_deref(), line, &name, &[]);
+        log::info!("route number set by hand: {line} (IBIS_LinieKurs {:?})", p.vehicle.var("IBIS_LinieKurs"));
+        app.service_msg = Some((format!("Route {line}"), 3.0));
+    }
+}
+
 /// Names in older packs often use underscores as spaces.
 fn bus_label(name: &str) -> String {
     name.replace('_', " ").split_whitespace().collect::<Vec<_>>().join(" ")
@@ -220,10 +239,16 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
             }
         }
         ListKind::RouteNumbers => {
+            // any route number, typed as on OMSI's own field (#836): the scripts that read
+            // it (a bus that switches its functions by route number) take what is typed
+            match app.menu_edit.as_ref() {
+                Some(t) => out.push((format!("{}: {t}_  ({})", tr("Route number"), tr("Enter sets it, Esc cancels")), "route_type".into())),
+                None => out.push((format!("{}...", tr("Type a route number")), "route_type".into())),
+            }
             for l in route_numbers(app) {
                 out.push((format!("{} {l}", tr("Route")), format!("route {l}")));
             }
-            if out.is_empty() {
+            if out.len() == 1 {
                 out.push((tr("No route numbers in the depot file or the timetable"), "back".into()));
             }
         }
@@ -605,19 +630,21 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
             None
         }
         ListKind::Destinations if verb == "routes" => Some(ListKind::RouteNumbers),
-        ListKind::RouteNumbers => {
-            if let Some(p) = app.player.as_mut() {
-                let hof = p.vehicle.host.hof.clone();
-                let line = arg.trim();
-                // (the destination stays: the one on the display now, else the first)
-                let code = p.vehicle.var("IBIS_TerminusCode").unwrap_or(-1.0) as i32;
-                let named = |t: &&omsi_vehicle::hof::Terminus| t.strings.first().is_some_and(|s| !s.trim().is_empty());
-                let term = hof.as_ref().and_then(|h| h.termini.iter().filter(named).find(|t| t.code == code).or_else(|| h.termini.iter().find(named)));
-                let name = term.and_then(|t| t.strings.first().cloned()).unwrap_or_default();
-                crate::schedule::set_player_destination_directly(&mut p.vehicle, hof.as_deref(), line, &name, &[]);
-                log::info!("route number set by hand: {line} (IBIS_LinieKurs {:?})", p.vehicle.var("IBIS_LinieKurs"));
-                app.service_msg = Some((format!("Route {line}"), 3.0));
+        ListKind::RouteNumbers if verb == "route_type" => {
+            // the first press starts typing, the next one (Enter) sets what is typed
+            match app.menu_edit.take() {
+                Some(t) => {
+                    set_route_by_hand(app, &t);
+                    None
+                }
+                None => {
+                    app.menu_edit = Some(String::new());
+                    Some(ListKind::RouteNumbers)
+                }
             }
+        }
+        ListKind::RouteNumbers => {
+            set_route_by_hand(app, arg);
             None
         }
         ListKind::Destinations => {
