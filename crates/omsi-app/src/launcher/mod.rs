@@ -9,6 +9,7 @@
 //! functions `omsi-launcher --cli` offers a terminal.
 
 pub(crate) mod drive;
+pub(crate) mod mapview;
 pub mod mobile;
 pub mod phone;
 mod multiplayer;
@@ -129,6 +130,11 @@ pub struct Launcher {
     preview_rect: Option<Rect>,
     preview_tex: Option<usize>,
     preview_gen: u64,
+    /// The chosen map's picture (see `mapview`): where it is this frame and its texture.
+    pub mapview: mapview::MapView,
+    map_rect: Option<Rect>,
+    map_tex: Option<usize>,
+    map_gen: u64,
     /// The window has the keyboard / is hidden: without focus it is drawn ten times a
     /// second, hidden not at all (a game started from it is being played).
     focused: bool,
@@ -200,6 +206,10 @@ impl Launcher {
         preview_rect: None,
         preview_tex: None,
         preview_gen: 0,
+        mapview: mapview::MapView::new(),
+        map_rect: None,
+        map_tex: None,
+        map_gen: 0,
         focused: true,
         occluded: false,
         last_input: Instant::now(),
@@ -661,6 +671,7 @@ impl Launcher {
 
         // --- the interface
         self.preview_rect = None;
+        self.map_rect = None;
         self.ui.begin(size, scale, dt);
         self.draw_ui();
         if mobile::mobile() {
@@ -694,6 +705,21 @@ impl Launcher {
                     match self.preview_tex {
                         Some(id) => gpu.set_view(&renderer.device, id, &view, (w, h)),
                         None => self.preview_tex = Some(gpu.add_view(&renderer.device, &view, (w, h))),
+                    }
+                }
+            }
+        }
+        // the map picture, drawn again when the chosen map, trip or card size changed
+        if let Some(r) = self.map_rect {
+            let (w, h) = ((r.w * scale) as u32, (r.h * scale) as u32);
+            if let Some(view) = self.mapview.picture(renderer, w, h) {
+                if let Some(gpu) = self.gpu.as_mut() {
+                    if self.map_gen != self.mapview.generation {
+                        self.map_gen = self.mapview.generation;
+                        match self.map_tex {
+                            Some(id) => gpu.set_view(&renderer.device, id, &view, (w, h)),
+                            None => self.map_tex = Some(gpu.add_view(&renderer.device, &view, (w, h))),
+                        }
                     }
                 }
             }
@@ -955,6 +981,36 @@ impl Launcher {
         }
         if self.ui.hover(r) {
             self.ui.cursor = winit::window::CursorIcon::Grab;
+        }
+    }
+
+    /// The chosen map's picture in `r`: every road the map has, its entry points and the
+    /// route of the chosen trip, read from the tile files (see `mapview`), or a word while
+    /// it is read.
+    pub fn map_preview(&mut self, r: Rect) {
+        self.map_rect = Some(r);
+        self.ui.solid(r);
+        self.ui.p().rounded(r, RADIUS, FIELD);
+        let status = self.mapview.status();
+        match (self.map_tex, status.is_empty()) {
+            (Some(tex), true) => self.ui.image(r, tex, RADIUS),
+            _ => {
+                let t = if status.is_empty() { "Loading…" } else { status };
+                self.ui.text_in(t, r, 13.0, Weight::Regular, TEXT_FAINT, Align::Center);
+            }
+        }
+        if self.mapview.busy() {
+            let c = Vec2::new(r.right() - 16.0, r.y + 16.0);
+            let a = self.ui.time * 5.0;
+            self.ui.p().arc(c, 6.0, 8.0, a, a + 4.2, TEXT_SOFT);
+        }
+        // how much map the picture holds, its foot
+        if let Some((roads, stops, entries)) = self.mapview.counts() {
+            let t = format!("{roads} {}  ·  {stops} {}  ·  {entries} {}", omsi_ui::tr("roads"), omsi_ui::tr("stops"), omsi_ui::tr("entry points"));
+            let w = self.ui.width(&t, 11.0, Weight::Regular) + 18.0;
+            let bar = Rect::new(r.x + 10.0, r.bottom() - 30.0, w, 20.0);
+            self.ui.p().rounded(bar, 5.0, omsi_ui::Color::rgba(0, 0, 0, 0.55));
+            self.ui.text_in(&t, bar.pad(9.0, 0.0), 11.0, Weight::Regular, TEXT_SOFT, Align::Left);
         }
     }
 

@@ -39,6 +39,9 @@ pub struct DriveView {
     bus_list_initialized: bool,
     vehicle_settings_open: bool,
     pub line_filter: String,
+    /// What stands in the side column's picture: `None` follows the step (the map belongs
+    /// to the Route step, the bus to the others), `Some` is what the player switched to.
+    pub preview_map: Option<bool>,
 }
 
 const STEPS: [(&str, &str); 4] = [("Bus", "directions_bus"), ("Route", "route"), ("Time & weather", "partly_cloudy_day"), ("Roadbook", "receipt_long")];
@@ -850,12 +853,38 @@ fn ibis_box(l: &mut Launcher, r: Rect) {
     }
 }
 
+/// What the map picture should show, from the current choice: the map, the trip of the
+/// chosen tour that a start now would begin with (`State::first_trip`, the same one the
+/// launch choice takes), and the entry point the player picked.
+fn map_look(l: &Launcher) -> super::mapview::Look {
+    let file = l.state.choice.map.clone();
+    let root = std::path::PathBuf::from(&l.state.config.root);
+    let global = omsi_launcher_lib::content_dir().map(|c| c.join(&file)).filter(|p| p.is_file()).unwrap_or_else(|| omsi_cfg::resolve_path(&root, &file));
+    let trip = l.state.tour().and_then(|t| t.trips.get(l.state.first_trip().unwrap_or(0))).map(|t| t.name.clone()).unwrap_or_default();
+    super::mapview::Look { map: file, global, date: l.state.choice.date.clone(), trip, entry: l.state.choice.entry }
+}
+
 /// The right column: the bus preview, the duty in short, the start button.
 fn summary(l: &mut Launcher, side: Rect) {
     let pw = side.w;
     let ph = (pw / 1.6).min(side.h * 0.55);
     let pr = Rect::new(side.x, side.y, pw, ph);
-    l.preview(pr);
+    // The picture: the map on the Route step (that is what it is about - which line, from
+    // where, how far), the bus everywhere else, and either one by the switch over it.
+    let map_shown = l.drive.preview_map.unwrap_or(l.drive.step == 1);
+    if map_shown {
+        // (only asked for while it is shown: reading 891 tiles for a picture nobody looks
+        // at would be a second of work for nothing)
+        l.mapview.want(map_look(l));
+        l.map_preview(pr);
+    } else {
+        l.preview(pr);
+    }
+    let chip = Rect::new(pr.right() - 96.0, pr.y + 10.0, 86.0, 28.0);
+    let (icon, label) = if map_shown { ("directions_bus", "Bus") } else { ("map", "Map") };
+    if l.ui.button("preview-switch", chip, label, Some(icon), ButtonKind::Ghost) {
+        l.drive.preview_map = Some(!map_shown);
+    }
     let mut y = pr.bottom() + 18.0;
     let bus_name = l.state.bus().map(|bus| display_bus_name(&bus.name)).unwrap_or_else(|| "No bus chosen".into());
     l.ui.text_in(&bus_name, Rect::new(side.x, y, pw, 24.0), 18.0, Weight::Bold, TEXT, Align::Left);

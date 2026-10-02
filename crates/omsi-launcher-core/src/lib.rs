@@ -1132,6 +1132,70 @@ pub struct LineInfo {
 /// the launcher's own default date.
 pub const DEFAULT_DATE: &str = "1989-05-30";
 
+/// A trip as a map picture needs it: the map's own road pieces the trip drives, in order,
+/// and its stops.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TripPath {
+    /// The road pieces it drives, in order (the shared piece of two links appears once).
+    pub route: Vec<RoadPiece>,
+    /// The stop objects the trip calls at, in order.
+    pub stops: Vec<i64>,
+}
+
+/// One spline of the map a trip drives over: its id in its tile, and the tile's place in
+/// `global.cfg`'s `[map]` list. The launcher's map picture draws these over the tile files
+/// alone - no `.sli`, no lanes, no `Network`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RoadPiece {
+    pub tile_x: i32,
+    pub tile_y: i32,
+    pub spline: i64,
+}
+
+/// The route of trip `trip` of the map `map` on `date`: its road pieces and its stops.
+/// The trip's own track (`.ttr`) when it names one - trains, ferries, and the type-1 trips
+/// of mod maps - else the station links between its stops, as the game walks them.
+pub fn trip_path(map: &str, date: &str, trip: &str) -> Result<TripPath> {
+    let map_dir = resolve_content(map)?.parent().map(|p| p.to_path_buf()).context("map folder")?;
+    let date = if date.trim().is_empty() { DEFAULT_DATE } else { date.trim() };
+    let code = omsi_map::date_code(date).with_context(|| format!("'{date}' is not a date (YYYY-MM-DD)"))?;
+    let chrono = omsi_map::active_chrono_dirs(&map_dir, code);
+    let off = omsi_map::chrono_deactivated_lines(&chrono);
+    let data = omsi_timetable::TimetableData::load_with_chrono(&map_dir, &chrono, &off);
+    let mut out = TripPath::default();
+    let Some(t) = data.trips.iter().find(|x| x.name.eq_ignore_ascii_case(trip.trim())) else { return Ok(out) };
+    // a type-1 trip's stations are its own `[station]` records (all of Novi Sad)
+    out.stops = if t.stations.is_empty() {
+        t.stations_legacy.iter().filter_map(|r| r.first()?.trim().parse::<i64>().ok()).collect()
+    } else {
+        t.stations.clone()
+    };
+    // the tile of a path step is the index of its entry in `[map]`, as the game reads it
+    let tiles = omsi_map::GlobalCfg::load(&map_dir.join("global.cfg")).map(|g| g.raw_tiles).unwrap_or_default();
+    let at = |tile_index: f64| tiles.get(tile_index as usize).copied();
+    let track_name = if t.display_name.trim().is_empty() { t.name.trim() } else { t.display_name.trim() };
+    if let Some(track) = data.tracks.iter().find(|x| x.path.file_stem().map(|s| s.to_string_lossy().eq_ignore_ascii_case(track_name)).unwrap_or(false)) {
+        for e in &track.entries {
+            if let Some(tile) = at(e.values[2]) {
+                out.route.push(RoadPiece { tile_x: tile.0, tile_y: tile.1, spline: e.values[0] as i64 });
+            }
+        }
+        return Ok(out);
+    }
+    for w in out.stops.windows(2) {
+        let Some(link) = data.stn_links.iter().find(|l| l.from_id == w[0] && l.to_id == w[1]) else { continue };
+        for e in &link.entries {
+            let Some(tile) = at(e.values[2]) else { continue };
+            let p = RoadPiece { tile_x: tile.0, tile_y: tile.1, spline: e.values[0] as i64 };
+            // consecutive links repeat the piece they share
+            if out.route.last() != Some(&p) {
+                out.route.push(p);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The lines of a map's timetable on `date` (`YYYY-MM-DD`, the game's default when empty):
 /// the chrono folders active that day add their lines and take theirs off, as the game does
 /// - Spandau's 1991 timetable change replaces line "5 & 5N" and sixteen others.

@@ -20571,3 +20571,27 @@ _version: 2
   de: "Diese Karte hat keine Einstiegspunkte"
 "entry":
   de: "Einstieg"
+"roads":
+  de: "Straßen"
+  zh: "道路"
+  zh-tw: "道路"
+"stops":
+  de: "Haltestellen"
+  zh: "站点"
+  zh-tw: "站點"
+"entry points":
+  de: "Einstiegspunkte"
+  zh: "入口点"
+  zh-tw: "入口點"
+"Reading the map…":
+  de: "Karte wird gelesen…"
+  zh: "正在读取地图…"
+  zh-tw: "正在讀取地圖…"
+"The map cannot be read":
+  de: "Die Karte lässt sich nicht lesen"
+  zh: "无法读取这张地图"
+  zh-tw: "無法讀取這張地圖"
+"This map has no road splines":
+  de: "Diese Karte hat keine Straßen-Splines"
+  zh: "这张地图没有道路曲线"
+  zh-tw: "這張地圖沒有道路曲線"
