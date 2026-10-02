@@ -104,7 +104,8 @@ fn central_european_upper(b: u8) -> bool {
 /// * a Polish or Czech text has 1250 letters that are signs in 1252 next to plain letters;
 /// * everything else is Windows-1252, the code page of the stock content.
 ///
-/// On a Windows with a double-byte ANSI code page, what is not UTF-8 is in that one.
+/// On a Windows with a double-byte ANSI code page, what is not UTF-8 and reads in that one
+/// without a broken character is in it.
 pub fn detect(bytes: &[u8]) -> CodePage {
     detect_on(bytes, system_double_byte())
 }
@@ -116,8 +117,14 @@ fn detect_on(bytes: &[u8], system: Option<CodePage>) -> CodePage {
     if std::str::from_utf8(bytes).is_ok() {
         return CodePage::Utf8;
     }
+    // what reads as that code page without a broken character is in it; Russian content on
+    // a Chinese Windows almost never does (a Cyrillic word of odd length leaves
+    // a lead byte before a space), and read as GBK all the same, a Russian HOF's stops lost
+    // their names and no longer matched the map's
     if let Some(page) = system {
-        return page;
+        if page.encoding().decode_without_bom_handling_and_without_replacement(bytes).is_some() {
+            return page;
+        }
     }
     let (mut letters, mut in_runs, mut run) = (0usize, 0usize, 0usize);
     let close_run = |run: &mut usize, in_runs: &mut usize| {
@@ -314,6 +321,9 @@ mod tests {
         // UTF-8 stays UTF-8, and other systems keep the guess
         assert_eq!(detect_on("公交车".as_bytes(), CodePage::double_byte(936)), CodePage::Utf8);
         assert_ne!(detect_on(&gbk, CodePage::double_byte(1251)), CodePage::Gbk);
+        // a Russian file on a Chinese system is not GBK
+        let ru = cp1251("[station]\r\nУлица Ленина\r\nМетро Сокол\r\n");
+        assert_eq!(detect_on(&ru, CodePage::double_byte(936)), CodePage::Windows1251);
     }
 
     #[test]
