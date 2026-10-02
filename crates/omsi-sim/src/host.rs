@@ -69,6 +69,11 @@ pub struct VehicleHost {
     pub auto_clutch: f32,
     pub no_sound: f32,
     pub fired_triggers: Vec<String>,
+    /// Triggers (lower case) whose sounds read variables in their volume curves: when one
+    /// fires, the variables of that moment are kept in `fired_trigger_vars` (the door's
+    /// hit sound reads `doorSpeed_<n>`, which the script turns round right after it).
+    pub snapshot_triggers: hashbrown::HashSet<String>,
+    pub fired_trigger_vars: Vec<(String, Vec<f32>)>,
     /// `(T.F.name)` triggers of this frame: (trigger, sound file relative to the sound folder).
     pub fired_file_triggers: Vec<(String, String)>,
     pub messages: Vec<String>,
@@ -694,6 +699,15 @@ impl Host for VehicleHost {
     }
     fn sound_trigger(&mut self, name: &str, _id: NameId) {
         self.fired_triggers.push(name.to_string());
+    }
+    fn sound_trigger_vars(&mut self, name: &str, id: NameId, vars: &[f32]) {
+        self.sound_trigger(name, id);
+        if !self.snapshot_triggers.is_empty() {
+            let key = name.to_ascii_lowercase();
+            if self.snapshot_triggers.contains(&key) {
+                self.fired_trigger_vars.push((key, vars.to_vec()));
+            }
+        }
     }
 
     /// `$msg`: kept as the last few (OMSI shows the latest on its debug line; every

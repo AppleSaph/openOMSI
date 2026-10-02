@@ -145,6 +145,10 @@ pub struct Launcher {
     ime: bool,
     /// Updates from the GitHub releases (see `crate::updater`, `update.rs`).
     pub update: crate::updater::Updater,
+    #[cfg(not(target_os = "android"))]
+    discord: Option<crate::discord::Discord>,
+    #[cfg(not(target_os = "android"))]
+    discord_next_try: Instant,
 }
 
 /// Run the launcher window until it is closed.
@@ -209,6 +213,10 @@ impl Launcher {
         page_max: 0.0,
         ime: false,
         update: Default::default(),
+        #[cfg(not(target_os = "android"))]
+        discord: None,
+        #[cfg(not(target_os = "android"))]
+        discord_next_try: Instant::now(),
     };
     // after an update: the files it set aside go, and the launcher says what happened
     #[cfg(not(target_os = "android"))]
@@ -330,10 +338,18 @@ impl ApplicationHandler for Launcher {
             return;
         }
         // (`OMSI_LAUNCHER_SIZE=WxH`: another window size, for looking at the layout)
-        let (iw, ih) = omsi_cfg::env::var("OMSI_LAUNCHER_SIZE").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?)))).unwrap_or((1440.0, 880.0));
-        let mut attrs = Window::default_attributes().with_title("openOMSI").with_window_icon(crate::startup::window_icon()).with_inner_size(winit::dpi::LogicalSize::new(iw, ih));
+        let asked = omsi_cfg::env::var("OMSI_LAUNCHER_SIZE").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))));
+        let (fit, at) = match asked {
+            Some((iw, ih)) => (winit::dpi::LogicalSize::new(iw, ih), None),
+            None => crate::startup::fit_window(event_loop, 1440.0, 880.0),
+        };
+        let mut attrs = Window::default_attributes().with_title("openOMSI").with_window_icon(crate::startup::window_icon()).with_inner_size(fit);
         if !mobile::mobile() {
-            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(1080.0, 680.0));
+            // (no bigger than the window fitted to the screen: a small one at 150 % has less)
+            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(1080.0f64.min(fit.width), 680.0f64.min(fit.height)));
+            if let Some(at) = at {
+                attrs = attrs.with_position(at);
+            }
         }
         if omsi_cfg::env::var_os("OMSI_BACKGROUND").is_some() {
             attrs = attrs.with_active(false);
@@ -535,6 +551,8 @@ impl ApplicationHandler for Launcher {
             self.last = Instant::now();
             self.run_script();
             self.state.update(dt);
+            #[cfg(not(target_os = "android"))]
+            self.update_discord();
             self.update_tick(event_loop);
             self.check_exit(event_loop);
         } else if let Some(w) = self.window.as_ref() {
@@ -597,11 +615,64 @@ impl Launcher {
         true
     }
 
+    #[cfg(not(target_os = "android"))]
+    fn update_discord(&mut self) {
+        let enabled = self.state.settings.get("discord_status").and_then(|v| v.as_bool()).unwrap_or(true);
+        let launching = self.state.queued_launch.is_some()
+            || self.state.launch_hold.is_some_and(|at| at.elapsed().as_secs_f32() < 15.0);
+        let game_running = self.state.instances.iter().any(|i| i.running);
+        let presence = crate::discord::Presence::for_launcher(enabled, launching, game_running);
+        if presence.is_none() {
+            if let Some(discord) = self.discord.as_ref() {
+                discord.stop();
+                if discord.is_finished() {
+                    drop(self.discord.take());
+                }
+            }
+            return;
+        }
+        if let Some(discord) = self.discord.as_ref() {
+            if discord.is_stopping() {
+                if !discord.is_finished() {
+                    return;
+                }
+                drop(self.discord.take());
+            }
+        }
+        if self.discord.is_none() {
+            if !self.state.instances_ready() {
+                return;
+            }
+            if Instant::now() < self.discord_next_try {
+                return;
+            }
+            self.discord_next_try = Instant::now() + std::time::Duration::from_secs(5);
+            let app_id = self.state.settings.get("discord_app_id").and_then(|v| v.as_str()).unwrap_or("");
+            self.discord = crate::discord::Discord::start(app_id);
+        }
+        if let Some(discord) = self.discord.as_ref() {
+            discord.set(presence);
+        }
+    }
+
     fn frame(&mut self, event_loop: &ActiveEventLoop) {
         if self.recover_device() {
             return;
         }
         let desktop = !mobile::mobile() && self.window.is_some();
+        let presence_released = {
+            #[cfg(not(target_os = "android"))]
+            {
+                if self.state.queued_launch.is_some() {
+                    if let Some(discord) = self.discord.as_ref() {
+                        discord.stop();
+                    }
+                }
+                self.discord.as_ref().is_none_or(|discord| discord.is_finished())
+            }
+            #[cfg(target_os = "android")]
+            { true }
+        };
         if desktop && self.renderer.is_none() {
             if self.state.in_game() {
                 // nothing is drawn while a game runs; what is clicked or typed meanwhile is not
@@ -611,6 +682,8 @@ impl Launcher {
                 self.last = now;
                 self.state.update(dt);
                 self.ui.discard_input();
+                #[cfg(not(target_os = "android"))]
+                self.update_discord();
                 return;
             }
             log::info!("launcher: no game runs any more, the graphics device is opened again");
@@ -620,7 +693,9 @@ impl Launcher {
         // a game starts or runs: the frame just drawn says so and stays in the window, and the
         // graphics device is given up until the game ends (with it open, a game on an NVIDIA
         // card without Resizable BAR uploaded at 20 MB/s)
-        if desktop && self.renderer.is_some() && self.state.in_game() {
+        if desktop && self.renderer.is_some() && self.state.in_game()
+            && (self.state.queued_launch.is_none() || presence_released)
+        {
             log::info!("launcher: a game starts or runs, the graphics device is given up until it ends");
             self.surface = None;
             self.gpu = None;
@@ -629,7 +704,10 @@ impl Launcher {
             self.preview_gen = 0;
             self.renderer = None;
         }
-        if let Some(d) = self.state.queued_launch.take() {
+        if let Some(d) = presence_released.then(|| self.state.queued_launch.take()).flatten() {
+            // Finish the Discord handoff in the background before starting the child.
+            #[cfg(not(target_os = "android"))]
+            drop(self.discord.take());
             self.pages.pads.cancel_feedback_test();
             self.state.spawn_launch(d);
         }
@@ -648,6 +726,8 @@ impl Launcher {
 
         self.run_script();
         self.state.update(dt);
+        #[cfg(not(target_os = "android"))]
+        self.update_discord();
         self.update_tick(event_loop);
         // the preview shows the chosen bus in the chosen light
         let c = &self.state.choice;

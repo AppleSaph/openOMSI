@@ -159,10 +159,19 @@ impl Hof {
                     let route = r.str().to_string();
                     let line = r.str().to_string();
                     h.info_trips.push(InfoTrip { code, name, route, line, extra: Vec::new() });
+                    // every trip has a stop list, empty until one follows (THof.LoadFromFile
+                    // 0x7ea142), so that the lists stay in step with the trips
+                    h.info_busstop_lists.push(Vec::new());
                 }
                 "infosystem_busstop_list" => {
+                    // the list of the trip read last (0x7ea16f: DynArrayHigh of the trips);
+                    // pushed as one more list, a trip without one (the IVU data routes of
+                    // some depot files) gave every later trip the stops of the one before
                     let n = r.usize();
-                    h.info_busstop_lists.push((0..n).map(|_| r.str().to_string()).collect());
+                    let list: Vec<String> = (0..n).map(|_| r.str().to_string()).collect();
+                    if let Some(last) = h.info_busstop_lists.last_mut() {
+                        *last = list;
+                    }
                 }
                 "infosystem_busstop" => h.info_busstops.push((0..3).map(|_| r.str().to_string()).collect()),
                 _ => {}
@@ -263,5 +272,22 @@ mod tests {
         assert_eq!(h.termini[1].terminus_stop.as_deref(), Some("U Ruhleben"));
         assert_eq!(h.termini[1].strings, vec!["RUHLEBEN", "U-BAHNHOF", "RUHLEBEN  "]);
         assert_eq!(h.terminus_by_code(282).map(|t| t.texture_id.as_str()), Some("U Ruhleben"));
+    }
+
+    /// #667: a trip without a stop list (an IVU data route) keeps the lists of the trips
+    /// after it on their own trips.
+    #[test]
+    fn stop_lists_belong_to_the_trip_before_them() {
+        let text = "[infosystem_trip]\r\n45581\r\nZOB-HOHENECK\r\n81\r\n455\r\n\r\n\
+            [infosystem_busstop_list]\r\n2\r\nZOB\r\nHoheneck\r\n\r\n\
+            [infosystem_trip]\r\n455900\r\nIVU\r\n81\r\n455\r\n\r\n\
+            [infosystem_trip]\r\n45503\r\nHBF-BERGERFUERTH\r\n3\r\n455\r\n\r\n\
+            [infosystem_busstop_list]\r\n3\r\nHauptbahnhof\r\nMarkt\r\nBergerfuerth\r\n";
+        let h = Hof::parse(&CfgFile::from_str("test.hof", text));
+        assert_eq!(h.info_trips.len(), 3);
+        assert_eq!(h.info_busstop_lists.len(), 3);
+        assert_eq!(h.info_busstop_lists[0], vec!["ZOB", "Hoheneck"]);
+        assert!(h.info_busstop_lists[1].is_empty());
+        assert_eq!(h.info_busstop_lists[2], vec!["Hauptbahnhof", "Markt", "Bergerfuerth"]);
     }
 }

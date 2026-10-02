@@ -1730,6 +1730,11 @@ impl VehicleInstance {
         self.rigid = Some(rb);
     }
 
+    /// Where variable `name` sits among the script's variables (`State::vars`).
+    pub fn var_slot(&self, name: &str) -> Option<usize> {
+        self.var_index.get(&name.to_ascii_lowercase()).map(|&i| i as usize)
+    }
+
     pub fn var(&self, name: &str) -> Option<f32> {
         self.var_index
             .get(&name.to_ascii_lowercase())
@@ -1782,6 +1787,7 @@ impl VehicleInstance {
     pub fn trial_triggers(&mut self, names: &[&str]) -> Vec<f32> {
         let (state, vm) = (self.state.clone(), self.vm.clone());
         let (fired, fired_files, messages, time_written) = (self.host.fired_triggers.len(), self.host.fired_file_triggers.len(), self.host.messages.clone(), self.host.time_written);
+        let fired_vars = self.host.fired_trigger_vars.len();
         for n in names {
             self.trigger(n);
         }
@@ -1789,6 +1795,7 @@ impl VehicleInstance {
         self.state = state;
         self.vm = vm;
         self.host.fired_triggers.truncate(fired);
+        self.host.fired_trigger_vars.truncate(fired_vars);
         self.host.fired_file_triggers.truncate(fired_files);
         self.host.messages = messages;
         self.host.time_written = time_written;

@@ -243,6 +243,11 @@ pub(super) struct WaitSpot {
 /// What Omsi.exe keeps of a bus stop for the people (the station record, sub_620058).
 pub(super) struct PaxStop {
     pub name: String,
+    /// Its name in the timetable (empty without one), where the passengers' destinations
+    /// come from: the object's label is the stop's name to Omsi.exe, but a map whose
+    /// labels and `Busstops.cfg` disagree - a stop renamed, or the two files written in
+    /// different code pages - had riders whose stop never came, and who rode on for good.
+    pub alias: String,
     pub pos: DVec3,
     /// The object's heading (degrees).
     pub heading: f64,
@@ -272,6 +277,15 @@ pub(super) struct PaxStop {
     /// stop name and the termini of the buses that go there.
     pub dests: Vec<(String, f32)>,
     pub lines: Vec<(String, HashSet<String>)>,
+}
+
+impl PaxStop {
+    /// Whether a destination or a terminus `name` is this stop: its label, or its name in
+    /// the timetable.
+    pub(super) fn is_named(&self, name: &str) -> bool {
+        let name = name.trim();
+        name == self.name.trim() || (!self.alias.is_empty() && name == self.alias.trim())
+    }
 }
 
 /// What the stops say about a bus this frame (sub_61f238): the stop ahead it is pulling
@@ -468,7 +482,7 @@ impl Humans {
                 // (0x61f3e3)
                 let terminus_here = match &bn.terminus {
                     None => true,
-                    Some(t) => t.trim() == s.name.trim(),
+                    Some(t) => s.is_named(t),
                 };
                 if terminus_here {
                     reg.all_exit = true;
@@ -1327,7 +1341,7 @@ impl Humans {
                 }
                 if let (Some(next), Some(dest)) = (reg.next, p.dest.as_ref()) {
                     let name = self.stops.get(&next).map(|s| s.name.trim().to_string()).unwrap_or_default();
-                    if name == dest.trim() {
+                    if self.stops.get(&next).is_some_and(|s| s.is_named(dest)) {
                         self.set_task(i, Task::InBusToExit, buses, bus_ix, world);
                         return;
                     }
@@ -1856,6 +1870,38 @@ impl Humans {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_answers_to_its_label_and_its_timetable_name() {
+        let stop = |alias: &str| PaxStop {
+            name: "Königsrath, Bf. Ausstieg".into(),
+            alias: alias.into(),
+            pos: DVec3::ZERO,
+            heading: 0.0,
+            gather: DVec3::ZERO,
+            spots: Vec::new(),
+            taken: Vec::new(),
+            enter_max: 1.0,
+            enter_min: 0.0,
+            length: 30.0,
+            lane: None,
+            was_near: false,
+            near: false,
+            clock_ms: 0.0,
+            want: 0,
+            factor: 1.0,
+            buses: Vec::new(),
+            dests: Vec::new(),
+            lines: Vec::new(),
+        };
+        let s = stop("Koenigsrath Bf Ausstieg");
+        assert!(s.is_named("Königsrath, Bf. Ausstieg "));
+        assert!(s.is_named("Koenigsrath Bf Ausstieg"), "the timetable's spelling");
+        assert!(!s.is_named("Königsrath, Bf. Pause"));
+        // a stop the timetable does not know: its id, as the riders' destinations then are
+        assert!(stop("4711").is_named("4711"));
+        assert!(!stop("").is_named(""), "no timetable name: no empty match");
+    }
 
     #[test]
     pub(super) fn routes_follow_the_link_order_and_one_way_links() {

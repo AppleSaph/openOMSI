@@ -241,8 +241,12 @@ impl App {
                     let action = self.game_keys.iter().find(|b| b.scan_code == scan && b.matches(m)
                         && !b.action.starts_with("vr_")
                         && !(plain_arrow && b.action.starts_with("view_interiorcam_"))).map(|b| b.action.clone());
+                    // (a key bound in [game] and in [vehicles] does both, as in Omsi.exe: the
+                    // parking brake put on Space, the stock view_reset_all_directions key,
+                    // reset the view and never reached the bus - #745)
+                    let vehicle_too = self.player.as_ref().is_some_and(|p| p.bindings.iter().any(|b| b.scan_code == scan && b.matches(m)));
                     if let Some(a) = action {
-                        if self.game_action(&a) {
+                        if self.game_action(&a) && !vehicle_too {
                             return;
                         }
                     }
@@ -251,7 +255,7 @@ impl App {
             if pressed && !repeat {
                 match code {
                     // OMSI's `toggel_mouse_ctrl` (O): steering and pedals with the mouse
-                    KeyCode::KeyO if !ctrl && !alt && !shift_now => {
+                    KeyCode::KeyO if !ctrl && !alt && !shift_now && self.key_left_free(code, "toggel_mouse_ctrl") => {
                         self.game_action("toggel_mouse_ctrl");
                         return;
                     }
@@ -380,11 +384,13 @@ impl App {
                         self.service_msg = Some((msg, 3.0));
                     }
                 }
+                // (F1-F4 where keyboard.cfg has no view keys; a key the player gave to
+                // something else, or a view key moved elsewhere, leaves them alone, #701)
                 match code {
-                    KeyCode::F1 => self.view = "driver".into(),
-                    KeyCode::F2 => self.view = "pax".into(),
-                    KeyCode::F3 => self.view = "outside".into(),
-                    KeyCode::F4 => {
+                    KeyCode::F1 if self.key_left_free(code, "view_set_driver") => self.view = "driver".into(),
+                    KeyCode::F2 if self.key_left_free(code, "view_set_passenger") => self.view = "pax".into(),
+                    KeyCode::F3 if self.key_left_free(code, "view_set_outside") => self.view = "outside".into(),
+                    KeyCode::F4 if self.key_left_free(code, "view_set_map") => {
                         // the free camera starts where the current view is looking
                         self.view = "free".into();
                         self.ego = false;
@@ -429,26 +435,8 @@ impl App {
                         {
                             // Shift+N: navigator → navigator with the schedule → off (N alone is
                             // the gearbox's neutral)
-                            if self.vr_active() {
-                                if !self.vr_nav_profile().enabled {
-                                    self.vr_nav_adjust("enabled", 1.0);
-                                } else if self.navigator.as_ref().is_some_and(|n| n.schedule) {
-                                    if let Some(n) = self.navigator.as_mut() { n.schedule = false; }
-                                    self.vr_nav_adjust("enabled", 1.0);
-                                } else if let Some(n) = self.navigator.as_mut() {
-                                    n.schedule = true;
-                                }
+                            if self.cycle_navigator() {
                                 return;
-                            }
-                            if let Some(n) = self.navigator.as_mut() {
-                                match (n.enabled, n.schedule) {
-                                    (true, false) => n.schedule = true,
-                                    (true, true) => {
-                                        n.enabled = false;
-                                        n.schedule = false;
-                                    }
-                                    _ => n.enabled = true,
-                                }
                             }
                         }
                     KeyCode::F11 => {
@@ -653,6 +641,40 @@ impl App {
         if let Some(p) = self.player.as_mut() {
             p.vehicle.host.clock = self.clock.clone();
         }
+    }
+
+    /// Shift+N: the navigator, the navigator with the schedule, off. True in VR (where the
+    /// key is used up).
+    pub(crate) fn cycle_navigator(&mut self) -> bool {
+        if self.vr_active() {
+            if !self.vr_nav_profile().enabled {
+                self.vr_nav_adjust("enabled", 1.0);
+            } else if self.navigator.as_ref().is_some_and(|n| n.schedule) {
+                if let Some(n) = self.navigator.as_mut() { n.schedule = false; }
+                self.vr_nav_adjust("enabled", 1.0);
+            } else if let Some(n) = self.navigator.as_mut() {
+                n.schedule = true;
+            }
+            return true;
+        }
+        if let Some(n) = self.navigator.as_mut() {
+            match (n.enabled, n.schedule) {
+                (true, false) => n.schedule = true,
+                (true, true) => {
+                    n.enabled = false;
+                    n.schedule = false;
+                }
+                _ => n.enabled = true,
+            }
+        }
+        false
+    }
+
+    /// Whether a key the game gives `action` by itself (F1 the driver's view, O the mouse
+    /// steering) is still free for it: neither bound by the player to something of their
+    /// own nor `action` bound to another key in keyboard.cfg.
+    pub(crate) fn key_left_free(&self, code: KeyCode, action: &str) -> bool {
+        key_left_free(keys::dik_code(code), action, &self.own_keys, &self.game_keys)
     }
 
     /// Turn the view by (dx, dy) degrees, as dragging with the right button does: the free
@@ -1096,7 +1118,11 @@ impl App {
                     self.dragging = false;
                     return;
                 }
-                p.release();
+                if self.dragging && self.buttons_held.1 {
+                    p.release_keeping();
+                } else {
+                    p.release();
+                }
                 self.dragging = false;
             }
         }
@@ -3100,6 +3126,11 @@ impl App {
         self.mouse_drive = on;
         if !on {
             crate::player::keep_wheel(self.player.as_mut());
+            // the brake the mouse held stays on, as the brake key leaves it (OMSI has one
+            // brake for both): the bus rolled off when the mouse let go of it (#517, #760)
+            if let Some(p) = self.player.as_mut() {
+                p.axes.brake = p.axes.brake.max(self.mouse_pedals.1);
+            }
             #[cfg(windows)]
             self.reset_vr_pointer();
         }
@@ -3283,10 +3314,13 @@ impl App {
             return true;
         }
         match (self.player.as_ref(), self.camera.as_ref()) {
+            // (every part of an articulated bus: a door button of the rear section is in
+            // reach standing by that section, however far the front one is - #715)
             (Some(p), Some(c)) => {
-                let bb = p.vehicle.ty.def.bounding_box.unwrap_or([2.5, 12.0, 3.0, 0.0, 0.0, 1.5]);
-                let reach = (bb[0].max(bb[1]) as f64) * 0.5 + 3.0;
-                (c.position - p.vehicle.position).length() < reach
+                let v = &p.vehicle;
+                std::iter::once((v.position, v.heading, v.ty.def.bounding_box))
+                    .chain(v.trailers.iter().map(|t| (t.position, t.heading, t.ty.def.bounding_box)))
+                    .any(|(at, heading, bb)| part_in_reach(c.position, at, heading, bb))
             }
             _ => false,
         }
@@ -3436,6 +3470,19 @@ pub(crate) fn chase_orbit_step(yaw: f32, pitch: f32, dx_px: f32, dy_px: f32) -> 
 
 #[cfg(test)]
 mod look_tests {
+    /// F1 given to a door and the driver's view moved to 1 (#701): F1 is not the view any more.
+    #[test]
+    fn a_built_in_view_key_steps_aside_for_the_players_own() {
+        use omsi_content::KeyBinding;
+        let kb = |a: &str, k: i32| KeyBinding { action: a.into(), scan_code: k, modifier: 0 };
+        let none = std::collections::HashSet::new();
+        assert!(super::key_left_free(Some(59), "view_set_driver", &none, &[]));
+        let own: std::collections::HashSet<i32> = [59].into();
+        assert!(!super::key_left_free(Some(59), "view_set_driver", &own, &[]));
+        assert!(!super::key_left_free(Some(59), "view_set_driver", &none, &[kb("view_set_driver", 2)]));
+        assert!(super::key_left_free(Some(59), "view_set_driver", &none, &[kb("view_set_passenger", 60)]));
+    }
+
     #[test]
     fn a_cursor_way_of_78_75_px_turns_by_the_field_of_view() {
         assert!((78.75 * super::look_deg_per_px(60.0) - 60.0).abs() < 1e-4);
@@ -3601,6 +3648,11 @@ pub(crate) const GAME_MENU: [(&str, &str); 11] = [
     ("quit", "End the session"),
 ];
 
+/// `App::key_left_free` for a key's scan code.
+pub(crate) fn key_left_free(scan: Option<i32>, action: &str, own: &std::collections::HashSet<i32>, game: &[omsi_content::KeyBinding]) -> bool {
+    !scan.is_some_and(|s| own.contains(&s)) && !game.iter().any(|b| b.scan_code != 0 && b.action.eq_ignore_ascii_case(action))
+}
+
 /// `App::sync_view_look` for where `self` is borrowed in parts.
 /// See `App::look_key`.
 pub(crate) fn look_key_of(view: &str, cam: Option<(usize, usize)>) -> String {
@@ -3618,5 +3670,35 @@ pub(crate) fn swap_view_look(look: &mut (f32, f32), looks: &mut std::collections
             looks.insert(old, *look);
         }
         *look = looks.get(view).copied().unwrap_or((0.0, 0.0));
+    }
+}
+
+/// A part of a vehicle (its origin, heading in degrees and `[boundingbox]`) is in reach of
+/// a person standing at `eye`: within 3 m of the box's half length round its centre.
+fn part_in_reach(eye: glam::DVec3, at: glam::DVec3, heading: f64, bb: Option<[f32; 6]>) -> bool {
+    let bb = bb.unwrap_or([2.5, 12.0, 3.0, 0.0, 0.0, 1.5]);
+    let h = heading.to_radians();
+    let (fwd, right) = (glam::DVec2::new(h.sin(), h.cos()), glam::DVec2::new(h.cos(), -h.sin()));
+    let centre = at + (right * bb[3] as f64 + fwd * bb[4] as f64).extend(bb[5] as f64);
+    let reach = (bb[0].max(bb[1]) as f64) * 0.5 + 3.0;
+    (eye - centre).length() < reach
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use super::part_in_reach;
+    use glam::DVec3;
+
+    /// Standing by the rear section of an articulated bus, 17 m behind the front part's
+    /// origin: out of the front part's reach, in the rear one's.
+    #[test]
+    fn the_rear_section_is_reached_by_its_own_box() {
+        let front = [2.5, 11.0, 3.0, 0.0, -3.0, 1.5];
+        let rear = [2.5, 7.0, 3.0, 0.0, -3.5, 1.5];
+        let eye = DVec3::new(2.0, -17.0, 1.7);
+        assert!(!part_in_reach(eye, DVec3::ZERO, 0.0, Some(front)));
+        assert!(part_in_reach(eye, DVec3::new(0.0, -12.0, 0.0), 0.0, Some(rear)));
+        // (the box's centre turns with the part: heading 180, the rear is ahead)
+        assert!(part_in_reach(DVec3::new(-2.0, 17.0, 1.7), DVec3::new(0.0, 12.0, 0.0), 180.0, Some(rear)));
     }
 }

@@ -436,6 +436,9 @@ pub fn log_tail(pid: u32, lines: usize) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use super::*;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn a_reused_process_id_is_not_the_game() {
         let me = std::process::id();

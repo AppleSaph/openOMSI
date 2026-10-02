@@ -1432,6 +1432,9 @@ pub struct Humans {
     /// wants one of them and boards only a bus showing one of its termini; at a stop no trip
     /// goes on from, anybody takes the first bus (0x61c33c).
     pub stop_targets: Option<HashMap<i64, Vec<(String, HashSet<String>)>>>,
+    /// The timetable's name of each stop object (`Schedule::stop_names`), the names the
+    /// targets above are made of.
+    pub stop_names: Option<HashMap<i64, String>>,
     /// Buses whose validator somebody used since the app last looked (`take_stamped`).
     stamped: Vec<BusId>,
     /// Pedestrians to keep strolling near the player (scaled by `density`).
@@ -1647,6 +1650,7 @@ impl Humans {
             avatar_only: false,
             driver_away: false,
             stop_targets: None,
+            stop_names: None,
             stamped: Vec::new(),
             pedestrians: 14,
             stroll_timer: 0.0,
@@ -2287,8 +2291,15 @@ impl Humans {
             log::info!("stop {id} '{name}' at ({:.1}, {:.1}, {:.2}) heading {heading:.0}: {} waiting places, length {length}, side {side}, {} destinations", pos.x, pos.y, pos.z, spots.len(), dests.len());
         }
         let n = spots.len();
+        // what the timetable calls it - its id when the timetable does not know it, as the
+        // targets then do
+        let alias = match &self.stop_names {
+            Some(n) => n.get(&id).cloned().unwrap_or_else(|| id.to_string()),
+            None => String::new(),
+        };
         PaxStop {
             name: name.to_string(),
+            alias,
             pos,
             heading,
             gather,

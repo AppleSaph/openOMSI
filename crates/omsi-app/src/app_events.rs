@@ -887,11 +887,12 @@ impl ApplicationHandler for App {
                             p.seat = glam::Vec3::from_array(self.settings.seat);
                             // head tracking: the head's turn on top of the look, its movement
                             // on top of the seat (opentrack: x right, y up, z back, in cm)
-                            if self.settings.head_tracking && self.headtrack.is_none() {
+                            // (a port that cannot be had is tried again now and then, the
+                            // setting stays on: turning it off here undid the switch in the
+                            // menu at once)
+                            if self.settings.head_tracking && self.headtrack.is_none() && self.headtrack_failed.is_none_or(|t| t.elapsed().as_secs_f32() > 5.0) {
                                 self.headtrack = crate::headtrack::HeadTracker::start(self.settings.head_tracking_port);
-                                if self.headtrack.is_none() {
-                                    self.settings.head_tracking = false;
-                                }
+                                self.headtrack_failed = self.headtrack.is_none().then(std::time::Instant::now);
                             }
                             let tracked = self.headtrack.as_ref().and_then(|h| h.pose()).filter(|_| self.settings.head_tracking && matches!(self.view.as_str(), "driver" | "pax"));
                             #[cfg(windows)]
@@ -1112,6 +1113,7 @@ impl ApplicationHandler for App {
                     // (the riders leave a bus the driver has walked away from)
                     if h.stop_targets.is_none() {
                         h.stop_targets = self.schedule.as_ref().map(|s| s.stop_targets());
+                        h.stop_names = self.schedule.as_ref().map(|s| s.stop_names());
                         if let Some(t) = &h.stop_targets {
                             log::info!("people: {} bus stops with timetable targets", t.len());
                         }
@@ -1272,25 +1274,33 @@ impl ApplicationHandler for App {
                     self.service_msg = Some(("On foot: Esc menu, Place a vehicle..., then G at its driver's door to drive it".into(), 8.0));
                 }
                 // Discord's status: the map, the bus, the line (every few seconds)
-                self.discord_t -= dt;
-                if self.discord_t <= 0.0 {
-                    self.discord_t = 5.0;
-                    if self.discord.is_none() && self.settings.discord_status && !self.settings.discord_app_id.is_empty() {
-                        self.discord = crate::discord::Discord::start(&self.settings.discord_app_id);
-                        if self.discord.is_none() {
-                            self.settings.discord_status = false;
+                #[cfg(not(target_os = "android"))]
+                {
+                    self.discord_t -= dt;
+                    if self.discord_t <= 0.0 {
+                        self.discord_t = 5.0;
+                        if self.args.server.is_none()
+                            && self.discord.is_none()
+                            && self.settings.discord_status
+                        {
+                            self.discord =
+                                crate::discord::Discord::start(&self.settings.discord_app_id);
                         }
-                    }
-                    if let Some(d) = self.discord.as_ref() {
-                        let map = self.world.as_ref().map(|w| w.global.name.clone()).unwrap_or_default();
-                        let bus = self.player.as_ref().map(|p| format!("{} {}", p.vehicle.ty.def.manufacturer, p.vehicle.ty.def.type_name).trim().to_string());
-                        let state = match (self.duty.as_ref(), bus.as_ref()) {
-                            (Some(duty), _) => format!("Line {} · tour {}{}", duty.line.trim(), duty.tour.trim(), if self.lan.is_some() { " · multiplayer" } else { "" }),
-                            (None, Some(_)) => if self.lan.is_some() { "Free drive · multiplayer".to_string() } else { "Free drive".to_string() },
-                            (None, None) => "On foot".to_string(),
-                        };
-                        let details = match bus { Some(b) if !b.is_empty() => format!("{b} · {map}"), _ => map };
-                        d.set(crate::discord::Presence { details, state });
+                        if let Some(d) = self.discord.as_ref() {
+                            let bus = self.player.as_ref().map(|p| {
+                                let definition = &p.vehicle.ty.def;
+                                let short = omsi_launcher_lib::vehicle_type_label(&definition.type_name, &definition.path);
+                                let full = omsi_launcher_lib::display_bus_name(&format!("{} {short}", definition.manufacturer));
+                                (short, full)
+                            });
+                            let duty = self.duty.as_ref().map(|d| (d.line.as_str(), d.tour.as_str()));
+                            d.set(crate::discord::Presence::for_game(
+                                self.world.as_ref().map(|w| w.global.name.as_str()),
+                                bus.as_ref().map(|(short, full)| (short.as_str(), full.as_str())),
+                                duty,
+                                self.lan.is_some(),
+                            ));
+                        }
                     }
                 }
                 // the plugins' frame, with the bus's scripts done
@@ -1456,29 +1466,33 @@ impl ApplicationHandler for App {
                             self.clock_hold = 0.0;
                         }
                     }
-                    // = and - zoom inside the bus (the numpad's are door keys there)
+                    // = and - zoom inside the bus (the numpad's are door keys there), unless
+                    // the player bound them to something of their own (#701)
+                    let zoom_in = self.keys.contains(&KeyCode::Equal) && !self.own_keys.contains(&13);
+                    let zoom_out = self.keys.contains(&KeyCode::Minus) && !self.own_keys.contains(&12);
                     if matches!(self.view.as_str(), "driver" | "pax") {
-                        if self.keys.contains(&KeyCode::Equal) {
+                        if zoom_in {
                             self.zoom_by(3.0 * dt);
                         }
-                        if self.keys.contains(&KeyCode::Minus) {
+                        if zoom_out {
                             self.zoom_by(-3.0 * dt);
                         }
                     }
                     // W/S and the wheel pull the outside camera in and out
                     if self.view == "outside" {
-                        if self.keys.contains(&KeyCode::Equal)
-                            || self.keys.contains(&KeyCode::NumpadAdd)
+                        if zoom_in || self.keys.contains(&KeyCode::NumpadAdd)
                         {
                             self.orbit = (self.orbit - 12.0 * dt).max(ORBIT_MIN);
                         }
-                        if self.keys.contains(&KeyCode::Minus)
-                            || self.keys.contains(&KeyCode::NumpadSubtract)
+                        if zoom_out || self.keys.contains(&KeyCode::NumpadSubtract)
                         {
                             self.orbit = (self.orbit + 12.0 * dt).min(ORBIT_MAX);
                         }
                     }
-                    if self.keys.contains(&KeyCode::Home) {
+                    // Home held recentres the view - unless keyboard.cfg gives it a job (the
+                    // stock file makes it the ticket desk camera, which this then turned
+                    // straight ahead again whenever it was switched to, #733)
+                    if self.keys.contains(&KeyCode::Home) && !self.game_keys.iter().any(|b| Some(b.scan_code) == crate::keys::dik_code(KeyCode::Home)) {
                         self.look = (0.0, 0.0);
                         self.orbit = ORBIT_DEFAULT;
                         self.view_zoom.remove(&self.view);
@@ -1641,12 +1655,13 @@ impl ApplicationHandler for App {
                             0.0,
                         );
                         // every bus one may ride in keeps the weather out: the own, another
-                        // player's, a timetable bus
-                        let boxed = |v: &omsi_sim::VehicleInstance| v.ty.def.bounding_box.map(|bb| (v.position, v.heading, bb));
-                        let mut buses: Vec<(glam::DVec3, f64, [f32; 6])> = self.player.as_ref().and_then(|p| boxed(&p.vehicle)).into_iter().collect();
-                        buses.extend(self.remotes.remotes.values().filter_map(|rv| boxed(rv.vehicle())));
+                        // player's, a timetable bus - each part of it: an articulated bus's
+                        // rear section is a coupled part with its own [boundingbox] (#777)
+                        let boxed = crate::rain::vehicle_boxes;
+                        let mut buses: Vec<(glam::DVec3, f64, [f32; 6])> = self.player.as_ref().map(|p| boxed(&p.vehicle)).unwrap_or_default();
+                        buses.extend(self.remotes.remotes.values().flat_map(|rv| boxed(rv.vehicle())));
                         if let Some(t) = self.traffic.as_ref() {
-                            buses.extend(t.cars.iter().filter(|c| c.is_bus() && (c.vehicle.position - cam.position).length() < 40.0).filter_map(|c| boxed(&c.vehicle)));
+                            buses.extend(t.cars.iter().filter(|c| c.is_bus() && (c.vehicle.position - cam.position).length() < 40.0).flat_map(|c| boxed(&c.vehicle)));
                         }
                         let __tr = Instant::now();
                         self.rain.tick(if self.paused { 0.0 } else { dt }, cam.position, wind, scene, &buses);
@@ -1863,10 +1878,15 @@ impl ApplicationHandler for App {
                             _ => nav.clear_route(),
                         }
                         let (outside_temp, inside_temp) = vehicle_temperatures(p);
+                        // (on foot the map follows the walker, not the bus left standing)
+                        let (at, heading) = match self.on_foot.as_ref() {
+                            Some(f) => (f.pos, f.heading),
+                            None => (p.vehicle.position, p.vehicle.heading),
+                        };
                         let frame = navigator::NavFrame {
                             traffic: self.traffic.as_ref(),
-                            bus: p.vehicle.position,
-                            heading: p.vehicle.heading,
+                            bus: at,
+                            heading,
                             speed_kmh: p.vehicle.physics.velocity_kmh(),
                             outside_temp,
                             inside_temp,

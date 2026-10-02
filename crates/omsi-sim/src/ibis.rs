@@ -487,6 +487,7 @@ impl Sim {
             self.t += STEP;
         }
         self.host.fired_triggers.clear();
+        self.host.fired_trigger_vars.clear();
         self.host.fired_file_triggers.clear();
         self.host.messages.clear();
     }

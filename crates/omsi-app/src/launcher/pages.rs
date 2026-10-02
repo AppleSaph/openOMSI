@@ -791,6 +791,16 @@ fn general_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, c
         ui.text_in(&st, Rect::new(c.inner.x + 12.0, c.y - 6.0, c.inner.w - 24.0, 16.0), 11.5, omsi_ui::Weight::Regular, TEXT_FAINT, omsi_ui::paint::Align::Left);
         c.y += 14.0;
     }
+    toggle_setting(ui, s, dirty, c.row(), "Discord Rich Presence", "discord_status");
+    let help_height = ui.paragraph(
+        "Shows the launcher or your map, bus, line and multiplayer status in Discord.",
+        Vec2::new(c.inner.x + 12.0, c.y - 5.0),
+        c.inner.w - 24.0,
+        11.5,
+        omsi_ui::Weight::Regular,
+        TEXT_FAINT,
+    );
+    c.y += help_height + 3.0;
     // (the texts over the picture, the menu, the timetable and the navigator: larger for
     // those who find them hard to read, smaller for more of the picture; on a window taller
     // than 1080p they grow with it as well, and the launcher grows with its window anyway)
@@ -2206,8 +2216,10 @@ mod settings_tests {
     /// `set-<key>`). Taken from the page as it was before the tabs: nothing may go missing.
     fn by_tab() -> Vec<Vec<&'static str>> {
         let mut graphics = vec![
+            "s-gp-sel", "s-gp-load", "s-gp-del", "s-gp-name", "s-gp-save",
             "s-preset", "s-graphics", "s-msaa", "s-scale", "s-af", "s-shadow", "set-ssao", "set-shadows", "s-casters", "set-detail_textures", "s-led", "s-led-mip", "set-shadow_blobs", "set-reflections", "set-clouds",
             "set-fullscreen", "set-vsync", "s-fps", "s-view", "s-maxobj", "s-minobj", "s-mirror", "s-texmem", "set-texture_compression",
+            "s-gp-sel", "s-gp-name", "s-gp-save", "s-gp-load", "s-gp-del",
         ];
         if !cfg!(target_os = "macos") {
             graphics.push("s-api");
@@ -2229,7 +2241,7 @@ mod settings_tests {
             "s-maint", "set-collision_vehicles", "set-collision_objects", "set-collision_pedestrians", "set-use_real_time", "set-use_real_date", "set-time_sync", "set-metar_sync", "s-timespeed",
         ];
         let general = vec![
-            "s-lang", "set-machine_translation", "s-uiscale", "set-ui_scale_window", "s-uiop", "set-tooltips", "set-show_fps", "set-notes", "set-chat", "set-name_tags",
+            "s-lang", "set-machine_translation", "set-discord_status", "s-uiscale", "set-ui_scale_window", "s-uiop", "set-tooltips", "set-show_fps", "set-notes", "set-chat", "set-name_tags",
             "set-navigator", "set-nav_arrows", "set-nav_ai", "corner-top-left", "corner-top-right", "corner-bottom-left", "corner-bottom-right",
             "set-update_check", "set-update_auto", "s-upd-check", "s-upd-github", "s-reset",
         ];

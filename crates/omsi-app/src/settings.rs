@@ -490,6 +490,7 @@ impl Settings {
             self.vr_head_smoothing_ms, self.vr_mirror_rate, self.vr_desktop_mirror as u8, self.led_glow, self.led_mips, self.ui_scale, self.ui_scale_window as u8, self.notes as u8,
         ));
         text.push_str(&format!("steer_look={}\nsteer_look_angle={}\nsteer_look_response={}\n", self.steer_look as u8, self.steer_look_angle, self.steer_look_response));
+        text.push_str(&format!("discord_status={}\ndiscord_app_id={}\n", self.discord_status as u8, self.discord_app_id));
         text
     }
 
@@ -629,6 +630,13 @@ mod tests {
         // (the opacity under its old name, the navigator's)
         assert_eq!(Settings::from_text("navigator_opacity=0.5\n").ui_opacity, 0.5);
         assert_eq!(Settings::from_text("ui_opacity=7\n").ui_opacity, 1.0);
+    }
+
+    #[test]
+    fn discord_settings_round_trip_and_default_enabled() {
+        assert!(Settings::default().discord_status);
+        let settings = Settings { discord_status: false, discord_app_id: "123456".into(), ..Default::default() };
+        assert_eq!(Settings::from_text(&settings.to_text()), settings);
     }
 
     #[test]
