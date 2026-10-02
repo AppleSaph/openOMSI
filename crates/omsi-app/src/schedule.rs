@@ -2807,30 +2807,7 @@ pub fn ibis_target(
     // name nearest the timetable's place in the trip - at the trip's first stop as well,
     // for a route that begins before it
     let ibis_stop = match (route_index, stop) {
-        (Some(r), Some((k, name))) if k > 0 => {
-            let name = name.trim();
-            let list = hof
-                .info_busstop_lists
-                .get(r as usize)
-                .map(|l| l.as_slice())
-                .unwrap_or(&[]);
-            let is_it = |ident: &str| {
-                let ident = ident.split('#').next().unwrap_or("").trim();
-                ident.eq_ignore_ascii_case(name)
-                    || hof.bus_stops.iter().any(|b| {
-                    b.ident.trim().eq_ignore_ascii_case(ident)
-                        && b.strings
-                        .iter()
-                        .any(|s| s.trim().eq_ignore_ascii_case(name))
-                })
-            };
-            list.iter()
-                .enumerate()
-                .filter(|(_, id)| is_it(id))
-                .map(|(i, _)| i)
-                .min_by_key(|i| i.abs_diff(k))
-                .unwrap_or(0)
-        }
+        (Some(r), Some((k, name))) => ibis_stop_index(hof, r as usize, name, k).unwrap_or(0),
         _ => 0,
     };
     Some(omsi_sim::ibis::Target {
