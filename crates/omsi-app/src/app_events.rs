@@ -1143,6 +1143,7 @@ impl ApplicationHandler for App {
                     match self.player.as_mut() {
                         Some(p) => {
                             let inside = self.in_cab;
+                            self.radio.set_map(&self.args.root, &self.args.map);
                             if let Some(m) = self.radio.update(a, &p.vehicle, inside) {
                                 self.service_msg = Some((m, 6.0));
                             }

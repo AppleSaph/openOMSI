@@ -7,7 +7,9 @@
 //!
 //! The stations are kept in `~/.openomsi/radio.cfg`, one `name = address` per line
 //! (MP3, AAC or Ogg streams, or .m3u/.pls playlists), with `volume = 0..1`; the file is
-//! written with a default list the first time.
+//! written with a default list the first time. A map can bring stations of its own: a
+//! `radio.cfg` of the same kind beside its global.cfg, whose stations come before the
+//! player's (its `volume` is not read).
 
 use glam::Vec3;
 use omsi_audio::stream::StreamBuf;
@@ -76,8 +78,42 @@ fn plugin_stations(dir: &std::path::Path) -> Vec<(String, String)> {
     out
 }
 
+/// The stations (and the volume, where one is set) of a radio.cfg: `name = address` a line.
+fn parse_stations(text: &str) -> (Vec<(String, String)>, Option<f32>) {
+    let (mut stations, mut volume) = (Vec::new(), None);
+    for line in text.lines() {
+        let line = line.trim().trim_start_matches('\u{feff}');
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else { continue };
+        let (name, value) = (name.trim(), value.trim());
+        if name.eq_ignore_ascii_case("volume") {
+            volume = value.parse::<f32>().ok().map(|v| v.clamp(0.0, 1.0)).or(volume);
+        } else if !value.is_empty() {
+            stations.push((name.to_string(), value.to_string()));
+        }
+    }
+    (stations, volume)
+}
+
+/// A map's own stations: `radio.cfg` beside its global.cfg, written like the player's -
+/// the stations a bus hears where the map plays. Its volume line counts for nothing: how
+/// loud the radio is stays the player's business.
+fn map_stations(map_cfg: &std::path::Path) -> Vec<(String, String)> {
+    let Some(dir) = map_cfg.parent() else { return Vec::new() };
+    let Ok(bytes) = omsi_cfg::vfs::read(&dir.join("radio.cfg")) else { return Vec::new() };
+    parse_stations(&omsi_cfg::codepage::decode(&bytes)).0
+}
+
 pub struct Radio {
+    /// What the buttons play: the map's stations, then the player's.
     stations: Vec<(String, String)>,
+    /// The player's own (radio.cfg and the radio plugins' lists).
+    own: Vec<(String, String)>,
+    /// The map the list was made for, and whether the list changed while a station played.
+    map: String,
+    relisted: bool,
     volume: f32,
     /// Shift+R: how far the list is turned from the bus's own station numbers.
     offset: usize,
@@ -165,24 +201,14 @@ fn marquee(text: &str, width: usize, seconds: f32) -> String {
 
 impl Radio {
     pub fn load(omsi_root: &std::path::Path) -> Radio {
-        let mut stations = Vec::new();
+        let mut stations: Vec<(String, String)>;
         let mut volume = 0.7f32;
         let path = config_path();
         match path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
             Some(text) => {
-                for line in text.lines() {
-                    let line = line.trim();
-                    if line.is_empty() || line.starts_with('#') {
-                        continue;
-                    }
-                    let Some((name, value)) = line.split_once('=') else { continue };
-                    let (name, value) = (name.trim(), value.trim());
-                    if name.eq_ignore_ascii_case("volume") {
-                        volume = value.parse::<f32>().map(|v| v.clamp(0.0, 1.0)).unwrap_or(volume);
-                    } else if !value.is_empty() {
-                        stations.push((name.to_string(), value.to_string()));
-                    }
-                }
+                let (list, vol) = parse_stations(&text);
+                stations = list;
+                volume = vol.unwrap_or(volume);
             }
             None => {
                 stations = DEFAULT_STATIONS.iter().map(|(n, u)| (n.to_string(), u.to_string())).collect();
@@ -215,7 +241,31 @@ impl Radio {
         if !stations.is_empty() {
             log::info!("radio: {} stations", stations.len());
         }
-        Radio { stations, volume, offset: 0, playing: None }
+        Radio { stations: stations.clone(), own: stations, map: String::new(), relisted: false, volume, offset: 0, playing: None }
+    }
+
+    /// The map that plays (its global.cfg under `root`): its radio.cfg's stations come
+    /// first, on the first station buttons, and the player's own follow - less those the
+    /// map names too.
+    pub fn set_map(&mut self, root: &std::path::Path, map: &str) {
+        if self.map == map {
+            return;
+        }
+        self.map = map.to_string();
+        let mut list = map_stations(&omsi_cfg::resolve_path(root, map));
+        if !list.is_empty() {
+            log::info!("radio: {} stations of the map", list.len());
+        }
+        for s in &self.own {
+            if !list.iter().any(|(_, u)| u.eq_ignore_ascii_case(&s.1)) {
+                list.push(s.clone());
+            }
+        }
+        if list != self.stations {
+            self.stations = list;
+            self.offset = 0;
+            self.relisted = true;
+        }
     }
 
     /// The station the bus's radio is tuned to, None while it is off.
@@ -235,6 +285,10 @@ impl Radio {
     /// changes.
     pub fn update(&mut self, audio: &AudioEngine, v: &omsi_sim::VehicleInstance, inside: bool) -> Option<String> {
         let wanted = self.wanted(v);
+        // (another map's list: the same button is another station now)
+        if std::mem::take(&mut self.relisted) {
+            self.stop(audio);
+        }
         if self.playing.as_ref().map(|p| p.station) != wanted {
             self.stop(audio);
             if let Some(station) = wanted {
@@ -316,6 +370,24 @@ mod tests {
         assert_eq!(display_line("Evropa 2", "evropa 2"), "Evropa 2");
         assert_eq!(display_line("Český rozhlas", "Dvořák – Žalm č. 23"), "Cesky rozhlas - Dvorak - Zalm c. 23");
         assert_eq!(display_line("me@radio", "Наше Радио"), "me radio -");
+    }
+
+    #[test]
+    fn a_maps_stations_come_first_and_its_volume_counts_for_nothing() {
+        let dir = std::env::temp_dir().join(format!("omsi_map_radio_{}", std::process::id()));
+        let map = dir.join("maps").join("Mesto");
+        std::fs::create_dir_all(&map).unwrap();
+        std::fs::write(map.join("radio.cfg"), "# the town's stations\nvolume = 0.1\nMestske radio = http://example.org/mesto.mp3\nSecond = http://example.org/own.mp3\n").unwrap();
+        let own = vec![("Mine".to_string(), "http://example.org/mine.mp3".to_string()), ("Own".to_string(), "http://EXAMPLE.org/own.mp3".to_string())];
+        let mut r = Radio { stations: own.clone(), own, map: String::new(), relisted: false, volume: 0.7, offset: 2, playing: None };
+        r.set_map(&dir, "maps/Mesto/global.cfg");
+        let names: Vec<&str> = r.stations.iter().map(|s| s.0.as_str()).collect();
+        assert_eq!(names, ["Mestske radio", "Second", "Mine"]);
+        assert_eq!((r.volume, r.offset, r.relisted), (0.7, 0, true));
+        // a map without a radio.cfg: the player's own again
+        r.set_map(&dir, "maps/Jinde/global.cfg");
+        assert_eq!(r.stations.iter().map(|s| s.0.as_str()).collect::<Vec<_>>(), ["Mine", "Own"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
