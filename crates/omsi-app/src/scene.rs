@@ -2144,7 +2144,7 @@ fn probe_tile(
         let mut layers = 0;
         while let Some(z1) = probe.below.filter(|_| layers < 4) {
             layers += 1;
-            match s.drive.probe(lx, ly, z1 - 0.004).below {
+            match s.drive.probe(lx, ly, z1 - 0.0005).below {
                 Some(z2) if z1 - z2 < PAINT_LAYER => probe.below = Some(z2),
                 _ => break,
             }
