@@ -975,7 +975,7 @@ fn batch_ground_splines(meshes: Vec<Arc<MeshData>>) -> Vec<Arc<MeshData>> {
 /// that new resources take over.
 #[derive(Default)]
 pub struct GpuCache {
-    textures: HashMap<PathBuf, TexEntry>,
+    textures: hashbrown::HashMap<PathBuf, TexEntry>,
     misses: hashbrown::HashSet<String>,
     types: HashMap<usize, TypeGpu>,
     splines: HashMap<usize, SplineGpu>,
@@ -7934,56 +7934,47 @@ impl World {
         };
         let states = self.tile_state.lock();
         let mut gpu = self.gpu.lock();
+        if gpu.textures.values().map(|e| e.bytes).sum::<u64>() + vehicle_bytes <= limit && gpu.textures.values().all(|e| e.dropped == 0) {
+            return 0;
+        }
         // how near each scenery texture is: the nearest tile that uses it
-        let mut near: HashMap<TextureId, f64> = HashMap::new();
+        let mut near: hashbrown::HashMap<TextureId, f64> = hashbrown::HashMap::new();
         let mut spline_textures = hashbrown::HashSet::new();
+        let (mut types, mut splines): (hashbrown::HashMap<usize, f64>, hashbrown::HashMap<usize, f64>) = Default::default();
+        let (mut trees, mut shared): (hashbrown::HashMap<&str, f64>, hashbrown::HashMap<&PathBuf, f64>) = Default::default();
         for (key, st) in states.iter() {
             let d = tile_distance(key);
-            let mut see = |id: TextureId| {
-                let e = near.entry(id).or_insert(f64::MAX);
-                *e = e.min(d);
-            };
+            let nearer = |e: &mut f64| *e = e.min(d);
+            st.gpu.types.iter().for_each(|t| nearer(types.entry(*t).or_insert(f64::MAX)));
+            st.gpu.spline_types.iter().for_each(|t| nearer(splines.entry(*t).or_insert(f64::MAX)));
+            st.gpu.trees.iter().for_each(|t| nearer(trees.entry(t.as_str()).or_insert(f64::MAX)));
+            st.gpu.shared_textures.iter().for_each(|p| nearer(shared.entry(p).or_insert(f64::MAX)));
+        }
+        {
             let g = &*gpu;
-            let paths = st
-                .gpu
-                .types
-                .iter()
-                .filter_map(|t| g.types.get(t))
-                .flat_map(|t| t.textures.iter())
-                .chain(
-                    st.gpu
-                        .spline_types
-                        .iter()
-                        .filter_map(|s| g.splines.get(s))
-                        .flat_map(|s| s.textures.iter()),
-                );
-            for p in paths {
+            let mut see = |p: &PathBuf, d: f64| {
                 if let Some(e) = g.textures.get(p) {
-                    see(e.id);
+                    let n = near.entry(e.id).or_insert(f64::MAX);
+                    *n = n.min(d);
+                }
+            };
+            for (t, d) in &types {
+                g.types.get(t).into_iter().flat_map(|t| t.textures.iter()).for_each(|p| see(p, *d));
+            }
+            for (t, d) in &splines {
+                for p in g.splines.get(t).into_iter().flat_map(|s| s.textures.iter()) {
+                    see(p, *d);
+                    spline_textures.insert(p.clone());
                 }
             }
-            for p in st
-                .gpu
-                .spline_types
-                .iter()
-                .filter_map(|s| g.splines.get(s))
-                .flat_map(|s| s.textures.iter())
-            {
-                spline_textures.insert(p.clone());
+            for (t, d) in &trees {
+                g.trees.get(*t).and_then(|t| t.texture.as_ref()).into_iter().for_each(|p| see(p, *d));
             }
-            for p in st
-                .gpu
-                .trees
-                .iter()
-                .filter_map(|t| g.trees.get(t))
-                .filter_map(|t| t.texture.as_ref())
-                .chain(st.gpu.shared_textures.iter())
-            {
-                if let Some(e) = g.textures.get(p) {
-                    see(e.id);
-                }
+            for (p, d) in &shared {
+                see(p, *d);
             }
         }
+        drop((trees, shared));
         drop(states);
         let usage: u64 = gpu.textures.values().map(|e| e.bytes).sum::<u64>() + vehicle_bytes;
         let mut entries: Vec<(f64, PathBuf)> = gpu
