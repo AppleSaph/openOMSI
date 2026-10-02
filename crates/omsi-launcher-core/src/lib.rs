@@ -736,6 +736,20 @@ pub struct VehicleInfo {
     pub numbers: Vec<(String, String)>,
 }
 
+/// Names in older vehicle packs use underscores as spaces.
+pub fn display_bus_name(name: &str) -> String {
+    name.replace('_', " ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The displayed vehicle type, using its file name when [friendlyname] leaves it empty.
+pub fn vehicle_type_label(type_name: &str, path: &Path) -> String {
+    if type_name.trim().is_empty() {
+        display_bus_name(&path.file_stem().unwrap_or_default().to_string_lossy())
+    } else {
+        display_bus_name(type_name)
+    }
+}
+
 /// The vehicle packs whose parts a model file names and that are installed nowhere.
 fn missing_packs_of(model: &Path) -> Vec<String> {
     let Ok(text) = omsi_cfg::vfs::read(model) else { return Vec::new() };
@@ -1649,6 +1663,8 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
     v["vr_head_smoothing_ms"] = json!(0);
     v["vr_mirror_rate"] = json!(16);
     v["vr_desktop_mirror"] = json!(true);
+    v["discord_status"] = json!(true);
+    v["discord_app_id"] = json!("");
     // OMSI's own options
     for (k, d) in [("maintenance", json!(0)), ("ai_unsched_factor", json!(100)), ("ai_max_scheduled", json!(0)), ("ai_max_parked", json!(0)), ("use_real_time", json!(false)), ("use_real_date", json!(false)), ("use_real_year", json!(false)), ("collision_vehicles", json!(true)), ("collision_objects", json!(true)), ("collision_pedestrians", json!(true)), ("head_movement", json!(true)), ("driverview_smooth", json!(true)), ("hands_in_cab", json!(false)), ("alt_view", json!(true))] {
         v[k] = d;
@@ -1691,6 +1707,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
             "drive_keys" | "navigator_corner" | "boarding" | "render_scale" | "pax_voices" => v[&k] = json!(val),
             "ctrl_off" => v[&k] = json!(val),
             "metar_station" => v[&k] = json!(val.chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>().to_ascii_uppercase()),
+            "discord_app_id" => v[&k] = json!(val),
             "graphics_api" => v[&k] = json!(match val.to_ascii_lowercase().as_str() { "vulkan" => "vulkan", "dx12" => "dx12", "gl" => "gl", _ => "auto" }),
             "shadow_casters" => v[&k] = json!(if val.eq_ignore_ascii_case("omsi") { "omsi" } else { "all" }),
             "ctrl_deadzone" => v[&k] = json!(val.parse::<f64>().unwrap_or(0.0).clamp(0.0, 0.3)),
@@ -1699,7 +1716,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
             "wheel_range" => v[&k] = json!(val.parse::<f64>().unwrap_or(900.0).clamp(90.0, 2880.0)),
             "wheel_lock" => v[&k] = json!(val.parse::<f64>().map(|x| if x < 45.0 { 0.0 } else { x.min(2880.0) }).unwrap_or(0.0)),
             "fov" => v[&k] = json!(val.parse::<f64>().map(|x| if x < 20.0 { 0.0 } else { x.min(120.0) }).unwrap_or(0.0)),
-            "camera_collision" | "steer_look" | "head_tracking" => v[&k] = json!(b(val)),
+            "camera_collision" | "steer_look" | "head_tracking" | "discord_status" => v[&k] = json!(b(val)),
             // (how much of the mip chain an LED panel is held at, 0..4; a file from before
             // it was a number says 1 or 0)
             "led_mips" => v[&k] = json!(val.trim().parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 4.0)).unwrap_or(1.3)),
@@ -2016,7 +2033,7 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
     let vr_scale = v.get("vr_scale").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(0.65).clamp(0.5, 1.0);
     let vr_head_smoothing_ms = v.get("vr_head_smoothing_ms").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(0.0).clamp(0.0, 30.0);
     let vr_mirror_rate = v.get("vr_mirror_rate").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(16.0).clamp(-1.0, 360.0);
-    let text = format!("{text}vr={}\nvr_scale={vr_scale}\nvr_head_smoothing_ms={vr_head_smoothing_ms}\nvr_mirror_rate={vr_mirror_rate}\nvr_desktop_mirror={}\n", b("vr", false), b("vr_desktop_mirror", true));
+    let text = format!("{text}vr={}\nvr_scale={vr_scale}\nvr_head_smoothing_ms={vr_head_smoothing_ms}\nvr_mirror_rate={vr_mirror_rate}\nvr_desktop_mirror={}\ndiscord_status={}\n", b("vr", false), b("vr_desktop_mirror", true), b("discord_status", true));
     // what the page does not manage (keys of newer games, hand-written ones) stays as it
     // was in the file; other spellings of the keys just written go
     let mut text = text;
@@ -2443,6 +2460,15 @@ pub fn cli(cmd: &str, arg: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn vehicle_type_label_falls_back_to_the_file_name() {
+        let path = std::path::Path::new("Vehicles/Pack/NL_202.bus");
+        for empty in ["", "   "] {
+            assert_eq!(super::vehicle_type_label(empty, path), "NL 202");
+        }
+        assert_eq!(super::vehicle_type_label("  MAN_NL202  ", path), "MAN NL202");
+    }
+
+    #[test]
     fn a_part_found_from_the_vehicle_folder_is_no_missing_pack() {
         let root = std::env::temp_dir().join(format!("openomsi-packs-{}", std::process::id()));
         let obj = root.join("Sceneryobjects/X");
@@ -2463,13 +2489,26 @@ mod tests {
     fn the_games_options_survive_a_save() {
         // what the pause menu's Options change, read back as they were set
         let mut v = settings_from_text(None);
-        for (k, x) in [("steer_look", json!(true)), ("camera_collision", json!(false)), ("brake_hold", json!(false)), ("auto_clutch", json!(false)), ("ff_enabled", json!(false)), ("head_tracking", json!(true)), ("collision_objects", json!(false)), ("led_mips", json!(2.5)), ("led_glow", json!(11)), ("pedal_brake", json!(1.5)), ("seat_y", json!(-0.1))] {
+        for (k, x) in [("steer_look", json!(true)), ("discord_status", json!(false)), ("camera_collision", json!(false)), ("brake_hold", json!(false)), ("auto_clutch", json!(false)), ("ff_enabled", json!(false)), ("head_tracking", json!(true)), ("collision_objects", json!(false)), ("led_mips", json!(2.5)), ("led_glow", json!(11)), ("pedal_brake", json!(1.5)), ("seat_y", json!(-0.1))] {
             v[k] = x;
         }
         let back = settings_from_text(Some(&settings_to_text(&v, None)));
-        for k in ["steer_look", "camera_collision", "brake_hold", "auto_clutch", "ff_enabled", "head_tracking", "collision_objects", "led_mips", "led_glow", "pedal_brake", "seat_y"] {
+        for k in ["steer_look", "discord_status", "camera_collision", "brake_hold", "auto_clutch", "ff_enabled", "head_tracking", "collision_objects", "led_mips", "led_glow", "pedal_brake", "seat_y"] {
             assert_eq!(back[k], v[k], "{k}");
         }
+        assert!(settings_from_text(None)["discord_status"].as_bool().unwrap());
+        let prior = settings_from_text(Some("discord_status=1\ndiscord_status=0\n"));
+        assert!(!prior["discord_status"].as_bool().unwrap());
+        let mut enabled = prior;
+        enabled["discord_status"] = json!(true);
+        let saved = settings_to_text(&enabled, Some("discord_status=0\ndiscord_status=0\n"));
+        assert_eq!(saved.lines().filter(|line| line.starts_with("discord_status=")).count(), 1);
+        assert!(settings_from_text(Some(&saved))["discord_status"].as_bool().unwrap());
+        let custom_id = "discord_app_id=123456\n";
+        let values = settings_from_text(Some(custom_id));
+        assert_eq!(values["discord_app_id"], json!("123456"));
+        let saved = settings_to_text(&values, Some(custom_id));
+        assert_eq!(settings_from_text(Some(&saved))["discord_app_id"], json!("123456"));
     }
 
     #[test]

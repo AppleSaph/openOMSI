@@ -1271,25 +1271,33 @@ impl ApplicationHandler for App {
                     self.service_msg = Some(("On foot: Esc menu, Place a vehicle..., then G at its driver's door to drive it".into(), 8.0));
                 }
                 // Discord's status: the map, the bus, the line (every few seconds)
-                self.discord_t -= dt;
-                if self.discord_t <= 0.0 {
-                    self.discord_t = 5.0;
-                    if self.discord.is_none() && self.settings.discord_status && !self.settings.discord_app_id.is_empty() {
-                        self.discord = crate::discord::Discord::start(&self.settings.discord_app_id);
-                        if self.discord.is_none() {
-                            self.settings.discord_status = false;
+                #[cfg(not(target_os = "android"))]
+                {
+                    self.discord_t -= dt;
+                    if self.discord_t <= 0.0 {
+                        self.discord_t = 5.0;
+                        if self.args.server.is_none()
+                            && self.discord.is_none()
+                            && self.settings.discord_status
+                        {
+                            self.discord =
+                                crate::discord::Discord::start(&self.settings.discord_app_id);
                         }
-                    }
-                    if let Some(d) = self.discord.as_ref() {
-                        let map = self.world.as_ref().map(|w| w.global.name.clone()).unwrap_or_default();
-                        let bus = self.player.as_ref().map(|p| format!("{} {}", p.vehicle.ty.def.manufacturer, p.vehicle.ty.def.type_name).trim().to_string());
-                        let state = match (self.duty.as_ref(), bus.as_ref()) {
-                            (Some(duty), _) => format!("Line {} · tour {}{}", duty.line.trim(), duty.tour.trim(), if self.lan.is_some() { " · multiplayer" } else { "" }),
-                            (None, Some(_)) => if self.lan.is_some() { "Free drive · multiplayer".to_string() } else { "Free drive".to_string() },
-                            (None, None) => "On foot".to_string(),
-                        };
-                        let details = match bus { Some(b) if !b.is_empty() => format!("{b} · {map}"), _ => map };
-                        d.set(crate::discord::Presence { details, state });
+                        if let Some(d) = self.discord.as_ref() {
+                            let bus = self.player.as_ref().map(|p| {
+                                let definition = &p.vehicle.ty.def;
+                                let short = omsi_launcher_lib::vehicle_type_label(&definition.type_name, &definition.path);
+                                let full = omsi_launcher_lib::display_bus_name(&format!("{} {short}", definition.manufacturer));
+                                (short, full)
+                            });
+                            let duty = self.duty.as_ref().map(|d| (d.line.as_str(), d.tour.as_str()));
+                            d.set(crate::discord::Presence::for_game(
+                                self.world.as_ref().map(|w| w.global.name.as_str()),
+                                bus.as_ref().map(|(short, full)| (short.as_str(), full.as_str())),
+                                duty,
+                                self.lan.is_some(),
+                            ));
+                        }
                     }
                 }
                 // the plugins' frame, with the bus's scripts done
