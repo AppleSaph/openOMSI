@@ -3403,6 +3403,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "glam",
+ "hashbrown 0.15.5",
  "log",
  "naga",
  "omsi-cfg",

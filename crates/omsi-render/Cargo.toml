@@ -14,6 +14,7 @@ bytemuck.workspace = true
 glam.workspace = true
 pollster.workspace = true
 rayon.workspace = true
+hashbrown.workspace = true
 log.workspace = true
 anyhow.workspace = true
 winit.workspace = true
