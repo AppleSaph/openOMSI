@@ -1491,8 +1491,15 @@ pub(crate) fn dropdown_apply(app: &mut App, action: &str) {
             }
         }
         "gfxprofile" => {
-            if let Some(p) = omsi_launcher_lib::graphics_profiles().get(arg) {
-                store_with(app, |v| omsi_launcher_lib::apply_graphics_profile(p, v));
+            let name = arg.trim();
+            match omsi_launcher_lib::graphics_profiles().get(name) {
+                Some(p) => {
+                    store_with(app, |v| omsi_launcher_lib::apply_graphics_profile(p, v));
+                    sync_live(app);
+                    LIST_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+                    app.service_msg = Some((format!("Graphics profile \"{name}\" loaded: graphics settings apply when the game starts the next time"), 5.0));
+                }
+                None => app.service_msg = Some((format!("Graphics profile \"{name}\" not found"), 4.0)),
             }
         }
         "reset_all" => store_with(app, |v| {
@@ -1559,7 +1566,7 @@ fn same_value(a: &str, b: &str) -> bool {
 fn select_options(key: &str) -> Vec<(&'static str, &'static str)> {
     match key {
         "graphics" => vec![("vanilla", "Vanilla (as OMSI 2)"), ("vanilla_plus", "Vanilla+"), ("enhanced", "Enhanced")],
-        "msaa" => vec![("1", "Off"), ("2", "2x MSAA"), ("4", "4x MSAA")],
+        "msaa" => vec![("1", "Off"), ("2", "2x MSAA"), ("4", "4x MSAA"), ("8", "8x MSAA")],
         "render_scale" => vec![("auto", "Auto"), ("1", "100%"), ("0.85", "85%"), ("0.75", "75%"), ("0.67", "67%"), ("0.5", "50%")],
         "anisotropy" => vec![("1", "Off"), ("2", "2x"), ("4", "4x"), ("8", "8x")],
         "shadow_size" => vec![("1024", "1024"), ("2048", "2048"), ("4096", "4096")],
@@ -1964,17 +1971,24 @@ fn pages_of(app: &App, kind: &ListKind) -> Option<(Vec<Page>, usize)> {
     Some((pages, tab))
 }
 
+type TitlesCache = Option<(ListKind, bool, std::time::Instant, (Vec<String>, usize))>;
+
+thread_local! {
+    static TITLES: std::cell::RefCell<TitlesCache> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn forget_page_titles() {
+    TITLES.with(|c| *c.borrow_mut() = None);
+}
+
 /// The titles of the pages of an open settings window and the one shown.
 ///
 /// Asked every frame while a window is open, and building the pages is the work of
 /// all their rows: the answer is kept for a moment.
 pub(crate) fn page_titles(app: &App, kind: &ListKind) -> Option<(Vec<String>, usize)> {
     let vr_nav_available = app.vr_active() && app.player.is_some();
-    thread_local! {
-        static TITLES: std::cell::RefCell<Option<(ListKind, bool, std::time::Instant, (Vec<String>, usize))>> = const { std::cell::RefCell::new(None) };
-    }
     if let Some(hit) = TITLES.with(|c| {
-        c.borrow().as_ref().filter(|(k, vr, t, _)| k == kind && *vr == vr_nav_available && t.elapsed().as_millis() < 300).map(|(_, _, _, r)| r.clone())
+        c.borrow().as_ref().filter(|(k, vr, t, _)| k == kind && *vr == vr_nav_available && t.elapsed().as_millis() < 5000).map(|(_, _, _, r)| r.clone())
     }) {
         return Some(hit);
     }

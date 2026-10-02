@@ -1107,6 +1107,7 @@ impl App {
             ray,
         ) {
             self.drag_delta = (0.0, 0.0);
+            p.occlude_controls = self.view == "outside";
             if pressed {
                 if let Some((page, u, v)) = p.html_hit(o, d) {
                     p.release();
@@ -1506,6 +1507,7 @@ impl App {
 
     /// Show one of the menu's lists in the chooser (see `game_lists`).
     pub(crate) fn open_list(&mut self, kind: crate::game_lists::ListKind) {
+        crate::game_lists::forget_page_titles();
         self.dropdown = None;
         self.admin_list = Some(crate::game_lists::items(self, &kind));
         self.list_kind = Some(kind);
@@ -1954,17 +1956,21 @@ impl App {
             match crate::game_lists::run(self, &kind, &action) {
                 Some(next) => {
                     let keep = next == kind;
+                    if !keep {
+                        self.menu_top = None;
+                    }
                     self.open_list(next);
                     if keep {
                         self.chooser = Some(k.min(self.admin_list.as_ref().map(|l| l.len().saturating_sub(1)).unwrap_or(0)));
                     }
                 }
                 None if action != "back" && matches!(kind, crate::game_lists::ListKind::Tours(..) | crate::game_lists::ListKind::Numbers | crate::game_lists::ListKind::Destinations | crate::game_lists::ListKind::RouteNumbers | crate::game_lists::ListKind::Hofs | crate::game_lists::ListKind::Spots) => self.close_game_menu(),
-                None => {}
+                None => self.menu_top = None,
             }
             return;
         }
         // a vehicle of the list: its livery and depot file are asked for first
+        self.menu_top = None;
         let Some((_, bus)) = self.vehicle_list.get(k).cloned() else { return };
         self.open_list(crate::game_lists::ListKind::PlaceLivery(bus));
     }
@@ -2344,7 +2350,8 @@ impl App {
 
     /// Do what line `k` of the game menu says.
     pub(crate) fn menu_choose(&mut self, event_loop: &ActiveEventLoop, k: usize) {
-        self.menu_top = None;
+        // (a click in an open list keeps the scroll where it is: no jump to the line)
+        self.menu_top = if self.chooser.is_some() { self.ui.as_ref().map(|u| u.menu_start as f32) } else { None };
         if self.chooser.is_some() {
             self.chooser_pick(k);
             return;
@@ -2359,6 +2366,10 @@ impl App {
             "options" => self.open_list(crate::game_lists::ListKind::Options(0)),
             "vehicle" => self.open_list(crate::game_lists::ListKind::Vehicle(0)),
             "world" => self.open_list(crate::game_lists::ListKind::World(0)),
+            "copycode" => {
+                self.close_game_menu();
+                self.copy_server_code();
+            }
             "admin" => self.open_list(crate::game_lists::ListKind::Admin),
             "duty" => self.open_list(crate::game_lists::ListKind::Lines),
             "map" => {
@@ -3367,6 +3378,10 @@ impl App {
                                       surface.map(|s| s.1));
             }
         }
+        let outside = self.view == "outside";
+        if let Some(p) = self.player.as_mut() {
+            p.occlude_controls = outside;
+        }
         let found = match (
             self.player.as_ref(),
             self.camera.as_ref(),
@@ -3408,6 +3423,9 @@ impl App {
             3
         } else if self.mouse_drive && matches!(self.view.as_str(), "driver" | "outside" | "pax") && self.game_menu.is_none() {
             2
+        } else if self.game_menu.is_some() {
+            // (the game menu's own cursor: not overwritten here, or it flips back and forth)
+            self.menu_cursor_kind()
         } else if self.hover.is_some() || self.hover_hand {
             1
         } else {
@@ -3608,11 +3626,46 @@ impl crate::App {
             v.retain(|x| x.0 != "map");
         }
         let host = self.lan.as_ref().map(|l| l.role == omsi_net::Role::Host).unwrap_or(false);
+        // the server code: a line to copy it, right under "World options" (only in a LAN session or on a server)
+        if self.lan.is_some() || on_server(&self.args) {
+            if let Some(w) = v.iter().position(|x| x.0 == "world") {
+                v.insert(w + 1, ("copycode", "Copy server code"));
+                at = at.max(w + 2);
+            }
+        }
         if host || self.is_admin {
             let before_quit = v.iter().position(|x| x.0 == "quit").unwrap_or(v.len()).max(at);
             v.insert(before_quit, ("admin", "Administration..."));
         }
         v
+    }
+
+    /// Put the session's server code on the clipboard.
+    pub(crate) fn copy_server_code(&mut self) {
+        // (the host's code; a player or a server's join code or address as it was entered)
+        let Some(code) = self.lan.as_ref().and_then(|l| l.code()).map(|c| c.encode()).or_else(|| self.args.lan_join.clone()).filter(|c| !c.trim().is_empty()) else {
+            self.service_msg = Some(("No server code: not in a LAN session or on a server".into(), 3.0));
+            return;
+        };
+        #[cfg(not(target_os = "android"))]
+        {
+            thread_local! {
+                // (kept alive: on X11 the text is gone when the clipboard is dropped)
+                static CLIPBOARD: std::cell::RefCell<Option<arboard::Clipboard>> = const { std::cell::RefCell::new(None) };
+            }
+            let ok = CLIPBOARD.with(|c| {
+                let mut c = c.borrow_mut();
+                if c.is_none() {
+                    *c = arboard::Clipboard::new().ok();
+                }
+                c.as_mut().is_some_and(|cb| cb.set_text(code.clone()).is_ok())
+            });
+            self.service_msg = Some(if ok { ("Server code copied".into(), 3.0) } else { (format!("{}: {code}", omsi_ui::tr("Server code")), 8.0) });
+        }
+        #[cfg(target_os = "android")]
+        {
+            self.service_msg = Some((format!("{}: {code}", omsi_ui::tr("Server code")), 8.0));
+        }
     }
 
     /// The ids of the game menu's lines that are greyed out and cannot be chosen now.

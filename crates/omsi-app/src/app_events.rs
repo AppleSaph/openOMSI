@@ -2620,6 +2620,7 @@ impl App {
                 self.player.as_mut(),
                 ray,
             ) {
+                p.occlude_controls = self.view == "outside";
                 if p.pick(o, d, spread).is_some() {
                     // a notch is worth a good push of the mouse: the scripts divide
                     // the movement by 10 (the ignition key), 200 (the parking brake)

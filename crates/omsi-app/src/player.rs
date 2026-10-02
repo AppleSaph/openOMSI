@@ -53,6 +53,9 @@ pub(crate) struct Player {
     /// Coupled-part mesh currently pressed.  Articulated buses keep the rear controls in
     /// the trailer model, while their mouse events are still handled by the lead vehicle.
     pub(crate) pressed_trailer_mesh: Option<(usize, usize)>,
+    /// Set while the camera looks at the bus from outside (F3): a switch behind a wall or a
+    /// window of the bus is out of reach there, and is neither named, clicked nor turned.
+    pub(crate) occlude_controls: bool,
     /// The press on `pressed_mesh`: whether the script has a trigger for the click itself,
     /// and how far the mouse has been dragged since (px).
     pub(crate) press_info: (bool, f32),
@@ -1406,7 +1409,11 @@ impl Player {
     /// `spread` is the half-angle of those rings in radians; the window passes the angle
     /// six pixels subtend, so aiming is equally forgiving at any resolution.
     pub(crate) fn pick(&self, origin: DVec3, dir: Vec3, spread: f32) -> Option<usize> {
-        pick_in(&self.vehicle, origin, dir, spread)
+        let i = pick_in(&self.vehicle, origin, dir, spread)?;
+        if self.occlude_controls && self.control_hidden(origin, dir, None, i) {
+            return None;
+        }
+        Some(i)
     }
 
     /// The page (`[htmltexture]`) under a ray and where it lands on it: the script texture
@@ -1423,7 +1430,11 @@ impl Player {
 
     /// The same forgiving pick as `pick`, for the coupled sections of an articulated bus.
     pub(crate) fn pick_trailer(&self, origin: DVec3, dir: Vec3, spread: f32) -> Option<(usize, usize)> {
-        pick_trailer_in(&self.vehicle, origin, dir, spread)
+        let (ti, i) = pick_trailer_in(&self.vehicle, origin, dir, spread)?;
+        if self.occlude_controls && self.control_hidden(origin, dir, Some(ti), i) {
+            return None;
+        }
+        Some((ti, i))
     }
 
     /// Exact surface under a VR pointer, including meshes without a mouse event.
@@ -1439,6 +1450,32 @@ impl Player {
     /// How far along a ray the bus (any visible mesh, trailers too) is.
     pub(crate) fn body_hit(&self, origin: DVec3, dir: Vec3) -> Option<f32> {
         Some(self.nearest_hits(origin, dir).0).filter(|t| t.is_finite())
+    }
+
+    /// Seen from outside: the body of the bus (a wall, a window) is hit before the control
+    /// mesh `i` (of coupled part `trailer`, or of the bus itself), so it cannot be reached.
+    fn control_hidden(&self, origin: DVec3, dir: Vec3, trailer: Option<usize>, i: usize) -> bool {
+        let (ty, position, xf) = match trailer {
+            None => (&self.vehicle.ty, self.vehicle.position, self.vehicle.mesh_local_transform(i)),
+            Some(ti) => {
+                let t = &self.vehicle.trailers[ti];
+                (&t.ty, t.position, t.mesh_local_transform(i))
+            }
+        };
+        let Some(&(c, r)) = ty.mesh_bounds.get(i) else {
+            return false;
+        };
+        let dir = dir.normalize_or_zero();
+        let o = (origin - position).as_vec3();
+        let scale = xf
+            .x_axis
+            .truncate()
+            .length()
+            .max(xf.y_axis.truncate().length())
+            .max(xf.z_axis.truncate().length());
+        let along = (xf.transform_point3(c) - o).dot(dir);
+        let nearest = self.nearest_hits(origin, dir).0;
+        nearest < along - r * scale - 0.1
     }
 
     /// The nearest hit of a ray on the bus, and the nearest on a mesh with a mouse event
