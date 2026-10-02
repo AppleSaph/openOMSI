@@ -964,7 +964,14 @@ pub fn turns_round(m: &omsi_o3d::Mesh) -> bool {
     // turning them round hid the pressure and trip displays.
     // Turned round, the Urbino's headlamps faced into the bus and the body showed through
     // the holes in their place.
-    let mirrored = m.transform.determinant() > 0.0;
+    // (An identity, or no matrix at all - every `.x`, an `.o3d` of the oldest exporters -
+    // says nothing of a mirror: it is what an exporter writes that never mirrors. Taken
+    // for one, a house whose exporter wrote its normals inward was turned inside out, its
+    // walls seen from within (#874), and the road crossings of Buildings_Alex, wound to
+    // face up with their normals down, faced the ground and left holes in the streets.)
+    let linear = glam::Mat3::from_mat4(m.transform);
+    let identity = linear.abs_diff_eq(glam::Mat3::IDENTITY, 1e-4);
+    let mirrored = m.has_transform && !identity && m.transform.determinant() > 0.0;
     let explained = against_turned * 10 <= counted;
     mirrored && !explained && counted >= 2 && against * 10 >= counted * 9
 }
@@ -1446,9 +1453,16 @@ mod tests {
     #[test]
     fn a_backwards_quad_with_an_unmirrored_matrix_can_keep_its_winding() {
         let v = |x: f32, y: f32| omsi_o3d::Vertex { position: Vec3::new(x, y, 1.0), normal: Vec3::new(0.0, 0.0, 1.0), uv: Vec2::ZERO };
-        let o3d = omsi_o3d::Mesh { vertices: vec![v(0.0, 0.0), v(0.0, 1.0), v(1.0, 0.0), v(1.0, 1.0)], triangles: vec![omsi_o3d::Triangle { indices: [0, 1, 2], material: 0 }, omsi_o3d::Triangle { indices: [2, 1, 3], material: 0 }], materials: vec![omsi_o3d::Material::default()], transform: glam::Mat4::IDENTITY, ..Default::default() };
+        let o3d = omsi_o3d::Mesh { vertices: vec![v(0.0, 0.0), v(0.0, 1.0), v(1.0, 0.0), v(1.0, 1.0)], triangles: vec![omsi_o3d::Triangle { indices: [0, 1, 2], material: 0 }, omsi_o3d::Triangle { indices: [2, 1, 3], material: 0 }], materials: vec![omsi_o3d::Material::default()], transform: glam::Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0)), has_transform: true, ..Default::default() };
         assert_eq!(positive_det_faces_forward(&o3d), Some(false));
         assert!(turns_round(&o3d));
+        // the same faces from a file without a matrix (an `.x`, an old `.o3d`) or with the
+        // identity: drawn as wound, as Omsi.exe draws every mesh (#874)
+        let plain = omsi_o3d::Mesh { has_transform: false, ..o3d.clone() };
+        assert!(!turns_round(&plain));
+        assert_eq!(mesh_from_o3d(&plain).indices[..3], [0, 1, 2]);
+        let identity = omsi_o3d::Mesh { transform: glam::Mat4::IDENTITY, ..o3d.clone() };
+        assert!(!turns_round(&identity));
         assert_eq!(mesh_from_o3d(&o3d).indices[..3], [0, 2, 1]);
         let mut kept = mesh_from_o3d_turning(&o3d, false);
         assert_eq!(kept.indices[..3], [0, 1, 2]);
