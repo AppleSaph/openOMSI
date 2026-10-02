@@ -122,9 +122,13 @@ pub(crate) fn apply_situation_parsed(sit: &omsi_content::situation::Situation, a
         if v.timetable.len() >= 2 {
             args.line = Some(v.timetable[0].clone());
             args.tour = Some(v.timetable[1].clone());
-            // the third value is the trip of the tour under way (0 = the first)
+            // the third value is the trip of the tour under way (0 = the first); the duty
+            // goes on from there with the rest of the tour, as it was driven (taken as a
+            // picked trip, it was the whole duty, and the next save wrote it as trip 0 of
+            // a one-trip duty: the game after that started at the tour's first trip, #653)
             if let Some(t) = v.timetable.get(2).and_then(|t| t.trim().parse::<usize>().ok()) {
                 args.trip = Some((t + 1).to_string());
+                args.whole_tour = true;
             }
         }
         args.situation_vars = v.vars.iter().map(|(n, x)| (n.clone(), *x as f32)).collect();
@@ -259,7 +263,7 @@ pub(crate) fn build_situation(
             rec.timetable = vec![
                 d.line.clone(),
                 d.tour.clone(),
-                d.trip_index.to_string(),
+                (d.first_trip + d.trip_index).to_string(),
                 d.next_stop.to_string(),
                 "0".into(),
                 "0".into(),
@@ -382,5 +386,25 @@ mod tests {
         assert_eq!(args.paint.as_deref(), Some("1"));
         assert_eq!(args.situation_others.len(), 1);
         assert_eq!(args.situation_others[0].paint.as_deref(), Some("4"));
+    }
+
+    /// #653: a saved duty goes on at the trip of the tour it was saved on, with the rest of
+    /// the tour after it.
+    #[test]
+    fn a_saved_duty_goes_on_at_its_trip() {
+        let sit = omsi_content::situation::Situation {
+            map: "maps/Berlin/global.cfg".into(),
+            vehicles: vec![omsi_content::situation::SituationVehicle {
+                file: "Vehicles/MAN_SD200/MAN_SD77.bus".into(),
+                is_my_vehicle: true,
+                timetable: ["137", "4", "3", "2", "0", "0"].map(String::from).to_vec(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut args = crate::cli::Args::parse_from(["openomsi"]);
+        apply_situation_parsed(&sit, &mut args);
+        assert_eq!((args.line.as_deref(), args.tour.as_deref(), args.trip.as_deref()), (Some("137"), Some("4"), Some("4")));
+        assert!(args.whole_tour);
     }
 }

@@ -3358,6 +3358,9 @@ pub struct PlayerDuty {
     pub tour: String,
     pub trips: Vec<PlannedTrip>,
     pub trip_index: usize,
+    /// Where `trips` begins in the tour: a picked trip is a duty of its own, and a saved
+    /// situation counts the trip under way from the tour's first.
+    pub first_trip: usize,
     /// Next stop to serve on the current trip.
     pub next_stop: usize,
     /// True while the bus stands at the next stop.
@@ -3699,10 +3702,10 @@ impl Schedule {
         };
         // A picked trip is the duty, one way to its terminus, as a trip chosen in OMSI is;
         // the rest of the tour only with `--whole-tour`.
-        let (trips, trip_index) = if trip.is_some() && !whole_tour {
-            (vec![trips[trip_index].clone()], 0)
+        let (trips, trip_index, first_trip) = if trip.is_some() && !whole_tour {
+            (vec![trips[trip_index].clone()], 0, trip_index)
         } else {
-            (trips, trip_index)
+            (trips, trip_index, 0)
         };
         // the AI leaves the player what the player drives: the tour, or just the one trip
         self.player_departure = (trips.len() == 1 && trip.is_some() && !whole_tour).then(|| trips[0].departure);
@@ -3726,6 +3729,7 @@ impl Schedule {
             tour: tour_name,
             trips,
             trip_index,
+            first_trip,
             next_stop: 0,
             at_stop: false,
             arrived_late: None,
@@ -4815,7 +4819,7 @@ mod tests {
     #[test]
     fn a_page_can_go_back_to_an_earlier_stop() {
         let trip = planned(0.0, &[(0.0, 0.0, 0.0), (100.0, 60.0, 60.0), (500.0, 120.0, 120.0), (1000.0, 200.0, 200.0)]);
-        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![trip], trip_index: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
+        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![trip], trip_index: 0, first_trip: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
         assert!(d.skip_to(2));
         assert_eq!(d.next_stop, 2);
         // back one stop: due again
@@ -4847,7 +4851,7 @@ mod tests {
             }
         }
         trip.set_dirs();
-        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![trip], trip_index: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
+        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![trip], trip_index: 0, first_trip: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
         // at stop 0, then leaving east
         d.advance(glam::DVec3::new(0.0, 0.0, 0.0), 0.0);
         d.advance(glam::DVec3::new(60.0, 0.0, 0.0), 30.0);
@@ -4901,6 +4905,7 @@ mod tests {
             tour: "3".into(),
             trips,
             trip_index: 1,
+            first_trip: 0,
             next_stop: 0,
             at_stop: false,
             arrived_late: None,
@@ -4950,6 +4955,7 @@ mod tests {
             tour: "3".into(),
             trips,
             trip_index: 0,
+            first_trip: 0,
             next_stop: 0,
             at_stop: false,
             arrived_late: None,
@@ -4990,6 +4996,7 @@ mod tests {
             tour: "1".into(),
             trips: vec![service, passenger],
             trip_index: 0,
+            first_trip: 0,
             next_stop: 1,
             at_stop: false,
             arrived_late: None,
