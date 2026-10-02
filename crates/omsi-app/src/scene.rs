@@ -101,6 +101,54 @@ impl World {
         g.get(&index).cloned().unwrap_or_default()
     }
 
+    /// The shape of the glass that shows mirror `i`'s picture: material `slot` of `data`. How far
+    /// the position moves for a step of the texture coordinates across and down, over a
+    /// triangle at a time (area weighted), times the part of the picture the mesh uses.
+    pub fn note_mirror_aspect(&self, i: usize, data: &MeshData, slot: usize) {
+        let (mut tu, mut tv, mut area) = (0.0f64, 0.0f64, 0.0f64);
+        let (mut umin, mut umax, mut vmin, mut vmax) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for &(first, count, mat) in &data.ranges {
+            if mat as usize != slot {
+                continue;
+            }
+            let end = ((first + count) as usize).min(data.indices.len());
+            for tri in data.indices[(first as usize).min(end)..end].chunks_exact(3) {
+                let (Some(&a), Some(&b), Some(&c)) = (data.positions.get(tri[0] as usize), data.positions.get(tri[1] as usize), data.positions.get(tri[2] as usize)) else { continue };
+                let (Some(&ua), Some(&ub), Some(&uc)) = (data.uvs.get(tri[0] as usize), data.uvs.get(tri[1] as usize), data.uvs.get(tri[2] as usize)) else { continue };
+                for uv in [ua, ub, uc] {
+                    umin = umin.min(uv.x);
+                    umax = umax.max(uv.x);
+                    vmin = vmin.min(uv.y);
+                    vmax = vmax.max(uv.y);
+                }
+                let (e1, e2) = (b - a, c - a);
+                let (d1, d2) = (ub - ua, uc - ua);
+                let det = d1.x * d2.y - d1.y * d2.x;
+                if det.abs() < 1e-9 {
+                    continue;
+                }
+                let t = (e1 * d2.y - e2 * d1.y) / det;
+                let v = (e2 * d1.x - e1 * d2.x) / det;
+                let w = e1.cross(e2).length() as f64;
+                tu += t.length() as f64 * w;
+                tv += v.length() as f64 * w;
+                area += w;
+            }
+        }
+        if area <= 0.0 || umax <= umin || vmax <= vmin || tv <= 0.0 {
+            return;
+        }
+        let aspect = ((tu / area) * (umax - umin) as f64) / ((tv / area) * (vmax - vmin) as f64);
+        if !aspect.is_finite() || !(0.15..=6.0).contains(&aspect) {
+            return;
+        }
+        let mut g = self.mirror_aspect.lock();
+        if g.len() <= i {
+            g.resize(i + 1, 0.0);
+        }
+        g[i] = aspect as f32;
+    }
+
     /// Render texture of mirror `i` (created on first use, as large as the `mirror_size`
     /// setting says).
     pub fn mirror_texture(&self, renderer: &Renderer, scene: &mut Scene, i: usize) -> TextureId {
@@ -1770,6 +1818,9 @@ pub struct World {
     parklist: Mutex<HashMap<usize, Vec<String>>>,
     /// Render textures of the player's mirrors (`reflexionN.bmp`), by camera index.
     pub mirror_textures: Mutex<Vec<Option<TextureId>>>,
+    /// Width / height of the glass of the player bus mirror N (from the mesh that shows its
+    /// picture), 0 when not known: the shape of the panels that copy the mirrors to the screen.
+    pub mirror_aspect: Mutex<Vec<f32>>,
     object_types: Mutex<HashMap<String, Option<Arc<ObjectType>>>>,
     spline_types: Mutex<HashMap<String, Option<Arc<SplineType>>>>,
     pub textures: Arc<TextureCache>,
@@ -2625,6 +2676,7 @@ impl World {
             map_dir,
             parklist: Mutex::new(HashMap::new()),
             mirror_textures: Mutex::new(Vec::new()),
+            mirror_aspect: Mutex::new(Vec::new()),
             chrono_dirs: parking_lot::RwLock::new(chrono_dirs),
             ailists,
             date,
@@ -11592,6 +11644,7 @@ impl World {
                         // looking for it on disk only produced a false "texture not found"
                         None
                     } else if let Some(mi) = mirror_index(&tex_name) {
+                        self.note_mirror_aspect(mi, &vm.data, slot);
                         Some(self.mirror_texture(renderer, scene, mi))
                     } else if rain_layer && snowing() && !seasonal_texture(&tex_name, &dirs_ref) {
                         tex!("", &dirs_ref, snow_glass_texture)

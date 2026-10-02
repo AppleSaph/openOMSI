@@ -71,6 +71,68 @@ impl App {
             }
             return;
         }
+        // The mirror panels (see mirror_hud.rs): Ctrl+M shows or hides them, Ctrl+Shift+M
+        // starts and ends their editor; in the editor Insert, Delete, C and Esc are its keys.
+        if self.in_cab && self.game_menu.is_none() && self.player.is_some() {
+            let ctrl = self.keys.contains(&KeyCode::ControlLeft) || self.keys.contains(&KeyCode::ControlRight);
+            let shift = self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+            if pressed && !repeat && code == KeyCode::KeyM && ctrl {
+                if let Some(p) = self.player.as_ref() {
+                    let msg = if shift { self.mirror_hud.toggle_edit(p) } else { self.mirror_hud.toggle(p) };
+                    self.service_msg = Some((msg, if shift { 6.0 } else { 3.0 }));
+                }
+                return;
+            }
+            // (in the editor the arrows aim the mirror under the cursor; see the frame)
+            if matches!(code, KeyCode::ArrowLeft | KeyCode::ArrowRight | KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Minus | KeyCode::Equal | KeyCode::NumpadAdd | KeyCode::NumpadSubtract) && self.mirror_hud.arrow(code, pressed) {
+                return;
+            }
+            // R puts the mirror under the cursor back as the bus has it, Shift+R every mirror
+            if self.mirror_hud.editing() && code == KeyCode::KeyR {
+                if pressed && !repeat {
+                    let size = self.surface.as_ref().map(|s| (s.config.width as f32, s.config.height as f32)).unwrap_or((1.0, 1.0));
+                    let which = self.mirror_hud.cam_under(self.cursor, size);
+                    let msg = match self.player.as_mut() {
+                        Some(p) if shift => {
+                            let n = p.vehicle.ty.def.cameras_reflexion.len();
+                            p.mirror_offsets = vec![[0.0; 2]; n];
+                            p.mirror_shifts = vec![[0.0; 3]; n];
+                            p.mirror_fovs = vec![0.0; n];
+                            p.mirrors_dirty = true;
+                            "Every mirror is back as the bus has it".to_string()
+                        }
+                        Some(p) if which.is_some() => {
+                            let i = which.unwrap_or(0);
+                            if let Some(o) = p.mirror_offsets.get_mut(i) {
+                                *o = [0.0; 2];
+                            }
+                            if let Some(s) = p.mirror_shifts.get_mut(i) {
+                                *s = [0.0; 3];
+                            }
+                            if let Some(f) = p.mirror_fovs.get_mut(i) {
+                                *f = 0.0;
+                            }
+                            p.mirrors_dirty = true;
+                            format!("Mirror {} is back as the bus has it (Shift+R: every mirror)", i + 1)
+                        }
+                        _ => "R: put the cursor on a mirror panel (Shift+R: every mirror)".to_string(),
+                    };
+                    self.service_msg = Some((msg, 3.0));
+                }
+                return;
+            }
+            if self.mirror_hud.editing() && matches!(code, KeyCode::Insert | KeyCode::Delete | KeyCode::Backspace | KeyCode::KeyC | KeyCode::Escape) {
+                if pressed && !repeat {
+                    let size = self.surface.as_ref().map(|s| (s.config.width as f32, s.config.height as f32)).unwrap_or((1.0, 1.0));
+                    if let Some(p) = self.player.as_ref() {
+                        if let Some(msg) = self.mirror_hud.key(code, p, self.cursor, size) {
+                            self.service_msg = Some((msg, 4.0));
+                        }
+                    }
+                }
+                return;
+            }
+        }
         // Escape closes the city map first (it would end the session)
         if pressed && code == KeyCode::Escape {
             if let Some(n) = self.navigator.as_mut().filter(|n| n.map_open()) {
@@ -824,6 +886,16 @@ impl App {
     }
 
     pub(crate) fn on_mouse_moved(&mut self, x: f32, y: f32) {
+        // a mirror panel being dragged follows the cursor (nothing else of the cursor's
+        // work is done meanwhile, and outside a drag none of it is touched)
+        if self.mirror_hud.dragging() {
+            if let Some(size) = self.surface.as_ref().map(|s| (s.config.width as f32, s.config.height as f32)) {
+                if self.mirror_hud.moved((x, y), size) {
+                    self.cursor = (x, y);
+                    return;
+                }
+            }
+        }
         if self.move_cursor(x, y) {
             self.html_move();
         }
