@@ -182,6 +182,9 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
             line(&mut out, tr("Frame rate"), on(s.show_fps), "fps");
             line(&mut out, tr("Notes in the top-left corner"), on(s.notes), "notes");
             line(&mut out, tr("Sun shadows"), on(s.shadows), "shadows");
+            // (the models' `[isshadow]` blob: the fake shadow OMSI draws under a vehicle
+            // whatever the sun shadow map says)
+            line(&mut out, tr("OMSI's shadow meshes"), on(s.shadow_blobs), "shadow_blobs");
             // (the LED panels' dots glow, and how much of the mip chain they are held at)
             line(&mut out, tr("LED glow"), format!("{}/15", s.led_glow), "led_glow");
             line(&mut out, tr("LED mip strength"), format!("{:.2}", s.led_mips), "led_mips");
@@ -384,6 +387,16 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
                 "shadows" => {
                     s.shadows = !s.shadows;
                     Some(("shadows", (s.shadows as u8).to_string()))
+                }
+                "shadow_blobs" => {
+                    s.shadow_blobs = !s.shadow_blobs;
+                    let on = s.shadow_blobs;
+                    // (the blobs are the renderer's, not the lighting's: switch them off
+                    // in the picture at once, not at the next start)
+                    if let Some(r) = app.renderer.as_mut() {
+                        r.shadow_blobs = on;
+                    }
+                    Some(("shadow_blobs", (on as u8).to_string()))
                 }
                 "head" => {
                     s.head_movement = !s.head_movement;

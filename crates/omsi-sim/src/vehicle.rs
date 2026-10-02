@@ -2882,6 +2882,16 @@ impl PropsPlan {
 /// crown between the wheels, and clear of it for the surfaces' depth bias.
 pub const SHADOW_LIFT: f32 = 0.02;
 
+/// How far over the wheel's own plane the face it stands on may lie for a `[isshadow]`
+/// blob's plane (m): a kerb or a ramp, the step the AI's wheels climb
+/// (`ai_motion::AI_STEP_UP`).
+const SHADOW_STEP_UP: f64 = 0.6;
+/// How far under it (m). Loose: the model's origin plane is the contact plane of the
+/// *unloaded* springs, so a body at rest stands its ground 10-16 cm below its own plane,
+/// and a map may put a vehicle down a little over its road. Farther down is another level -
+/// a road under a bridge - and not the face this wheel stands on.
+const SHADOW_STEP_DOWN: f64 = 3.0;
+
 /// How strong the film on the glass gets in the thickest snowfall (`Rain_Window_*_Wetness`,
 /// 0 … 1): a haze of crystals, not a windscreen running with water.
 const SNOW_ON_GLASS: f32 = 0.22;
@@ -2890,6 +2900,30 @@ fn is_shadow_mesh(ty: &VehicleType, i: usize) -> bool {
     ty.meshes
         .get(i)
         .is_some_and(|m| ty.model.meshes[m.def_index].is_shadow)
+}
+
+/// What one wheel of a body without a rigid body stands on at world `p` (the point on the
+/// model's z = 0 plane under it): the drawn road there, within a step of the wheel - the same
+/// level-limited probe the AI bodies ask (`ai_motion::AiBody::settle`). The plain height
+/// sampler knows only x and y and gives the *highest* face, so a vehicle under a bridge or a
+/// canopy had its `[isshadow]` blob laid onto the deck over it (the same sampler lifted the
+/// coupled parts onto the bridge, #140). The plain sampler stays the fallback where the
+/// tiles put no road face near the wheel.
+fn wheel_ground(
+    contact: Option<&dyn crate::rigid::Ground>,
+    ground: Option<&(dyn Fn(f64, f64) -> Option<f64> + Send + Sync)>,
+    p: DVec3,
+) -> Option<f64> {
+    if let Some(c) = contact {
+        if let Some(g) = c
+            .probe(p.x, p.y, p.z + SHADOW_STEP_UP)
+            .below
+            .filter(|g| *g >= p.z - SHADOW_STEP_DOWN)
+        {
+            return Some(g);
+        }
+    }
+    ground.and_then(|g| g(p.x, p.y))
 }
 
 /// Body frame → body frame with the plane z = 0 laid onto z = p[0] + p[1]·x + p[2]·y
@@ -3535,7 +3569,7 @@ impl VehicleInstance {
                     w.attach + Vec3::Z * (w.compression.max(-crate::rigid::DROOP) - w.radius),
                 );
             }
-        } else if let Some(g) = &self.ground {
+        } else {
             let rot = self.body_rotation();
             let inv = rot.inverse();
             for w in self.physics.wheels.iter().flatten() {
@@ -3543,7 +3577,7 @@ impl VehicleInstance {
                     + rot
                         .transform_vector3(Vec3::new(w.lat, w.long, 0.0))
                         .as_dvec3();
-                if let Some(z) = g(p.x, p.y) {
+                if let Some(z) = wheel_ground(self.contact.as_deref(), self.ground.as_deref(), p) {
                     points.push(
                         inv.transform_vector3((DVec3::new(p.x, p.y, z) - self.position).as_vec3()),
                     );
@@ -3729,6 +3763,35 @@ mod tests {
             (axle[0] - 0.15).abs() < 1e-5 && axle[1] == 0.0 && axle[2] == 0.0,
             "{axle:?}"
         );
+    }
+
+    /// The wheel of a body without a rigid body stands on the road the drawn faces put
+    /// under it, not on the deck of a bridge over that road (or a canopy above it): the
+    /// plain sampler knows only x and y and gives the highest face there, which laid the
+    /// `[isshadow]` blob up on the deck. Where the faces put nothing near the wheel - and
+    /// where there is no face probe at all - the plain sampler still answers.
+    #[test]
+    fn a_wheels_ground_is_the_road_under_it_not_the_highest_face() {
+        let (road, deck) = (12.0f64, 17.0f64);
+        // the faces: the deck above the wheel, the road under it
+        let faces = |_x: f64, _y: f64, top: f64| crate::rigid::GroundProbe {
+            below: [road, deck].into_iter().filter(|h| *h <= top).fold(None, |a: Option<f64>, b| Some(a.map_or(b, |a| a.max(b)))),
+            above: None,
+        };
+        let faces: &dyn crate::rigid::Ground = &faces;
+        // the plain sampler: the highest face at (x, y), which is the deck
+        let plain = |_x: f64, _y: f64| Some(deck);
+        let plain: &(dyn Fn(f64, f64) -> Option<f64> + Send + Sync) = &plain;
+        let wheel = DVec3::new(100.0, 200.0, road);
+        assert_eq!(wheel_ground(Some(faces), Some(plain), wheel), Some(road));
+        // a wheel standing on the deck itself gets the deck
+        assert_eq!(wheel_ground(Some(faces), Some(plain), DVec3::new(100.0, 200.0, deck)), Some(deck));
+        // nothing drawn within a step of the wheel: the plain sampler, as before
+        let empty = |_x: f64, _y: f64, _top: f64| crate::rigid::GroundProbe { below: None, above: Some(deck) };
+        let empty: &dyn crate::rigid::Ground = &empty;
+        assert_eq!(wheel_ground(Some(empty), Some(plain), wheel), Some(deck));
+        // no face probe at all (a rail or air lane): the plain sampler
+        assert_eq!(wheel_ground(None, Some(plain), wheel), Some(deck));
     }
 
     /// The resolved property plan gives what `compute_mesh_props` gives, for a stock bus
