@@ -100,6 +100,24 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
     let (verb, arg) = action.split_once(' ').unwrap_or((action, ""));
     let id = arg.trim().parse::<u32>().ok();
     match verb {
+        // a notification (`notify <id|all> <notice id> <seconds> <kind> <text>`): to the other
+        // players through the session, and on the host's own screen for `all` or its own number
+        "notify" => {
+            let Some((who, rest)) = arg.trim().split_once(' ') else { return };
+            let Some((nid, n)) = crate::ui::Notice::parse(rest) else { return };
+            let mut here = false;
+            if let Some(l) = app.lan.as_mut() {
+                let (ids, local) = notice_targets(who, l.peers().map(|p| p.pose.id), l.my_id);
+                for id in ids {
+                    l.command(id, &format!("notify {}", rest.trim()));
+                }
+                here = local;
+            }
+            if here {
+                log::info!("LAN: the server's notice {nid}: {}", n.text);
+                crate::ui::push_notice(&mut app.notices, n);
+            }
+        }
         "kick" | "ban" => {
             if let (Some(l), Some(id)) = (app.lan.as_mut(), id) {
                 l.kick(id, if verb == "ban" { "sent away for this session" } else { "sent away by the host" }, verb == "ban");
@@ -536,10 +554,11 @@ pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &
                 // a notification on one player's screen, or everybody's: `notify <id|all> <notice
                 // id> <seconds> <info|warn|alert> <text>` (a game that shows it answers
                 // `notify-seen <notice id>`)
+                // (a dedicated server has no screen: its own number is nobody's)
                 "notify" => {
                     if let Some((who, rest)) = a.trim().split_once(' ') {
                         if crate::ui::Notice::parse(rest).is_some() {
-                            let ids: Vec<u32> = if who == "all" { lan.peers().map(|p| p.pose.id).filter(|id| *id != lan.my_id).collect() } else { who.parse::<u32>().ok().into_iter().collect() };
+                            let (ids, _) = notice_targets(who, lan.peers().map(|p| p.pose.id), lan.my_id);
                             for id in ids {
                                 lan.command(id, &format!("notify {}", rest.trim()));
                             }
@@ -617,6 +636,37 @@ pub(crate) fn guard_fall(app: &mut App, dt: f32) {
             app.safe_age = 0.0;
             app.safe_pose = Some((glam::DVec3::new(at.x, at.y, g), p.vehicle.heading));
         }
+    }
+}
+
+/// Who a `notify` is for: `all`, every other player and the host's own screen; a player's
+/// number, that player - or the host's own screen when it is the host's number (`peers` has
+/// only the others, and `LanSession::command` sends nothing to oneself).
+fn notice_targets(who: &str, others: impl Iterator<Item = u32>, my_id: u32) -> (Vec<u32>, bool) {
+    if who == "all" {
+        return (others.filter(|id| *id != my_id).collect(), true);
+    }
+    match who.trim().parse::<u32>() {
+        Ok(id) if id == my_id => (Vec::new(), true),
+        Ok(id) => (vec![id], false),
+        Err(_) => (Vec::new(), false),
+    }
+}
+
+#[cfg(test)]
+mod notice_target_tests {
+    use super::notice_targets;
+
+    #[test]
+    fn all_is_every_player_and_the_host_itself() {
+        // the host is player 1, the others 2 and 5
+        assert_eq!(notice_targets("all", [2, 5].into_iter(), 1), (vec![2, 5], true));
+        assert_eq!(notice_targets("all", [].into_iter(), 1), (vec![], true));
+        // one player; the host's own number: its own screen, nothing sent
+        assert_eq!(notice_targets("5", [2, 5].into_iter(), 1), (vec![5], false));
+        assert_eq!(notice_targets("1", [2, 5].into_iter(), 1), (vec![], true));
+        // not a number: nobody
+        assert_eq!(notice_targets("x", [2, 5].into_iter(), 1), (vec![], false));
     }
 }
 
