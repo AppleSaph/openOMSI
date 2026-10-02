@@ -1034,6 +1034,25 @@ mod tests {
     }
 
     #[test]
+    fn reflection_surface_uses_the_nearby_face_and_its_grade() {
+        let mut grid = DriveGrid::default();
+        let plane = |height: f32| [Vec3::new(0.0, 0.0, height),
+            Vec3::new(20.0, 0.0, height + 2.0), Vec3::new(0.0, 20.0, height - 1.0)];
+        // Reversed authoring winding must still give an upward normal.
+        let mut road = plane(12.0);
+        road.swap(1, 2);
+        grid.push(road);
+        grid.push(plane(20.0)); // bridge deck above the vehicle
+        grid.push_kind(plane(12.3), true); // wall top is not a reflecting road
+        grid.build(300.0);
+        let (height, normal) = grid.surface_below(4.0, 5.0, 13.0).unwrap();
+        assert!((height - 12.15).abs() < 1e-5);
+        assert!(normal.distance(Vec3::new(-0.1, 0.05, 1.0).normalize()) < 1e-5);
+        assert!(grid.surface_below(4.0, 5.0, 11.0).is_none());
+        assert!(grid.surface_below(290.0, 290.0, 30.0).is_none());
+    }
+
+    #[test]
     fn declared_terrain_holes_cut_deep_ground_without_cutting_surroundings() {
         let side = tile_size() as f32;
         let (lo, hi, middle) = (side * 0.25, side * 0.75, side * 0.5);
@@ -1693,6 +1712,32 @@ impl DriveGrid {
     /// above it.
     pub fn probe(&self, x: f32, y: f32, z_top: f32) -> Probe {
         self.probe_kind(x, y, z_top, false)
+    }
+
+    /// Highest road face below the point, with its upward geometric normal.
+    /// Reflections need the actual plane rather than a raster texel's height.
+    pub fn surface_below(&self, x: f32, y: f32, top: f32) -> Option<(f32, Vec3)> {
+        if self.cells == 0 || x < 0.0 || y < 0.0 { return None; }
+        let (cx, cy) = ((x / self.cell) as usize, (y / self.cell) as usize);
+        if cx >= self.cells || cy >= self.cells { return None; }
+        let k = cy * self.cells + cx;
+        let mut best: Option<(f32, Vec3)> = None;
+        for &i in &self.items[self.start[k] as usize..self.start[k + 1] as usize] {
+            if self.ridge.get(i as usize).copied().unwrap_or(false) { continue; }
+            let [a, b, c] = self.tris[i as usize];
+            let d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+            if d.abs() < 1e-9 { continue; }
+            let l1 = ((b.y - c.y) * (x - c.x) + (c.x - b.x) * (y - c.y)) / d;
+            let l2 = ((c.y - a.y) * (x - c.x) + (a.x - c.x) * (y - c.y)) / d;
+            let l3 = 1.0 - l1 - l2;
+            if l1.min(l2).min(l3) < -1e-4 { continue; }
+            let z = l1 * a.z + l2 * b.z + l3 * c.z;
+            if z <= top && best.is_none_or(|(old, _)| z > old) {
+                let n = (b - a).cross(c - a).normalize();
+                best = Some((z, if n.z < 0.0 { -n } else { n }));
+            }
+        }
+        best
     }
 
     /// The wall tops over tile-local (x, y) alone, as [`DriveGrid::probe`] gives the rest.
