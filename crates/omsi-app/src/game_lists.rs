@@ -1459,8 +1459,15 @@ pub(crate) fn dropdown_apply(app: &mut App, action: &str) {
             }
         }
         "gfxprofile" => {
-            if let Some(p) = omsi_launcher_lib::graphics_profiles().get(arg) {
-                store_with(app, |v| omsi_launcher_lib::apply_graphics_profile(p, v));
+            let name = arg.trim();
+            match omsi_launcher_lib::graphics_profiles().get(name) {
+                Some(p) => {
+                    store_with(app, |v| omsi_launcher_lib::apply_graphics_profile(p, v));
+                    sync_live(app);
+                    LIST_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+                    app.service_msg = Some((format!("Graphics profile \"{name}\" loaded: graphics settings apply when the game starts the next time"), 5.0));
+                }
+                None => app.service_msg = Some((format!("Graphics profile \"{name}\" not found"), 4.0)),
             }
         }
         "reset_all" => store_with(app, |v| {
