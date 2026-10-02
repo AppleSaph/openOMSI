@@ -3679,9 +3679,16 @@ impl World {
             let absolute = ot.sco.abs_height || !ot.sco.spline_helpers.is_empty();
             let (x, y) = (origin2.x + o.pos[0], origin2.y + o.pos[1]);
             let place = if absolute {
+                // On a `[worldcoordinates]` map the tile's splines are stretched onto the
+                // grid with it, lengths included (`fit_to_world_grid`); a crossing has to
+                // stretch as well, or the roads ending at its edges stop short of it - 1.6 cm
+                // at a 27 m arm in Spandau, a line of sky across the road where the ground
+                // is cut out underneath.
+                let (kx, ky) = omsi_map::world_tile_scale(ty);
                 Placement::Pose(Pose {
                     pos: DVec3::new(x, y, o.pos[2]),
-                    rot: object_rotation(omsi_geometry::map_rotation(o.rot)),
+                    rot: Mat4::from_scale(glam::Vec3::new(kx as f32, ky as f32, 1.0))
+                        * object_rotation(omsi_geometry::map_rotation(o.rot)),
                 })
             } else {
                 Placement::Ground {
