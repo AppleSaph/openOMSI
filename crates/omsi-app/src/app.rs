@@ -72,6 +72,9 @@ pub(crate) struct App {
     pub(crate) mirror_budget: f32,
     pub(crate) mirrors_seen: usize,
     pub(crate) mirror_turn: usize,
+    /// With no real-time reflections: the bus whose mirrors are frozen (see
+    /// `MIRROR_FREEZE_REDRAW`).
+    pub(crate) frozen_mirrors: Option<FrozenMirrors>,
     /// Cursor and view the hover was last worked out for (see the redraw).
     pub(crate) hover_key: Option<(i32, i32, i32, i32)>,
     pub(crate) view: String,
@@ -1026,6 +1029,12 @@ pub(crate) fn blend_local(a: &omsi_vehicle::Camera, b: &omsi_vehicle::Camera, k:
         pitch,
         extra: b.extra,
     }
+}
+
+/// A bus whose mirrors are frozen, and the seconds since they were first drawn.
+pub(crate) struct FrozenMirrors {
+    pub(crate) bus: u64,
+    pub(crate) since: f32,
 }
 
 #[derive(Default)]

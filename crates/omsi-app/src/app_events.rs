@@ -4,7 +4,13 @@
 const MIRROR_RATE: f32 = 75.0;
 /// The least a mirror is redrawn a second (see the mirrors in `window_event`).
 const MIRROR_MIN_HZ: f32 = 8.0;
-const MIRROR_MAX_HZ: f32 = 30.0;
+/// The most a mirror in the picture is redrawn a second, with the real-time reflections
+/// economical (`mirror_refresh=eco`) and full (the default).
+const MIRROR_MAX_HZ_ECO: f32 = 15.0;
+const MIRROR_MAX_HZ_FULL: f32 = 30.0;
+/// With no real-time reflections (`mirror_refresh=off`) a bus's mirrors are drawn once when
+/// it is taken over and once more this many seconds later.
+const MIRROR_FREEZE_REDRAW: f32 = 2.0;
 
 /// Consume the VR redraw budget without updating a mirror twice in one frame.
 /// Negative rates request every mirror each frame; zero freezes immediately.
@@ -2196,6 +2202,20 @@ impl ApplicationHandler for App {
                         if self.settings.mirror_size == 0 {
                             self.mirror_budget = 0.0;
                             self.mirrors_seen = 0;
+                        } else if self.settings.mirror_refresh == "off" {
+                            self.mirror_budget = 0.0;
+                            if let (Some(w), Some(p)) = (self.world.as_ref(), self.player.as_ref()) {
+                                let since = match &self.frozen_mirrors {
+                                    Some(m) if m.bus == p.uid => m.since,
+                                    _ => -1.0,
+                                };
+                                let next = since.max(0.0) + raw_dt.min(0.1);
+                                // (and while the driver turns a mirror, so it can be aimed)
+                                if since < 0.0 || (since < MIRROR_FREEZE_REDRAW && next >= MIRROR_FREEZE_REDRAW) || p.mirrors_dirty {
+                                    self.mirrors_seen = render_mirrors(r, scene, w, p, &lighting, None, None);
+                                }
+                                self.frozen_mirrors = Some(FrozenMirrors { bus: p.uid, since: next });
+                            }
                         } else {
                             let mirrors = self.player.as_ref().map(|p| p.vehicle.ty.def.cameras_reflexion.len()).unwrap_or(0);
                             #[cfg(windows)]
@@ -2212,7 +2232,8 @@ impl ApplicationHandler for App {
                                         .filter(|rate| rate.is_finite() && *rate >= -1.0)
                                         .unwrap_or(self.settings.vr_mirror_rate)
                                 } else {
-                                    MIRROR_RATE.max(mirrors as f32 * MIRROR_MIN_HZ).min(MIRROR_MAX_HZ * self.mirrors_seen.max(1) as f32)
+                                    let max_hz = if self.settings.mirror_refresh == "full" { MIRROR_MAX_HZ_FULL } else { MIRROR_MAX_HZ_ECO };
+                                    MIRROR_RATE.max(mirrors as f32 * MIRROR_MIN_HZ).min(max_hz * self.mirrors_seen.max(1) as f32)
                                 }
                             };
                             // The desktop camera does not follow the headset. Culling by

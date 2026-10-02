@@ -177,6 +177,9 @@ pub fn omsi_options(root: &Path) -> Option<OmsiOptions> {
     if let Some(x) = num("performance_refltexsize") {
         v["mirror_size"] = json!(1i64 << (x as i64).clamp(6, 11));
     }
+    if let Some(x) = o.str("performance_realreflexions") {
+        v["mirror_refresh"] = json!(mirror_refresh(x));
+    }
     if let Some(x) = num("sound_vol_master") {
         v["volume"] = json!(x.clamp(0.0, 1.0));
     }
@@ -1655,6 +1658,16 @@ pub fn graphics_mode(v: &str) -> &'static str {
     }
 }
 
+/// How often the mirrors are drawn: `off`, `eco` or `full`, also from OMSI's
+/// `performance_realreflexions` (none, economy, full).
+fn mirror_refresh(x: &str) -> &'static str {
+    match x.trim().to_ascii_lowercase().as_str() {
+        "off" | "none" => "off",
+        "eco" | "economy" => "eco",
+        _ => "full",
+    }
+}
+
 /// The page's view of a `settings.cfg` text (None: no file yet, the game's defaults).
 pub fn settings_from_text(text: Option<&str>) -> Value {
     let mut v = json!({ "msaa": 4, "anisotropy": 8, "ssao": true, "shadows": true, "shadow_size": 2048, "navigator": true, "ui_opacity": 0.85, "navigator_corner": "bottom-left", "boarding": "auto", "detail_textures": true, "exact_fare": true, "enhanced": false, "graphics": "vanilla_plus", "fullscreen": false, "vsync": true, "volume": 0.6, "drive_keys": "simple", "render_scale": "auto", "view_distance": "auto", "language": "ENG", "texture_memory": 0, "texture_compression": true, "chat": true, "tooltips": true, "name_tags": true, "show_fps": false, "clouds": true, "pax_density": 1.0, "vol_ai": 1.0, "vol_scenery": 1.0, "mirror_size": 256, "doppler": true, "driver": true, "max_fps": 0, "min_obj_size": 0.013, "max_obj_dist": "auto" });
@@ -1662,6 +1675,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
     v["vr_scale"] = json!(0.65);
     v["vr_head_smoothing_ms"] = json!(0);
     v["vr_mirror_rate"] = json!(16);
+    v["mirror_refresh"] = json!("full");
     v["vr_desktop_mirror"] = json!(true);
     v["discord_status"] = json!(true);
     v["discord_app_id"] = json!("");
@@ -1700,6 +1714,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
             "vr_head_smoothing_ms" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 30.0) as i64).unwrap_or(0)),
             "vr_mirror_rate" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(-1.0, 360.0) as i64).unwrap_or(16)),
             "mirror_size" => v[&k] = json!(val.parse::<i64>().map(|x| if x == 0 { 0 } else { x.clamp(64, 2048) }).unwrap_or(256)),
+            "mirror_refresh" => v[&k] = json!(mirror_refresh(val)),
             "max_fps" => v[&k] = json!(val.parse::<f64>().map(|x| x as i64).unwrap_or(0)),
             "max_obj_dist" => v[&k] = if val.eq_ignore_ascii_case("auto") { json!("auto") } else { json!(val.parse::<f64>().map(|m| (m.round() as i64).to_string()).unwrap_or_else(|_| "auto".into())) },
             "ssao" | "shadows" | "shadow_blobs" | "navigator" | "enhanced" | "vr" | "vr_desktop_mirror" | "fullscreen" | "vsync" | "exact_fare" | "detail_textures" | "texture_compression" | "chat" | "tooltips" | "name_tags" | "show_fps" | "clouds" | "doppler" | "driver" | "use_real_time" | "use_real_date" | "use_real_year" | "collision_vehicles" | "collision_objects" | "collision_pedestrians" | "head_movement" | "driverview_smooth" | "hands_in_cab" | "alt_view" => v[&k] = json!(b(val)),
@@ -1818,6 +1833,9 @@ pub fn option_presets() -> Vec<(String, Value)> {
         }
         let refl = o.i32("performance_refltexsize", 8);
         v["mirror_size"] = json!(1i64 << refl.clamp(6, 11));
+        if let Some(x) = o.str("performance_realreflexions") {
+            v["mirror_refresh"] = json!(mirror_refresh(x));
+        }
         out.push((name, v));
     }
     out
@@ -2037,6 +2055,7 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
     // what the page does not manage (keys of newer games, hand-written ones) stays as it
     // was in the file; other spellings of the keys just written go
     let mut text = text;
+    text.push_str(&format!("mirror_refresh={}\n", mirror_refresh(v.get("mirror_refresh").and_then(|x| x.as_str()).unwrap_or("full"))));
     text.push_str(&format!("steer_look_angle={}\nsteer_look_response={}\ntime_sync={}\nmetar_sync={}\nmetar_station={}\n", f("steer_look_angle", 30.0).clamp(0.0, 60.0), f("steer_look_response", 0.25).clamp(0.05, 1.0), b("time_sync", false), b("metar_sync", false), v.get("metar_station").and_then(|x| x.as_str()).unwrap_or("").chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>().to_ascii_uppercase()));
     let written: Vec<String> = text.lines().filter_map(|l| l.split_once('=')).map(|(k, _)| k.trim().to_ascii_lowercase()).collect();
     for line in old.unwrap_or("").lines() {
@@ -2577,6 +2596,17 @@ mod tests {
     }
 
     #[test]
+    fn mirror_refresh_survives_the_launcher() {
+        assert_eq!(settings_from_text(None)["mirror_refresh"], "full");
+        for mode in ["off", "eco", "full"] {
+            let v = settings_from_text(Some(&format!("mirror_refresh={mode}\n")));
+            assert_eq!(v["mirror_refresh"], mode);
+            let text = settings_to_text(&v, None);
+            assert!(text.lines().any(|l| l == format!("mirror_refresh={mode}")), "{text}");
+        }
+    }
+
+    #[test]
     fn sixteen_x_anisotropy_survives_the_launcher() {
         let v = settings_from_text(Some("anisotropy=16\n"));
         assert_eq!(v["anisotropy"], 16);
@@ -2793,5 +2823,17 @@ mod omsi_options_tests {
         assert_eq!(o.settings["language"], "ENG");
         assert_eq!(o.settings["head_movement"], true);
         assert_eq!(o.settings["collision_vehicles"], false);
+    }
+
+    #[test]
+    fn the_real_time_reflections_are_read_as_omsi_writes_them() {
+        let root = std::env::temp_dir().join(format!("omsi-realrefl-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for (word, mode) in [("none", "off"), ("economy", "eco"), ("full", "full")] {
+            std::fs::write(root.join("options.cfg"), format!("[performance_realreflexions]\r\n{word}\r\n\r\n[performance_reflTexSize]\r\n9\r\n")).unwrap();
+            let o = super::omsi_options(&root).unwrap();
+            assert_eq!(o.settings["mirror_refresh"], mode, "{word}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
