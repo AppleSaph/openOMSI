@@ -131,6 +131,9 @@ pub(crate) struct App {
     /// Discord's "Playing openOMSI" status, and when it was last brought up to date.
     pub(crate) discord: Option<crate::discord::Discord>,
     pub(crate) discord_t: f32,
+    // Steamworks API layer and it's last updated time
+    pub(crate) steam: Option<crate::steam::Steam>,
+    pub(crate) steam_t: f32,
     /// Head tracking (Settings → head tracking), started with the first frame that wants it.
     pub(crate) headtrack: Option<crate::headtrack::HeadTracker>,
     /// Steering wheels, pedals, joysticks and gamepads (`Inputs/gamectrler.cfg`).
@@ -303,6 +306,13 @@ impl App {
     /// The game's window (or the launcher's, handed over on a phone), its surface and the
     /// renderer; then the menu or, when the session is given, the world.
     pub(crate) fn create_window(&mut self, event_loop: &ActiveEventLoop, given: Option<Arc<Window>>) {
+        // steamapi must be initialized before the game window
+        #[cfg(not(target_os = "android"))]
+        if self.steam.is_none() {
+            self.steam = crate::steam::Steam::start();
+            log::info!("Steam set, current existance: {}", self.steam.is_some());
+        }
+
         // --size sets the window's size in points as well (1600x900 unless given)
         let (lw, lh) = self
             .args
