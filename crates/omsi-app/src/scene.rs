@@ -3075,7 +3075,7 @@ impl World {
                         positions.push((o.id, DVec3::new(x, y, o.pos[2] + ground())));
                         continue;
                     };
-                    let absolute = sco.abs_height || !sco.spline_helpers.is_empty();
+                    let absolute = sco.absolute_height();
                     let pos = DVec3::new(x, y, if absolute { o.pos[2] } else { o.pos[2] + ground() });
                     positions.push((o.id, pos));
                     if !sco.paths.is_empty() {
@@ -3746,9 +3746,9 @@ impl World {
             let Some((ot, parked)) = self.placed_type(&o.file, &o.extra, o.id, tx, ty, &counts) else {
                 continue;
             };
-            // Objects connected to splines (crossings, switches) are stored with absolute
-            // heights like the splines themselves; so are [absheight] ones.
-            let absolute = ot.sco.abs_height || !ot.sco.spline_helpers.is_empty();
+            // Objects with traffic paths (crossings, switches, road pieces) are stored with
+            // absolute heights like the splines themselves; so are [absheight] ones.
+            let absolute = ot.sco.absolute_height();
             let (x, y) = (origin2.x + o.pos[0], origin2.y + o.pos[1]);
             let place = if absolute {
                 // On a `[worldcoordinates]` map the tile's splines are stretched onto the
@@ -3960,9 +3960,9 @@ impl World {
                 );
                 let base_height = Self::base_ground(src, *x, *y)
                     .unwrap_or_else(|| st.base_terrain.sample(lx, ly) as f64);
-                // Omsi.exe sets every object without `[absheight]` (those are `Pose`s) on
-                // the terrain, `[surface]` ones as well (TMap.RefreshObjectsKacheln
-                // 0x79e3c8: sco+0x194 is `[absheight]` only).
+                // Omsi.exe sets every object without an absolute height (those are `Pose`s,
+                // `SceneryObject::absolute_height`) on the terrain, `[surface]` ones as well
+                // (TMap.RefreshObjectsKacheln 0x79e3c8 reads sco+0x194).
                 Some(Pose {
                     pos: DVec3::new(*x, *y, z + base_height),
                     rot: object_rotation(*rot),
