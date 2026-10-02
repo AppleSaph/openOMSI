@@ -2284,7 +2284,7 @@ impl Humans {
             Vec::new()
         };
         if debug_pax() {
-            log::info!("stop {id} '{name}' at ({:.1}, {:.1}): {} waiting places, length {length}, side {side}, {} destinations", pos.x, pos.y, spots.len(), dests.len());
+            log::info!("stop {id} '{name}' at ({:.1}, {:.1}, {:.2}) heading {heading:.0}: {} waiting places, length {length}, side {side}, {} destinations", pos.x, pos.y, pos.z, spots.len(), dests.len());
         }
         let n = spots.len();
         PaxStop {

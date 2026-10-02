@@ -344,7 +344,7 @@ impl App {
                         if let Some(p) = self.player.as_mut() {
                             let groups = crate::player::door_keys(&p.vehicle.ty);
                             if let Some(group) = groups.get(n - 1) {
-                                let fire = crate::player::door_group_to_fire(&p.vehicle, group);
+                                let fire = crate::player::door_group_to_fire(&mut p.vehicle, group);
                                 log::info!("door key Shift+{n}: {}", fire.join(" + "));
                                 // the automatic rear doors of the stock Berlin buses (SD, NL): the
                                 // key is their release, and switched off with the doors open it

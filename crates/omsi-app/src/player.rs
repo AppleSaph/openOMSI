@@ -431,7 +431,38 @@ pub(crate) fn door_trigger_target(program: &omsi_script::Program, name: &str) ->
 /// Which triggers of a door key's group to fire so that its leaves end up together: when
 /// any is open (by its target), only the open ones (to close them), else all. Toggling
 /// every leaf of a group made a closed leaf open while an open one closed.
-pub(crate) fn door_group_to_fire(v: &omsi_sim::VehicleInstance, group: &[String]) -> Vec<String> {
+pub(crate) fn door_group_to_fire(v: &mut omsi_sim::VehicleInstance, group: &[String]) -> Vec<String> {
+    let fire = door_group_plan(v, group);
+    if fire.len() < 2 {
+        return fire;
+    }
+    // Triggers that undo each other are an open and a close key, not two leaves: Road-hog123's
+    // door script (the UK buses' - the London Citybus 400, the Enviro400s) opens both leaves
+    // on `bus_doorfront0` and closes both on `bus_doorfront1`, and firing the pair left the
+    // doors shut: the passengers queued at the closed door for good. Tried on the scripts
+    // first (the vehicle left as it was): when the doors' targets end where they began, only
+    // the trigger that moves them now is fired.
+    let mut targets: Vec<omsi_script::VarId> = group.iter().filter_map(|n| door_trigger_target(&v.ty.program, n.split('|').next().unwrap_or(n))).collect();
+    targets.sort_unstable();
+    targets.dedup();
+    if targets.is_empty() {
+        return fire;
+    }
+    let at = |vars: &[f32]| -> Vec<bool> { targets.iter().map(|&t| vars.get(t as usize).is_some_and(|x| *x > 0.5)).collect() };
+    let base = at(&v.state.vars);
+    let names: Vec<&str> = fire.iter().map(|s| s.as_str()).collect();
+    if at(&v.trial_triggers(&names)) != base {
+        return fire;
+    }
+    match fire.iter().find(|n| at(&v.trial_triggers(&[n.as_str()])) != base) {
+        Some(one) => vec![one.clone()],
+        None => fire,
+    }
+}
+
+/// Which triggers of a door key's group the doors' targets ask for (see
+/// `door_group_to_fire`).
+fn door_group_plan(v: &omsi_sim::VehicleInstance, group: &[String]) -> Vec<String> {
     // an open and close pair (`open|close`): whichever fits the leaf now
     let group: Vec<String> = group
         .iter()

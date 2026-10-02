@@ -1776,6 +1776,25 @@ impl VehicleInstance {
             .run_trigger(&p, name, &mut self.state, &mut self.host)
     }
 
+    /// The script variables as `names` would leave them, run one after another, with the
+    /// vehicle left exactly as it was: its variables, the machine's random numbers, the
+    /// sounds and messages the triggers asked for.
+    pub fn trial_triggers(&mut self, names: &[&str]) -> Vec<f32> {
+        let (state, vm) = (self.state.clone(), self.vm.clone());
+        let (fired, fired_files, messages, time_written) = (self.host.fired_triggers.len(), self.host.fired_file_triggers.len(), self.host.messages.clone(), self.host.time_written);
+        for n in names {
+            self.trigger(n);
+        }
+        let out = self.state.vars.clone();
+        self.state = state;
+        self.vm = vm;
+        self.host.fired_triggers.truncate(fired);
+        self.host.fired_file_triggers.truncate(fired_files);
+        self.host.messages = messages;
+        self.host.time_written = time_written;
+        out
+    }
+
     /// Dirt and spray. OMSI writes three engine variables every frame and the bus scripts
     /// turn them into what you see: `Dirt_Norm` is how dirty the body is (the `[alphascale]`
     /// of the dirt overlay), `DirtRate` how fast the windscreen is soiling right now

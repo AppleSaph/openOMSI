@@ -674,6 +674,12 @@ impl ApplicationHandler for App {
                 if let (true, Some(s)) = (self.mouse_drive && bus_view && !self.mouse_look
                                               && self.game_menu.is_none(), self.surface.as_ref()) {
                     let (w, h) = (s.config.width as f32, s.config.height as f32);
+                    if std::mem::take(&mut self.center_cursor) {
+                        self.cursor = (w * 0.5, h * 0.5);
+                        if let Some(win) = self.window.as_ref() {
+                            let _ = win.set_cursor_position(winit::dpi::PhysicalPosition::new((w * 0.5) as f64, (h * 0.5) as f64));
+                        }
+                    }
                     // (the speed the divisor takes, smoothed over 0.4 s: the bus's own speed
                     // trembles by fractions of a km/h from frame to frame on its springs and
                     // tyres, and at 30 km/h the wheel twitched with it by itself)
