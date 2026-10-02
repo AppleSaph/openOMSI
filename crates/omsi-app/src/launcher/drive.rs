@@ -642,7 +642,24 @@ fn step_time(l: &mut Launcher, r: Rect) {
     // weather cards
     l.ui.heading(Rect::new(r.x, y, r.w, 28.0), "Weather", Some("partly_cloudy_day"));
     y += 30.0;
-    let mut items: Vec<(String, String, String, String, bool)> = vec![(String::new(), "Map default".into(), "Whatever the map starts with".into(), "wb_sunny".into(), false)];
+    if selected_weather_as_custom(&l.state.config.root,&l.state.choice.weather).is_some() {
+        if l.ui.button("weather-edit-current",Rect::new(r.x,y,r.w,34.0),"Edit selected weather as custom",Some("tune"),ButtonKind::Normal){
+            if let Some(custom)=selected_weather_as_custom(&l.state.config.root,&l.state.choice.weather){
+                l.state.choice.weather=custom;
+                l.state.touched();
+            }
+        }
+        y+=42.0;
+    }
+    let custom_now = crate::weather_setup::custom_weather(Some(&l.state.choice.weather));
+    let custom_file = custom_now.clone().unwrap_or_default().encode();
+    let custom_meta = custom_now.as_ref()
+        .map(custom_weather_summary)
+        .unwrap_or_else(|| "Set visibility, wind, clouds, rain, temperature and road state".into());
+    let mut items: Vec<(String, String, String, String, bool)> = vec![
+        (String::new(), "Map default".into(), "Whatever the map starts with".into(), "wb_sunny".into(), false),
+        (custom_file, "Custom weather".into(), custom_meta, "tune".into(), false),
+    ];
     // OMSI 2's current weather: an airport's METAR report, fetched when the game starts
     let metar = l.state.choice.weather.strip_prefix("metar:").map(str::to_string);
     // (the airport nearest the map, not Berlin's for every map: Novi Sad got Berlin's rain)
@@ -671,25 +688,8 @@ fn step_time(l: &mut Launcher, r: Rect) {
         items.push((w.file.clone(), w.name.clone(), format!("{:.0} °C · {} · {vis}", w.temp, w.precip), icon.into(), l.state.fresh.contains_key(&w.file)));
     }
     if let Some(code) = metar.as_ref() {
-        static AIRPORTS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
         let root = std::path::PathBuf::from(&l.state.config.root);
-        let list = AIRPORTS.get_or_init(|| {
-            let text = std::fs::read(root.join("Weather").join("ICAO.txt"))
-                .map(|b| omsi_cfg::codepage::decode(&b))
-                .unwrap_or_default();
-            let mut v: Vec<(String, String)> = text
-                .lines()
-                .filter_map(|l| {
-                    l.split_once(" - ")
-                        .map(|(c, n)| (c.trim().to_string(), format!("{} - {}", c.trim(), n.trim())))
-                })
-                .collect();
-            if !v.iter().any(|a| a.0 == "EDDB") {
-                v.insert(0, ("EDDB".into(), "EDDB - Berlin Brandenburg".into()));
-            }
-
-            v
-        });
+        let list = crate::weather_setup::metar_airports(&root);
 
         let mut airport = code.to_uppercase().chars().take(4).collect::<String>();
 
@@ -740,6 +740,80 @@ fn step_time(l: &mut Launcher, r: Rect) {
 
         y += ROW + 8.0;
     }
+    // When Custom weather is selected, the weather cards turn into the editor. The value is
+    // still just `choice.weather`, so it survives launcher restarts and goes to the game
+    // through the normal `--weather` argument.
+    if let Some(mut custom) = crate::weather_setup::custom_weather(Some(&l.state.choice.weather)) {
+        let area = Rect::new(r.x - 4.0, y, r.w + 8.0, r.bottom() - y);
+        let mut changed = false;
+        let mut presets = false;
+        l.ui.scroll_area("custom-weather-editor", area, &mut |ui, v| {
+            let mut yy = v.y + 4.0;
+            if ui.button("weather-presets", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), "Choose a weather preset", Some("arrow_back"), ButtonKind::Normal) {
+                presets = true;
+            }
+            yy += 44.0;
+
+            changed |= ui.slider("custom-vis", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.visibility_m, 50.0, 50_000.0, 50.0, "Visibility", &|x| if x >= 49_950.0 { "unlimited".into() } else if x >= 1000.0 { format!("{:.1} km", x / 1000.0) } else { format!("{x:.0} m") });
+            yy += 40.0;
+            changed |= ui.slider("custom-bright", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.brightness, 0.0, 1.5, 0.05, "Brightness", &|x| format!("{:.0} %", x * 100.0));
+            yy += 40.0;
+            changed |= ui.slider("custom-wdir", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.wind_dir, 0.0, 355.0, 5.0, "Wind direction", &|x| format!("{x:.0}°"));
+            yy += 40.0;
+            changed |= ui.slider("custom-wspeed", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.wind_speed, 0.0, 40.0, 0.5, "Wind speed", &|x| format!("{x:.1} m/s"));
+            yy += 40.0;
+            changed |= ui.slider("custom-temp", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.temp_c, -30.0, 45.0, 1.0, "Temperature", &|x| format!("{x:.0} °C"));
+            yy += 40.0;
+            let temp_for_dew = custom.temp_c;
+            changed |= ui.slider("custom-hum", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.humidity, 0.0, 100.0, 1.0, "Humidity", &|x| format!("{x:.0} % · dew {:.0} °C", crate::weather_setup::dew_point_c(temp_for_dew, x)));
+            yy += 44.0;
+
+            ui.label(Rect::new(v.x + 4.0, yy, 130.0, 32.0), "Cloud type");
+            let cloud_labels: Vec<String> = crate::weather_setup::CUSTOM_CLOUDS.iter().map(|x| (*x).to_string()).collect();
+            let mut cloud = custom.cloud;
+            if ui.select("custom-cloud", Rect::new(v.x + 134.0, yy, v.w - 142.0, 32.0), &mut cloud, &cloud_labels) {
+                custom.cloud = cloud;
+                changed = true;
+            }
+            yy += 44.0;
+
+            ui.label(Rect::new(v.x + 4.0, yy, 130.0, 32.0), "Precipitation");
+            let precip_labels: Vec<String> = crate::weather_setup::CUSTOM_PRECIP.iter().map(|x| (*x).to_string()).collect();
+            let mut precip = custom.precip.clamp(0, 2) as usize;
+            if ui.select("custom-precip", Rect::new(v.x + 134.0, yy, v.w - 142.0, 32.0), &mut precip, &precip_labels) {
+                custom.precip = precip as i32;
+                changed = true;
+            }
+            yy += 40.0;
+            changed |= ui.slider("custom-intensity", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.precip_intensity, 0.0, 255.0, 1.0, "Precipitation intensity", &|x| format!("{x:.0} / 255"));
+            yy += 40.0;
+            changed |= ui.slider("custom-wet", Rect::new(v.x + 4.0, yy, v.w - 12.0, 34.0), &mut custom.road_wetness, 0.0, 1.0, 0.05, "Road wetness", &|x| format!("{:.0} %", x * 100.0));
+            yy += 40.0;
+
+            let mut snow = custom.snow_cover;
+            if ui.toggle("custom-snow", Rect::new(v.x + 4.0, yy, (v.w - 20.0) * 0.5, 32.0), &mut snow, "Snow cover") {
+                custom.snow_cover = snow;
+                changed = true;
+            }
+            let mut snow_road = custom.snow_on_road;
+            if ui.toggle("custom-snow-road", Rect::new(v.x + 12.0 + (v.w - 20.0) * 0.5, yy, (v.w - 20.0) * 0.5, 32.0), &mut snow_road, "Snow on road") {
+                custom.snow_on_road = snow_road;
+                changed = true;
+            }
+            yy += 44.0;
+            yy - v.y
+        });
+        if presets {
+            l.state.choice.weather.clear();
+            l.state.touched();
+        } else if changed {
+            custom.normalize();
+            l.state.choice.weather = custom.encode();
+            l.state.touched();
+        }
+        return;
+    }
+
     let chosen = l.state.choice.weather.clone();
     let mut pick = None;
     let area = Rect::new(r.x - 4.0, y, r.w + 8.0, r.bottom() - y);
@@ -898,6 +972,10 @@ fn summary(l: &mut Launcher, side: Rect) {
     let weather = match l.state.choice.weather.strip_prefix("metar:") {
         Some(code) => format!("Current weather at {code}"),
         None if l.state.choice.weather == "cycle" => "Weather cycle".into(),
+        None if crate::weather_setup::custom_weather(Some(&l.state.choice.weather)).is_some() => {
+            let c=crate::weather_setup::custom_weather(Some(&l.state.choice.weather)).unwrap();
+            format!("Custom · {}",custom_weather_summary(&c))
+        },
         None => l.state.weathers.iter().find(|w| w.file == l.state.choice.weather).map(|w| w.name.clone()).unwrap_or_else(|| "Map default".into()),
     };
     let (yy, mm, dd) = super::ui::parse_date(&l.state.choice.date);
@@ -1012,6 +1090,30 @@ fn start(l: &mut Launcher) {
 
 /// The airport of OMSI's METAR list (`Weather/ICAO.txt`) nearest to where map `map` lies
 /// (its `timezone.txt`), else Berlin's; read once per map.
+pub(super) fn custom_weather_summary(c:&crate::weather_setup::CustomWeather)->String{
+    let precip=match c.precip{
+        1=>format!("rain {:.0}%",c.precip_intensity/255.0*100.0),
+        2=>format!("snow {:.0}%",c.precip_intensity/255.0*100.0),
+        _=>"dry".to_string(),
+    };
+    let vis=if c.visibility_m>=49_950.0{
+        "clear visibility".to_string()
+    }else if c.visibility_m>=1000.0{
+        format!("{:.1} km",c.visibility_m/1000.0)
+    }else{
+        format!("{:.0} m",c.visibility_m)
+    };
+    format!("{:.0} °C · {:.0}% RH · {precip} · {vis}",c.temp_c,c.humidity)
+}
+
+pub(super) fn selected_weather_as_custom(root:&str,file:&str)->Option<String>{
+    if file.is_empty()||file=="cycle"||file.to_ascii_lowercase().starts_with("metar:")||crate::weather_setup::custom_weather(Some(file)).is_some(){return None}
+    let path=omsi_cfg::resolve_path(std::path::Path::new(root),file);
+    let w=omsi_content::weather::Weather::load(&path).ok()?;
+    let wet=(w.ground_wet[0]/255.0).clamp(0.0,1.0);
+    Some(crate::weather_setup::CustomWeather::from_weather(&w,1.0,wet).encode())
+}
+
 pub(crate) fn nearest_airport(root: &str, map: &str) -> String {
     static CACHE: std::sync::Mutex<Option<hashbrown::HashMap<String, String>>> = std::sync::Mutex::new(None);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());

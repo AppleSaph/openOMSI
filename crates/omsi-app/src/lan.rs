@@ -1184,6 +1184,7 @@ fn host_weather(args: &Args, weather: &str) -> Result<Option<String>, String> {
     if w.is_empty() {
         return Ok(None);
     }
+    if crate::weather_setup::custom_weather(Some(w)).is_some(){return Ok(Some(w.to_string()));}
     // a METAR report's values: made into a weather here, no file and no sync of our own
     if w.starts_with(crate::weather_setup::REPORT) {
         return if crate::weather_setup::from_report(w).is_some() {
