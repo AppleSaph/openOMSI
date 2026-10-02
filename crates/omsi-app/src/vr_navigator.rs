@@ -420,6 +420,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn navigator_translations_are_loaded_for_all_languages() {
+        let keys = [
+            "Navigator position (this bus)",
+            "Position right / left",
+            "Position forward / back",
+            "Position up / down",
+            "Display width",
+            "Display rotation",
+            "Display tilt",
+            "Display roll",
+            "Move and rotate with the mouse...",
+            "Positioning navigator - changes apply to this bus",
+            "Hold left mouse: move | Hold right mouse: rotate",
+            "Wheel: distance | Ctrl+wheel: size | Shift+right drag: roll",
+            "Esc / Enter: save and finish | R: reset position",
+            "Reset navigator position",
+            "VR: Toggle navigator",
+            "VR: Position navigator",
+            "Could not save navigator position",
+        ];
+        let languages = ["de", "fr", "ru", "uk", "be", "kk", "pl", "cs", "hu", "es", "pt", "pt-pt", "it", "nl", "tr", "ja", "zh-tw", "ko", "th", "vi", "id", "ms", "tl", "zh", "hi"];
+        for language in languages {
+            for key in keys {
+                let translated = crate::_rust_i18n_try_translate(language, key);
+                assert!(
+                    translated.as_ref().is_some_and(|text| !text.trim().is_empty() && text.as_ref() != key),
+                    "Missing navigator translation: {language} / {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn navigator_starts_hidden_and_reset_preserves_visibility() {
         let mut p = Placement::default();
         assert!(!p.enabled);
