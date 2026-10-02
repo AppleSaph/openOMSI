@@ -2714,7 +2714,14 @@ pub fn local_now() -> Option<(i32, i32, i32, i32, i32)> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn local_now() -> Option<(i32, i32, i32, i32, i32)> {
+    // SAFETY: GetLocalTime only fills the struct handed to it
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    Some((t.wYear as i32, t.wMonth as i32, t.wDay as i32, t.wHour as i32, t.wMinute as i32))
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn local_now() -> Option<(i32, i32, i32, i32, i32)> {
     None
 }

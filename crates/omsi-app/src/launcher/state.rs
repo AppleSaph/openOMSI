@@ -667,10 +667,30 @@ impl State {
     }
 
     /// Work done each frame: results of background work, the regular poll, saving.
+    fn follow_clock(&mut self) {
+        let on = |k: &str| self.settings.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+        let (time, date, year) = (on("use_real_time"), on("use_real_date"), on("use_real_year"));
+        if !time && !date {
+            return;
+        }
+        let Some((y, mo, d, h, m)) = core::local_now() else { return };
+        if time {
+            self.choice.time = h * 60 + m;
+        }
+        if date {
+            let y = if year { y } else { self.choice.date.get(..4).and_then(|x| x.parse().ok()).unwrap_or(y) };
+            let today = format!("{y:04}-{mo:02}-{d:02}");
+            if self.choice.date != today {
+                self.choice.date = today;
+            }
+        }
+    }
+
     pub fn update(&mut self, dt: f32) {
         while let Ok(m) = self.rx.try_recv() {
             self.handle(m);
         }
+        self.follow_clock();
         self.poll_t -= dt;
         if self.poll_t <= 0.0 {
             self.poll_t = 2.5;

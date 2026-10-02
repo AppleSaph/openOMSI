@@ -876,9 +876,17 @@ fn mb(v: i64) -> String {
 
 // --- controls ---------------------------------------------------------------------------------
 
-fn action_label(a: &str) -> String {
+fn action_text(names: &crate::describe::ControlNames, a: &str) -> String {
+    known_action(a).unwrap_or_else(|| names.control(a))
+}
+
+fn control_names(l: &Launcher) -> &'static crate::describe::ControlNames {
+    crate::describe::names(std::path::Path::new(&l.state.config.root), l.state.settings.get("language").and_then(|x| x.as_str()).unwrap_or("ENG"))
+}
+
+fn known_action(a: &str) -> Option<String> {
     if let Some(gear) = a.strip_prefix("kw_s_").and_then(|s| s.strip_suffix("_fest")) {
-        return format!("Gear {gear} (H-pattern)");
+        return Some(format!("Gear {gear} (H-pattern)"));
     }
     let known: &[(&str, &str)] = &[
         ("throttle", "Throttle"),
@@ -925,7 +933,7 @@ fn action_label(a: &str) -> String {
         ("toggel_mouse_ctrl", "Toggle mouse steering"),
         ("toggel_ctrler", "Toggle game controllers"),
     ];
-    known.iter().find(|k| k.0 == a).map(|k| k.1.to_string()).unwrap_or_else(|| a.trim_start_matches("kw_").trim_start_matches("cp_").trim_start_matches("bus_").replace('_', " "))
+    known.iter().find(|k| k.0 == a).map(|k| k.1.to_string())
 }
 
 pub fn controls(l: &mut Launcher, area: Rect) {
@@ -994,6 +1002,7 @@ pub fn controls(l: &mut Launcher, area: Rect) {
         body
     };
     let half = (body.w - GAP * 2.0) * 0.5;
+    let names = control_names(l);
     for (sec, (title, sub, key)) in [("Driving & the bus", "The bus's own keys", "vehicles"), ("The game", "Menus, views, pausing", "game")].iter().enumerate() {
         let r = Rect::new(body.x + sec as f32 * (half + GAP * 2.0), body.y, half, body.h);
         l.ui.panel(r);
@@ -1006,10 +1015,10 @@ pub fn controls(l: &mut Launcher, area: Rect) {
         let list: Vec<(usize, String, i64, i64)> = l.state.keybindings.get(*key).and_then(|a| a.as_array()).map(|a| a.iter().enumerate().map(|(i, b)| (i, b.get("action").and_then(|x| x.as_str()).unwrap_or("").to_string(), b.get("scan_code").and_then(|x| x.as_i64()).unwrap_or(0), b.get("modifier").and_then(|x| x.as_i64()).unwrap_or(0))).collect()).unwrap_or_default();
         let mut shown: Vec<(usize, String, String, bool)> = list
             .iter()
-            .filter(|(_, a, s, m)| q.is_empty() || action_label(a).to_lowercase().contains(&q) || crate::keys::key_name(*s, *m).to_lowercase().contains(&q))
+            .filter(|(_, a, s, m)| q.is_empty() || action_text(names, a).to_lowercase().contains(&q) || a.to_lowercase().contains(&q) || crate::keys::key_name(*s, *m).to_lowercase().contains(&q))
             .map(|(i, a, s, m)| {
                 let clash = *s != 0 && list.iter().any(|(j, _, s2, m2)| j != i && s2 == s && m2 == m);
-                (*i, action_label(a), crate::keys::key_name(*s, *m), clash)
+                (*i, action_text(names, a), crate::keys::key_name(*s, *m), clash)
             })
             .collect();
         if sec == 1 {
@@ -1079,6 +1088,7 @@ fn shown_button_count(buttons: &[(String, String)], physical: usize, revealed: O
 fn game_controllers(l: &mut Launcher, body: Rect) {
     use crate::controllers::{DeviceCfg, Func};
     let hwnd = l.window.as_deref().and_then(crate::controllers::window_handle);
+    let names = control_names(l);
     let pv = &mut l.pages.pads;
     if pv.io.is_none() {
         pv.io = Some(crate::controllers::Devices::new(hwnd, false));
@@ -1242,6 +1252,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
         }
     }
     actions.dedup();
+    let labels: Vec<String> = actions.iter().enumerate().map(|(i, a)| if i == 0 { a.clone() } else { action_text(names, a) }).collect();
     let mut dirty = false;
     let lit = pv.last_pressed.filter(|(_, t)| t.elapsed().as_secs_f32() < 4.0).map(|(b, _)| b);
     // Some OMSI configs contain hundreds of empty trailing slots (the G920 report had
@@ -1336,7 +1347,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
             }
             ui.label(Rect::new(r.x, r.y, 90.0, r.h), &label);
             let mut sel = actions.iter().position(|a| a.eq_ignore_ascii_case(act)).unwrap_or(0);
-            if ui.select(&format!("pad-btn-{b}"), Rect::new(r.x + 90.0, r.y, r.w - 90.0, r.h), &mut sel, &actions) {
+            if ui.select(&format!("pad-btn-{b}"), Rect::new(r.x + 90.0, r.y, r.w - 90.0, r.h), &mut sel, &labels) {
                 *act = if sel == 0 { String::new() } else { actions[sel].clone() };
                 dirty = true;
             }
@@ -1367,7 +1378,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
                 None => format!("button {}", n + 1),
             };
             l.state.set_status(match now {
-                Some(a) => format!("{name}: {label} - {} (lit in the list: choose another there)", action_label(&a)),
+                Some(a) => format!("{name}: {label} - {} (lit in the list: choose another there)", action_text(names, &a)),
                 None => format!("{name}: {label} - nothing yet (lit in the list: choose what it does)"),
             }, false);
         }
@@ -2156,8 +2167,8 @@ mod wizard_tests {
 
     #[test]
     fn h_pattern_gears_have_a_clear_name() {
-        assert_eq!(super::action_label("kw_s_1_fest"), "Gear 1 (H-pattern)");
-        assert_eq!(super::action_label("kw_s_R_fest"), "Gear R (H-pattern)");
+        assert_eq!(super::known_action("kw_s_1_fest").as_deref(), Some("Gear 1 (H-pattern)"));
+        assert_eq!(super::known_action("kw_s_R_fest").as_deref(), Some("Gear R (H-pattern)"));
     }
 
     #[test]
