@@ -1471,8 +1471,8 @@ fn a_client_that_gave_up_comes_back_when_the_host_does() {
 
 #[test]
 fn reconnect_tries_again_after_the_host_sent_us_away() {
-    let mut host = LanSession::host(27962, "host", world("m"), false).unwrap();
-    let mut c = LanSession::join("127.0.0.1:27962", "c", world("m"), Duration::from_millis(10)).unwrap();
+    let mut host = LanSession::host(27991, "host", world("m"), false).unwrap();
+    let mut c = LanSession::join("127.0.0.1:27991", "c", world("m"), Duration::from_millis(10)).unwrap();
     assert!(until_connected(&mut c, &mut host));
     // the host sends us away: we stay out, with its reason
     host.kick(c.my_id, "test", false);
