@@ -358,12 +358,19 @@ impl BusService {
             let d = st.route_distance(ctx.net, stop.ri, stop.s);
             // into the bay over the last metres, but only once no junction lies between
             // the bus and its stop: the meeting places of a junction are laid out for
-            // vehicles in the middle of their lane
+            // vehicles in the middle of their lane. Not where the stop lies too close
+            // behind the junction for the S-curve into the bay (`AiState::lateral`):
+            // the bus came to rest in the middle of its lane, too far from the pole for
+            // anybody to get on, and stood there for good (DBC_Map, Grand and Peshtigo)
             if !ctx.passing {
-                let junction_first = ctx
+                let junction_end = ctx
                     .way
                     .iter()
-                    .any(|&(l, dl)| dl < d && !ctx.net.crossings[l].is_empty());
+                    .filter(|&&(l, dl)| dl < d && !ctx.net.crossings[l].is_empty())
+                    .map(|&(l, dl)| dl + ctx.net.lanes[l].length())
+                    .reduce(f32::max);
+                let ramp = ((stop.bay - st.lateral).abs() * 8.0).clamp(8.0, 30.0);
+                let junction_first = junction_end.is_some_and(|e| d - e >= ramp);
                 st.lateral_target = if d < BAY_REACH && d > -25.0 && !junction_first {
                     stop.bay
                 } else {
