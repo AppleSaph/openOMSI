@@ -40,6 +40,30 @@ pub struct DriveView {
     bus_list_initialized: bool,
     vehicle_settings_open: bool,
     pub line_filter: String,
+    /// The buses marked with a star (#524), by file (lower case, '/'), read once from
+    /// `~/.openomsi/favourite-buses.txt`; and whether the list shows only them.
+    favourites: Option<std::collections::BTreeSet<String>>,
+    only_favourites: bool,
+}
+
+fn favourites_file() -> std::path::PathBuf {
+    omsi_launcher_lib::data_dir().join("favourite-buses.txt")
+}
+
+fn fav_key(file: &str) -> String {
+    file.replace('\\', "/").to_lowercase()
+}
+
+/// The starred buses of the file (one bus file a line).
+fn read_favourites() -> std::collections::BTreeSet<String> {
+    std::fs::read_to_string(favourites_file()).map(|t| t.lines().map(str::trim).filter(|l| !l.is_empty()).map(fav_key).collect()).unwrap_or_default()
+}
+
+fn write_favourites(f: &std::collections::BTreeSet<String>) {
+    let text: String = f.iter().map(|l| format!("{l}\n")).collect();
+    if let Err(e) = std::fs::write(favourites_file(), text) {
+        log::warn!("favourite buses not saved: {e}");
+    }
 }
 
 const STEPS: [(&str, &str); 4] = [("Bus", "directions_bus"), ("Route", "route"), ("Time & weather", "partly_cloudy_day"), ("Roadbook", "receipt_long")];
@@ -195,10 +219,19 @@ fn step_bus(l: &mut Launcher, r: Rect) {
     }
     let models = l.drive.bus_manufacturers.clone();
     let chosen = l.state.choice.bus.clone();
+    let favs = l.drive.favourites.get_or_insert_with(read_favourites).clone();
+    let is_fav = |file: &str| favs.contains(&fav_key(file));
+    // (the starred ones only: a family with one of them, and in it only those - #524)
+    let only = l.drive.only_favourites && !favs.is_empty();
 
-    let visible: Vec<&BusManufacturer> = models.iter().filter(|m| manufacturer_matches(m, &q)).collect();
+    let visible: Vec<&BusManufacturer> = models.iter().filter(|m| manufacturer_matches(m, &q) && (!only || m.variants.iter().any(|v| is_fav(&v.file)))).collect();
     let count = format!("{} {}", visible.len(), omsi_ui::tr(if visible.len() == 1 { "manufacturer" } else { "manufacturers" }));
     l.ui.text_in(&count, Rect::new(r.x, search.bottom() + 6.0, r.w, 20.0), 11.5, Weight::Regular, TEXT_DIM, Align::Left);
+    let mut only_now = l.drive.only_favourites;
+    if l.ui.toggle("bus-only-favourites", Rect::new(r.right() - 190.0, search.bottom() + 4.0, 190.0, 22.0), &mut only_now, "Favourites only") {
+        l.drive.only_favourites = only_now;
+        l.ui.scroll.remove(&id_of("bus-model-list"));
+    }
     let list_y = search.bottom() + 32.0;
     let settings_h = if l.drive.vehicle_settings_open { 164.0 } else { 0.0 };
     let list = Rect::new(r.x, list_y, r.w, (r.bottom() - list_y - 146.0 - settings_h).max(100.0));
@@ -219,6 +252,7 @@ fn step_bus(l: &mut Launcher, r: Rect) {
     let expanded = l.drive.expanded_manufacturer.clone();
     let mut toggle = None;
     let mut pick = None;
+    let mut star: Option<String> = None;
     let loading = l.state.loading_content;
     l.ui.scroll_area("bus-model-list", list, &mut |ui, view| {
         let mut y = view.y + 6.0;
@@ -251,18 +285,42 @@ fn step_bus(l: &mut Launcher, r: Rect) {
             else if selected.is_some_and(|v| v.installed) { format!("{subtitle} · {}", omsi_ui::tr("MOD")) } else { subtitle };
             ui.text_in(&subtitle, Rect::new(title.x, row.y + 29.0, title.w, 17.0), 11.5, Weight::Regular, TEXT_DIM, Align::Left);
             ui.icon(if model.variants.len() == 1 { if selected.is_some() { "check" } else { "chevron_right" } } else if open { "expand_less" } else { "expand_more" }, Vec2::new(row.right() - 18.0, row.center().y), 18.0, if selected.is_some() { ACCENT } else { TEXT_DIM });
+            // the star: a bus of its own is starred here, a family's types in its list below
+            let starred = model.variants.iter().any(|v| is_fav(&v.file));
+            let sr = Rect::new(row.right() - 62.0, row.center().y - 13.0, 26.0, 26.0);
+            if model.variants.len() == 1 {
+                let (hs, _, cs) = ui.interact(id_of(&format!("bus-star-{}", model.key)), sr);
+                if cs {
+                    star = Some(model.variants[0].file.clone());
+                }
+                ui.icon("star", sr.center(), 16.0, if starred { ACCENT } else if hs { TEXT_SOFT } else { Color::WHITE.alpha(0.16) });
+                ui.tooltip(sr, if starred { "Remove from the favourites" } else { "Add to the favourites" });
+            } else if starred {
+                ui.icon("star", sr.center(), 14.0, ACCENT.alpha(0.8));
+            }
             y += 58.0;
             if open {
-                let variants: Vec<&BusVariant> = model.variants.iter().filter(|variant| q.is_empty() || model.name.to_lowercase().contains(&q) || variant.file == chosen || variant_matches(variant, &q)).collect();
+                let variants: Vec<&BusVariant> = model.variants.iter().filter(|variant| (q.is_empty() || model.name.to_lowercase().contains(&q) || variant.file == chosen || variant_matches(variant, &q)) && (!only || variant.file == chosen || is_fav(&variant.file))).collect();
                 let selected_index = variants.iter().position(|variant| variant.file == chosen);
                 let mut options: Vec<String> = variants.iter().map(|variant| variant.variant.clone()).collect();
                 let offset = if selected_index.is_none() { options.insert(0, "Choose a bus".into()); 1 } else { 0 };
                 let mut sel = selected_index.unwrap_or(0);
                 ui.label(Rect::new(view.x + 38.0, y, view.w - 50.0, 22.0), "Type / variant");
                 y += 26.0;
-                let dropdown = Rect::new(view.x + 38.0, y, view.w - 50.0, ROW);
+                let dropdown = Rect::new(view.x + 38.0, y, view.w - 50.0 - 36.0, ROW);
                 if !options.is_empty() && ui.select(&format!("bus-type-{}", model.key), dropdown, &mut sel, &options) {
                     if let Some(variant) = sel.checked_sub(offset).and_then(|index| variants.get(index)) { pick = Some(variant.file.clone()); }
+                }
+                // the star of the type chosen
+                if let Some(variant) = selected {
+                    let sr = Rect::new(dropdown.right() + 6.0, y, 30.0, ROW);
+                    let on = is_fav(&variant.file);
+                    let (hs, _, cs) = ui.interact(id_of(&format!("bus-star-type-{}", model.key)), sr);
+                    if cs {
+                        star = Some(variant.file.clone());
+                    }
+                    ui.icon("star", sr.center(), 18.0, if on { ACCENT } else if hs { TEXT_SOFT } else { Color::WHITE.alpha(0.2) });
+                    ui.tooltip(sr, if on { "Remove from the favourites" } else { "Add to the favourites" });
                 }
                 if let Some(variant) = selected {
                     ui.tooltip(dropdown, &format!("{}\n{}\n{} {}", variant.name, variant.file, variant.paints, omsi_ui::tr("liveries")));
@@ -281,6 +339,14 @@ fn step_bus(l: &mut Launcher, r: Rect) {
         }
     }
     if let Some(file) = pick { l.state.select_bus(&file); }
+    if let Some(file) = star {
+        let f = l.drive.favourites.get_or_insert_with(read_favourites);
+        let k = fav_key(&file);
+        if !f.remove(&k) {
+            f.insert(k);
+        }
+        write_favourites(f);
+    }
 
     let mut y = list.bottom() + 16.0;
     if let Some(vehicle) = l.state.bus().cloned() {
