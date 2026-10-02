@@ -6864,10 +6864,12 @@ impl World {
                         let any_distance = ot.sco.model.no_distance_check
                             || ot.model.no_distance_check
                             || ot.model.meshes.iter().any(|m| m.no_distance_check);
+                        let near_only = stand_in_area(&ot, &xf, pos, (p.tx, p.ty));
                         for inst in all_instances.iter().chain(&lod_instances) {
                             scene.instances[*inst].presurface =
                                 ot.sco.render_type == omsi_scenery::sco::RenderType::PreSurface;
                             renderer.set_object_culling(scene, *inst, radius, detail, any_distance);
+                            renderer.set_near_only(scene, *inst, near_only);
                         }
                     }
                     if ot.sco.crash_mode_pole.is_some() && !ot.sco.no_collision {
@@ -8167,6 +8169,43 @@ fn fallen_pole(xf: Mat4, push: DVec3) -> Mat4 {
     let dir = glam::Vec3::new(push.x as f32, push.y as f32, 0.0).normalize_or(glam::Vec3::Y);
     let axis = glam::Vec3::Z.cross(dir).normalize_or(glam::Vec3::X);
     Mat4::from_axis_angle(axis, 86f32.to_radians()) * xf
+}
+
+/// How many tiles OMSI keeps loaded around the camera's own: its `[performance_tiledistmax]`,
+/// 1 in the shipped options.cfg and in the presets maps ask for (Chicago Downtown's manual:
+/// "Set neighbor tiles count to 1 or max. 2").
+const OMSI_TILE_DIST: i32 = 1;
+
+/// Where the camera has to stand for a stand-in for far tiles to be drawn: the ground of
+/// the tiles OMSI loads with the one it is on. None for every other object.
+///
+/// OMSI has a tile's objects only while the camera is at most `OMSI_TILE_DIST` tiles away
+/// from it, and maps build on that: Chicago Downtown puts a model of the whole city at Navy
+/// Pier (`LOD_247.sco`, 5.5 km across, its parks and the lake as flat faces 2 m above the
+/// streets) to fill the view beyond the tiles loaded there, with a hole where they are.
+/// openOMSI keeps the tiles of its whole view distance, so the model was there from
+/// Columbus Drive on as well, its grass over the streets, the lower level and the vehicles
+/// on it (#650). A stand-in is told apart by its size: more than twice as wide as all the
+/// tiles OMSI has loaded with it (Chicago's are 3.6 to 8 km, its largest real objects -
+/// Navy Pier, the Merchandise Mart, the road grids of whole tiles - at most 1.25 km), so
+/// the far view keeps every ordinary object.
+fn stand_in_area(ot: &ObjectType, xf: &Mat4, pos: DVec3, tile: (i32, i32)) -> Option<[f64; 4]> {
+    let ts = tile_size();
+    let loaded = (2 * OMSI_TILE_DIST + 1) as f64 * ts;
+    let wide = ot.meshes.iter().any(|(m, _, _)| {
+        let b = mesh_bounds(m, xf, pos);
+        (b[2] - b[0]).max(b[3] - b[1]) > 2.0 * loaded
+    });
+    if !wide {
+        return None;
+    }
+    log::debug!("{} on tile {tile:?} stands in for far tiles: drawn only from the tiles around it", ot.sco.path.display());
+    Some([
+        (tile.0 - OMSI_TILE_DIST) as f64 * ts,
+        (tile.1 - OMSI_TILE_DIST) as f64 * ts,
+        (tile.0 + OMSI_TILE_DIST + 1) as f64 * ts,
+        (tile.1 + OMSI_TILE_DIST + 1) as f64 * ts,
+    ])
 }
 
 /// World bounds (min x, min y, max x, max y) of a mesh placed with `xf` at `origin`.
