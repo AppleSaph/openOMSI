@@ -206,6 +206,13 @@ pub struct ScriptedObject {
     /// Traffic light program of this object (crossings) or of its parent (lamps).
     pub controller: Option<usize>,
     pub light_index: usize,
+    /// A child of a crossing that names one of its lights without being one of our lamps
+    /// (its own textures to choose, see `child_lamp`): (the crossing, the light). Its
+    /// script reads that light's `TrafficLightPhase` and `TrafficLightApproach`, as
+    /// Omsi.exe's RefreshAmpelParenting (0x77d460) hands them to any such child. The
+    /// crossing's program is looked up when the script runs: it may stand on a tile
+    /// loaded later.
+    pub light_parent: Option<(i64, usize)>,
     pub map_id: i64,
     /// `[matl_change]` variants: (instance, slot, base, item, variable).
     pub variants: Vec<(usize, usize, MaterialId, MaterialId, String)>,
@@ -4548,6 +4555,7 @@ impl World {
                         inst,
                         controller: None,
                         light_index: 0,
+                        light_parent: None,
                         map_id: o.id,
                         variants: Vec::new(),
                         sounds: None,
@@ -7141,6 +7149,11 @@ impl World {
                                 inst,
                                 controller,
                                 light_index: 0,
+                                light_parent: if controller.is_none() && lamp.is_none() {
+                                    light_child_of(&self.index().traffic_light_parents, var_parent, &strings)
+                                } else {
+                                    None
+                                },
                                 map_id,
                                 variants: object_variants,
                                 sounds: None,
@@ -8789,6 +8802,7 @@ impl World {
         // threads (a city's hundreds of scripted objects took a core's worth of a frame),
         // then what they did, in order again.
         let mut inputs: Vec<Option<omsi_sim::scenery::SceneryVars>> = Vec::with_capacity(scripted.len());
+        let controllers = self.controller_of_object.lock();
         for o in scripted.iter_mut() {
             let dist = (o.pos - center).length();
             if dist > 800.0 {
@@ -8802,17 +8816,16 @@ impl World {
             // daylight under its own threshold (0.6, or 0.3-0.75 with a [NightMapMode])
             let use_ = InUse::new(o.ty.sco.night_map_mode, o.map_id as u64);
             let in_use = use_.in_use(now.time, day);
+            let light = match (o.controller, o.light_parent) {
+                (Some(c), _) => Some((c, o.light_index)),
+                (None, Some((parent, li))) => controllers.get(&parent).map(|&c| (c, li)),
+                _ => None,
+            };
             let vars = omsi_sim::scenery::SceneryVars {
                 nightlight: use_.lit(now.time, day, brightness) as i32 as f32,
                 in_use: in_use as i32 as f32,
-                traffic_light_phase: o
-                    .controller
-                    .map(|c| phase_of(c, o.light_index).0)
-                    .unwrap_or(-1.0),
-                traffic_light_approach: o
-                    .controller
-                    .map(|c| phase_of(c, o.light_index).1)
-                    .unwrap_or(0.0),
+                traffic_light_phase: light.map(|(c, li)| phase_of(c, li).0).unwrap_or(-1.0),
+                traffic_light_approach: light.map(|(c, li)| phase_of(c, li).1).unwrap_or(0.0),
                 switch: None,
             };
             // the scripts read the simulation's time of day (clocks, the display's blinking)
@@ -8863,6 +8876,7 @@ impl World {
             }
             inputs.push(Some(vars));
         }
+        drop(controllers);
         {
             use rayon::prelude::*;
             scripted.par_iter_mut().zip(inputs.par_iter()).for_each(|(o, vars)| {
@@ -12109,6 +12123,17 @@ fn spline_lanes(
     out
 }
 
+/// The crossing light a placed child names (see `ScriptedObject::light_parent`): its
+/// `[varparent]` is a crossing whose program runs and its first string a light index.
+fn light_child_of(crossings: &hashbrown::HashSet<i64>, var_parent: Option<i64>, strings: &[String]) -> Option<(i64, usize)> {
+    let parent = var_parent.filter(|p| crossings.contains(p))?;
+    if !crate::tiles::names_traffic_light(strings) {
+        return None;
+    }
+    let index = strings.first()?.trim().parse::<usize>().ok()?;
+    Some((parent, index))
+}
+
 fn traffic_light_program_enabled(sco: &SceneryObject, has_signals: bool) -> bool {
     !sco.traffic_lights.is_empty() && (has_signals || sco.is_traffic_light)
 }
@@ -12296,6 +12321,20 @@ mod tests {
         );
         assert_eq!(found.as_deref(), Some(wanted.as_path()));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_child_naming_a_crossing_light_reads_that_light() {
+        // (RefreshAmpelParenting hands any child of a running crossing whose first string
+        // is a light index that light's phase, lamp or not, #922)
+        let crossings: hashbrown::HashSet<i64> = [7].into_iter().collect();
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(light_child_of(&crossings, Some(7), &s(&["2", "x"])), Some((7, 2)));
+        assert_eq!(light_child_of(&crossings, Some(7), &s(&[" 0 "])), Some((7, 0)));
+        assert_eq!(light_child_of(&crossings, Some(8), &s(&["2"])), None, "not a crossing with lights");
+        assert_eq!(light_child_of(&crossings, None, &s(&["2"])), None);
+        assert_eq!(light_child_of(&crossings, Some(7), &s(&["Hbf"])), None);
+        assert_eq!(light_child_of(&crossings, Some(7), &s(&["-1"])), None);
     }
 
     #[test]
