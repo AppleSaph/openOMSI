@@ -1561,11 +1561,19 @@ impl Ui {
             let (sx0, sx1) = (x + pad, x + side_w);
             self.text.rounded(r, scene, [sx0 - 1.0, y + header_h - 1.0, sx1 + 1.0, y + h - pad + 1.0], CARD_R * s + 1.0, BORDER);
             self.text.rounded(r, scene, [sx0, y + header_h, sx1, y + h - pad], CARD_R * s, PANEL_ALT);
-            let spx = (15.0 * s) as u32;
             let inset = 6.0 * s;
+            let bottom = y + h - pad - inset;
+            let pages_top = y + header_h + inset;
+            let step = if f.vr {
+                vr_settings_sidebar_step(bottom - 38.0 * s - inset - pages_top, titles.len(), s)
+            } else {
+                42.0 * s
+            };
+            let page_h = (step - 4.0 * s).max(1.0);
+            let spx = (15.0 * s).min(page_h * 0.6).max(1.0) as u32;
             for (i, title) in titles.iter().enumerate() {
-                let top = y + header_h + inset + i as f32 * 42.0 * s;
-                let rect = [sx0 + inset, top, sx1 - inset, top + 38.0 * s];
+                let top = pages_top + i as f32 * step;
+                let rect = [sx0 + inset, top, sx1 - inset, top + page_h];
                 let on = i == active;
                 let hov = over(rect) && !on;
                 // (the page chosen and the page under the mouse fade in and out)
@@ -1586,7 +1594,6 @@ impl Ui {
                 self.put(r, scene, &text, spx, ink, rect[0] + tin, (rect[1] + rect[3]) * 0.5);
                 self.menu_side.push(rect);
             }
-            let bottom = y + h - pad - inset;
             let rect = [sx0 + inset, bottom - 38.0 * s, sx1 - inset, bottom];
             let a_back = self.easeq((3, "back", 0), if over(rect) { 1.0 } else { 0.0 }, 1.0 / FADE_SECS);
             if a_back > 0.0 {
@@ -1839,9 +1846,30 @@ pub fn filter_chat(text: &str) -> String {
     text.censor()
 }
 
+/// Fit all VR page buttons above the separately reserved Back button.
+fn vr_settings_sidebar_step(available: f32, pages: usize, scale: f32) -> f32 {
+    (available.max(0.0) / pages.max(1) as f32).min(42.0 * scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vr_settings_sidebar_keeps_back_clear() {
+        for scale in [0.5, 1.0, 2.0] {
+            for height in [220.0, 440.0] {
+                let pages_top = (72.0 + 6.0) * scale;
+                let back_top = (height - PAD - 6.0 - 38.0) * scale;
+                for pages in [7, 8, 10] {
+                    let step = vr_settings_sidebar_step(back_top - 6.0 * scale - pages_top, pages, scale);
+                    let last_bottom = pages_top + (pages - 1) as f32 * step + (step - 4.0 * scale).max(1.0);
+                    assert!(last_bottom < back_top);
+                }
+            }
+        }
+        assert_eq!(vr_settings_sidebar_step(1000.0, 8, 1.0), 42.0);
+    }
 
     #[test]
     fn pause_notice_is_translated_in_every_supported_language() {
