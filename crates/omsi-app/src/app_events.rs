@@ -61,6 +61,7 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
+                self.finish_vr_nav_edit();
                 self.finish_session();
                 crate::platform::exit(event_loop);
             }
@@ -76,6 +77,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Focused(false) => {
+                self.finish_vr_nav_edit();
                 self.window_focused = false;
                 if let Some(ctl) = self.controllers.as_mut() {
                     ctl.set_focus(false);
@@ -147,6 +149,10 @@ impl ApplicationHandler for App {
                 button: winit::event::MouseButton::Right,
                 ..
             } => {
+                if let Some(edit) = self.vr_nav_edit.as_mut() {
+                    edit.rotating = state == ElementState::Pressed;
+                    return;
+                }
                 if self.navigator.as_ref().map(|n| n.map_open()).unwrap_or(false) {
                     return;
                 }
@@ -155,9 +161,7 @@ impl ApplicationHandler for App {
                     if state == ElementState::Pressed && self.game_menu.is_none()
                         && self.chooser.is_none() {
                         if self.mouse_drive {
-                            self.mouse_drive = false;
-                            crate::player::keep_wheel(self.player.as_mut());
-                            self.reset_vr_pointer();
+                            self.set_mouse_drive(false);
                             self.service_msg = Some(("Mouse steering off".into(), 3.0));
                         } else {
                             self.vr_zoom_active = !self.vr_zoom_active;
@@ -173,6 +177,7 @@ impl ApplicationHandler for App {
                 button: winit::event::MouseButton::Middle,
                 ..
             } => {
+                if self.vr_nav_edit.is_some() { return; }
                 if self.navigator.as_ref().map(|n| n.map_open()).unwrap_or(false) {
                     return;
                 }
@@ -187,6 +192,7 @@ impl ApplicationHandler for App {
                 self.wheel(amount);
             }
             WindowEvent::CursorMoved { position, .. } => {
+                if self.vr_nav_edit.is_some() { return; }
                 // (the on-screen controls on a computer, `OMSI_TOUCH=1`: the mouse is a
                 // finger on them - from #202)
                 if self.touch.enabled {
@@ -237,6 +243,24 @@ impl ApplicationHandler for App {
             // a finger (a phone; see touch.rs)
             WindowEvent::Touch(t) => self.on_touch(event_loop, t),
             WindowEvent::RedrawRequested => {
+                if self.vr_nav_edit.is_some() && (!self.vr_active() || self.view != "driver") {
+                    self.finish_vr_nav_edit();
+                }
+                // Refresh cached options when switching between VR and desktop, including
+                // a runtime disconnect while the placement submenu is still open.
+                let vr_nav_available = self.vr_active() && self.player.is_some();
+                let refresh_options = match self.list_kind.as_ref() {
+                    Some(crate::game_lists::ListKind::VrNavigator) => !vr_nav_available,
+                    Some(crate::game_lists::ListKind::Options) => {
+                        let has_vr_nav = self.admin_list.as_ref().is_some_and(|items|
+                            items.iter().any(|(_, action)| action == "vr_navigator"));
+                        has_vr_nav != vr_nav_available
+                    }
+                    _ => false,
+                };
+                if refresh_options {
+                    self.open_list(crate::game_lists::ListKind::Options);
+                }
                 #[cfg(windows)]
                 self.poll_vr_cursor_position();
                 // OMSI's autosave of the last situation: every five minutes of play
@@ -650,6 +674,12 @@ impl ApplicationHandler for App {
                 if let (true, Some(s)) = (self.mouse_drive && bus_view && !self.mouse_look
                                               && self.game_menu.is_none(), self.surface.as_ref()) {
                     let (w, h) = (s.config.width as f32, s.config.height as f32);
+                    if std::mem::take(&mut self.center_cursor) {
+                        self.cursor = (w * 0.5, h * 0.5);
+                        if let Some(win) = self.window.as_ref() {
+                            let _ = win.set_cursor_position(winit::dpi::PhysicalPosition::new((w * 0.5) as f64, (h * 0.5) as f64));
+                        }
+                    }
                     // (the speed the divisor takes, smoothed over 0.4 s: the bus's own speed
                     // trembles by fractions of a km/h from frame to frame on its springs and
                     // tyres, and at 30 km/h the wheel twitched with it by itself)
@@ -1713,6 +1743,8 @@ impl ApplicationHandler for App {
                 *self.profile.entry("scripted").or_default() += __t.elapsed().as_secs_f64();
                 // (the game menu's lines, for the interface below)
                 let menu_lines = if self.game_menu.is_some() { self.game_menu_items() } else { Vec::new() };
+                let vr_nav_display = self.vr_nav_display();
+                let vr_active = self.vr_active();
                 // the interface over the picture
                 if let (true, Some(r), Some(scene)) = (
                     self.world.is_some(),
@@ -1774,6 +1806,13 @@ impl ApplicationHandler for App {
                     scene.overlays.clear();
                     let notes = lines;
                     if let (Some(nav), Some(p), Some(s)) = (self.navigator.as_mut(), self.player.as_ref(), self.surface.as_ref()) {
+                        let old_enabled = nav.enabled;
+                        let old_opacity = nav.opacity;
+                        nav.cockpit_display = vr_active;
+                        if vr_active {
+                            nav.enabled = vr_nav_display.is_some_and(|d| d.placement.enabled);
+                            nav.opacity = vr_nav_display.map(|d| d.placement.opacity).unwrap_or(0.95);
+                        }
                         if let Some(w) = self.world.as_ref() {
                             nav.start_map(w.clone());
                         }
@@ -1818,13 +1857,15 @@ impl ApplicationHandler for App {
                             time: self.clock.time,
                             weekday: self.clock.weekday(),
                             language: &self.settings.language,
-                            screen: (s.config.width as f32, s.config.height as f32),
-                            ui_scale: self.settings.ui_scale,
-                            follow_window: self.settings.ui_scale_window,
+                            screen: if vr_active { (1440.0, 1440.0) } else { (s.config.width as f32, s.config.height as f32) },
+                            ui_scale: if vr_active { 1.0 } else { self.settings.ui_scale },
+                            follow_window: if vr_active { true } else { self.settings.ui_scale_window },
                             dt,
                         };
                         let __tn = Instant::now();
                         nav.frame(r, scene, &frame);
+                        nav.enabled = old_enabled;
+                        nav.opacity = old_opacity;
                         *self.profile.entry("hud.navigator").or_default() += __tn.elapsed().as_secs_f64();
                         // OMSI 2's dynamic route arrows over the junctions ahead
                         if nav.arrows {
@@ -1856,10 +1897,11 @@ impl ApplicationHandler for App {
                         let (cx, cy) = self.cursor;
                         let map_open = self.navigator.as_ref().is_some_and(|n| n.map_open());
                         let covered = self.game_menu.is_some()
+                            || self.vr_nav_edit.is_some()
                             || self.chooser.is_some()
                             || ui.chat.hovered
                             || map_open
-                            || self.navigator.as_ref().is_some_and(|n| n.over_panel(cx, cy));
+                            || (!vr_active && self.navigator.as_ref().is_some_and(|n| n.over_panel(cx, cy)));
                         let chooser_list = self.admin_list.as_ref().unwrap_or(&self.vehicle_list);
                         let (chooser_items, chooser_sel): (Vec<(&str, &str)>, Option<usize>) = match self.chooser {
                             Some(sel) => {
@@ -1890,6 +1932,7 @@ impl ApplicationHandler for App {
                                 None => self.game_menu.map(|k| (k, &menu_lines[..])),
                             },
                             menu_top: self.menu_top,
+                            vr_nav_editing: self.vr_nav_edit.is_some(),
                             // (not over the city map, which has the stops and their times: it
                             // covered the map's zoom and close buttons)
                             timetable: (self.timetable && !map_open).then(|| timetable_rows(self.duty.as_ref(), self.player.as_ref().map(|p| p.vehicle.host.tt_delay as f64))).flatten(),
@@ -2164,8 +2207,8 @@ impl ApplicationHandler for App {
                         #[cfg(windows)]
                         if let Some(vr) = self.vr.as_mut() {
                             let menu_range = self.ui.as_ref().map(|u| u.menu_overlay_range.clone()).unwrap_or(0..0);
-                            let cursor_overlay = self.ui.as_ref().and_then(|u| u.vr_cursor_overlay);
-                            let tooltip_overlay = self.ui.as_ref().and_then(|u| u.vr_tooltip_overlay);
+                            let cursor_overlay = self.ui.as_ref().and_then(|u| u.vr_cursor_overlay).filter(|_| self.vr_nav_edit.is_none());
+                            let tooltip_overlay = self.ui.as_ref().and_then(|u| u.vr_tooltip_overlay).filter(|_| self.vr_nav_edit.is_none());
                             match vr.render(
                                 r,
                                 scene,
@@ -2178,6 +2221,10 @@ impl ApplicationHandler for App {
                                 tooltip_overlay,
                                 self.cursor,
                                 self.player.as_ref().map(|p| (p.vehicle.position, p.vehicle.body_rotation())),
+                                vr_nav_display.filter(|d| d.placement.enabled).and_then(|d| {
+                                    self.navigator.as_ref().and_then(|n| n.panel_overlay).map(|index| (index, d))
+                                }),
+                                self.player.as_ref().map(|p| p.uid),
                                 self.settings.vr_head_smoothing_ms,
                                 !self.mouse_drive,
                                 self.vr_zoom_active,
@@ -2392,10 +2439,27 @@ impl ApplicationHandler for App {
             }
         }
         if let DeviceEvent::MouseMotion { delta } = event {
+            if self.vr_nav_edit.is_some() {
+                if self.window_focused { self.vr_nav_drag(delta.0 as f32, delta.1 as f32); }
+                return;
+            }
             // (in a view of the bus the cursor's own way turns it: move_cursor)
             if self.mouse_look {
                 if !self.cursor_looks() {
-                    self.look_by(delta.0 as f32 * 0.15, delta.1 as f32 * 0.15);
+                    if self.view == "outside" {
+                        // F3 chase orbits at its own gain, not the head's.
+                        self.sync_view_look();
+                        let (y, p) = crate::input_script::chase_orbit_step(
+                            self.look.0,
+                            self.look.1,
+                            delta.0 as f32,
+                            delta.1 as f32,
+                        );
+                        self.look.0 = y;
+                        self.look.1 = p;
+                    } else {
+                        self.look_by(delta.0 as f32 * 0.15, delta.1 as f32 * 0.15);
+                    }
                 }
             } else if self.mouse_drive && self.game_menu.is_none() {
                 self.mouse_past_edge(delta.0 as f32);
@@ -2444,6 +2508,7 @@ impl ApplicationHandler for App {
 impl App {
     /// The mouse wheel (or a pinch of two fingers): `amount` notches, up positive.
     pub(crate) fn wheel(&mut self, amount: f32) {
+        if self.vr_nav_edit.is_some() { self.vr_nav_scroll(amount); return; }
         // the object editor: the wheel turns (Shift: lifts) the object
         if self.game_menu.is_none() && self.editor_wheel(amount) {
             return;
@@ -2512,6 +2577,7 @@ impl App {
 
     /// The left mouse button (or a finger's tap) where the cursor is.
     pub(crate) fn left_button(&mut self, event_loop: &ActiveEventLoop, pressed: bool) {
+        if let Some(edit) = self.vr_nav_edit.as_mut() { edit.moving = pressed; return; }
         let state = if pressed { ElementState::Pressed } else { ElementState::Released };
         // placing a vehicle: a click sets it down
         if self.placing.is_some() && self.game_menu.is_none() {

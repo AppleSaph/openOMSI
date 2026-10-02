@@ -431,7 +431,38 @@ pub(crate) fn door_trigger_target(program: &omsi_script::Program, name: &str) ->
 /// Which triggers of a door key's group to fire so that its leaves end up together: when
 /// any is open (by its target), only the open ones (to close them), else all. Toggling
 /// every leaf of a group made a closed leaf open while an open one closed.
-pub(crate) fn door_group_to_fire(v: &omsi_sim::VehicleInstance, group: &[String]) -> Vec<String> {
+pub(crate) fn door_group_to_fire(v: &mut omsi_sim::VehicleInstance, group: &[String]) -> Vec<String> {
+    let fire = door_group_plan(v, group);
+    if fire.len() < 2 {
+        return fire;
+    }
+    // Triggers that undo each other are an open and a close key, not two leaves: Road-hog123's
+    // door script (the UK buses' - the London Citybus 400, the Enviro400s) opens both leaves
+    // on `bus_doorfront0` and closes both on `bus_doorfront1`, and firing the pair left the
+    // doors shut: the passengers queued at the closed door for good. Tried on the scripts
+    // first (the vehicle left as it was): when the doors' targets end where they began, only
+    // the trigger that moves them now is fired.
+    let mut targets: Vec<omsi_script::VarId> = group.iter().filter_map(|n| door_trigger_target(&v.ty.program, n.split('|').next().unwrap_or(n))).collect();
+    targets.sort_unstable();
+    targets.dedup();
+    if targets.is_empty() {
+        return fire;
+    }
+    let at = |vars: &[f32]| -> Vec<bool> { targets.iter().map(|&t| vars.get(t as usize).is_some_and(|x| *x > 0.5)).collect() };
+    let base = at(&v.state.vars);
+    let names: Vec<&str> = fire.iter().map(|s| s.as_str()).collect();
+    if at(&v.trial_triggers(&names)) != base {
+        return fire;
+    }
+    match fire.iter().find(|n| at(&v.trial_triggers(&[n.as_str()])) != base) {
+        Some(one) => vec![one.clone()],
+        None => fire,
+    }
+}
+
+/// Which triggers of a door key's group the doors' targets ask for (see
+/// `door_group_to_fire`).
+fn door_group_plan(v: &omsi_sim::VehicleInstance, group: &[String]) -> Vec<String> {
     // an open and close pair (`open|close`): whichever fits the leaf now
     let group: Vec<String> = group
         .iter()
@@ -1740,12 +1771,7 @@ impl Player {
     ) -> Camera {
         let def = &self.vehicle.ty.def;
         let c = def.camera_outside_center;
-        let centre = self.vehicle.position
-            + self
-            .vehicle
-            .body_rotation()
-            .transform_point3(Vec3::new(c[0], c[1], c[2]))
-            .as_dvec3();
+        let centre = orbit_pivot(self.vehicle.position, self.vehicle.heading, c);
         let want = dist.clamp(ORBIT_MIN, ORBIT_MAX);
         let back = -cam.forward().as_dvec3().normalize_or_zero();
         if back.length_squared() < 0.5 {
@@ -1880,12 +1906,7 @@ impl Player {
             None => {
                 // outside view: an orbit around the vehicle
                 let c = def.camera_outside_center;
-                let center = self.vehicle.position
-                    + self
-                    .vehicle
-                    .body_rotation()
-                    .transform_point3(Vec3::new(c[0], c[1], c[2]))
-                    .as_dvec3();
+                let center = orbit_pivot(self.vehicle.position, self.vehicle.heading, c);
                 let mut cam = Camera {
                     position: center,
                     yaw: self.vehicle.heading as f32 - 35.0 + look.0,
@@ -1901,6 +1922,16 @@ impl Player {
             }
         }
     }
+}
+
+/// Outside-camera pivot: the `.bus` centre rotated by heading alone. Body pitch
+/// and bank (suspension bounce, cornering roll) would swing the camera if they
+/// reached the pivot; the view only ever yaws with the bus.
+pub(crate) fn orbit_pivot(position: DVec3, heading_deg: f64, center: [f32; 3]) -> DVec3 {
+    position
+        + glam::Mat4::from_rotation_z((-(heading_deg as f32)).to_radians())
+            .transform_point3(Vec3::new(center[0], center[1], center[2]))
+            .as_dvec3()
 }
 
 /// Put a vehicle's meshes where its state says (animations, visibility, lights, the
@@ -2170,6 +2201,25 @@ pub(crate) fn mouse_steering(cursor_x: f32, width: f32, kmh: f32) -> f32 {
 pub(crate) fn mouse_pedal(current: f32, target: f32, k: f32) -> f32 {
     let v = target + (current - target) * k;
     if (v - target).abs() < 1e-4 { target } else { v }
+}
+
+#[cfg(test)]
+mod orbit_pivot_tests {
+    use super::orbit_pivot;
+    use glam::DVec3;
+
+    #[test]
+    fn pivot_yaws_with_the_bus_and_ignores_body_attitude() {
+        // heading 0: the centre passes through unrotated.
+        let p = orbit_pivot(DVec3::new(10.0, 20.0, 5.0), 0.0, [0.0, 0.0, 1.2]);
+        assert!((p.x - 10.0).abs() < 1e-6 && (p.y - 20.0).abs() < 1e-6);
+        assert!((p.z - 6.2).abs() < 1e-6, "{p:?}");
+        // heading 90: the forward offset swings sideways, height untouched
+        // (a body_rotation pivot would also tilt it with pitch/bank).
+        let q = orbit_pivot(DVec3::ZERO, 90.0, [1.0, 2.0, 1.2]);
+        assert!((q.x - 2.0).abs() < 1e-5 && (q.y + 1.0).abs() < 1e-5, "{q:?}");
+        assert!((q.z - 1.2).abs() < 1e-6, "{q:?}");
+    }
 }
 
 #[cfg(test)]

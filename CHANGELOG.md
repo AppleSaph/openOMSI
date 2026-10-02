@@ -4,6 +4,135 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.1.851 - 2026-10-02
+
+### Maps
+- Attached objects (`[attachObj]`) and object labels are read as Omsi.exe reads them. The
+  records of a tile depend on its `[version]`: before version 9 there is no detail level
+  line, before 6 no IDCodes, before 10 an attached object names its parent by its place in
+  the tile instead of its IDCode, before 8 it has no heading, and before 11 a spline has one
+  line linking it to the spline before it instead of both neighbours. Older tiles were read
+  as version 14 ones, so their objects hung on the wrong parents and pieces of road stood
+  in the air. An object's labels are now exactly as many lines as it says (an empty label
+  or one in brackets no longer cuts the rest off), an attachment whose parent is written
+  after it or that hangs on a later object of a spline attachment row is not loaded, as in
+  OMSI.
+
+## 0.1.850 - 2026-10-02
+
+### Launcher
+- Big installations no longer show an empty launcher for minutes: the maps appear at once and
+  the buses as their folders are read, several folders at a time, with the progress in the
+  status line. A poll no longer starts the whole reading over while it runs (the growing cache
+  changed the content stamp, so a large OMSI folder never finished loading). Depot files are
+  read for their name only, and the search of every vehicle folder for a map's depot runs
+  once per session.
+
+### Driving
+- Mouse steering stays on: the right button looks round without ending it (also in the
+  pause), the cursor goes back to where it steered when the button is let go, and the game
+  starts with mouse steering as it was left, the cursor in the middle of the window. OMSI's
+  right click that ends mouse steering is a setting (Esc > Options > "A right click ends the
+  mouse steering").
+- Door keys of UK buses: on Road-hog123's door script (London Citybus 400, Enviro400s and
+  many more) `bus_doorfront0` opens the door and `bus_doorfront1` closes it, and Shift+1 fired
+  both, so the door never opened. Door key triggers are now tried on the scripts first, and
+  when they undo each other only the one that moves the door is fired.
+
+### People
+- Passengers get off double-deckers again: the once-a-second check for another open door ran
+  every frame, pulling everyone back to the nearest path point, so people coming down from
+  the upper deck stayed on the stairs. People held up face to face in the aisle or on the
+  stairs squeeze past after two seconds.
+- Passengers paying at the cash desk hold the money out to the tray instead of raising the
+  arm up and forward: the arm's reach had its lift and turn the wrong way round.
+- Standing passengers keep their feet on the ground at every tick, as Omsi.exe does, not at
+  the height of their waiting place's object.
+- A long bus station stop gets the waiting places of objects along its whole length.
+
+### Performance
+- People standing still are not skinned and uploaded again every frame (2.6 ms to 0.15 ms a
+  frame for thirty waiting passengers).
+- `OMSI_PROFILE` lists triangles per asset and names the stages of slow people ticks;
+  `OMSI_SKIP_PIPE` and `OMSI_CHECK_GROUND` help measuring.
+
+### Merged pull requests
+- #661 shadow blobs lie on the road under a bridge, and can be switched off; #696 glass found
+  by its texture's alpha (lamps show through every bus's windows); #699 "The game is running"
+  in the launcher; #704, #687, #689, #675, #688 dedicated server administration (`tell`,
+  weather by name, `/status` weather and clock, `POST /admin` from the same machine - refused
+  through a tunnel or proxy); #706, #710 outside camera; #707 16x anisotropic filtering;
+  #711 8x MSAA; #708 a Windows test; #714 changelog.
+
+## 0.1.810 - 2026-10-02
+
+### Launcher
+- Buttons that contain only an icon now centre it correctly instead of leaving the spacing
+  reserved for a missing label; this fixes the livery arrows on Drive > Bus and the mobile
+  file browser's folder-up button (#678).
+
+## 0.1.808 - 2026-10-02
+
+### Traffic
+- Traffic-light programs that use conditional backwards jumps to extend a phase no longer
+  repeat the same jump indefinitely and get stuck on one signal combination. The extension
+  is replayed once before the normal cycle continues (#692).
+
+### VR
+- VR has an adjustable cockpit navigator attached to the bus. It can be moved and rotated,
+  its distance and size can be adjusted, and position, rotation, size, opacity and visibility
+  are saved separately for each bus (#693).
+- `Ctrl+Shift+M` enters navigator placement mode and `Ctrl+Shift+N` shows or hides it; both
+  actions can be rebound. The same placement settings are available in the VR options menu
+  (#693).
+- The VR pause menu is smaller for a more comfortable fit (#693).
+
+## 0.1.800 - 2026-10-02
+
+### Server
+- A dedicated server can optionally expose `GET /players` for live web maps. The JSON list
+  contains each player's name, bus, line, destination, tour, position, heading and speed,
+  and latitude/longitude on maps with `[worldcoordinates]` (#674).
+- Player position sharing is off by default and must be enabled with `share_positions = 1`
+  in `server.cfg`; otherwise `/players` returns 404 (#674).
+- A player on foot is reported at the walker's position, and the walker is preferred over
+  a parked bus when both exist (#674).
+
+## 0.1.796 - 2026-10-01
+
+### Graphics
+- Enhanced graphics can reflect buses, buildings and scenery in wet-road puddles. Reflections
+  follow the local road height, slope and camber, and nearby articulated bus sections are
+  included (#686).
+- Puddle reflections use bounded half-resolution screen-space rendering and are skipped on
+  dry roads, full snow, mirror views, OpenGL and when reflections are disabled, limiting
+  their cost when they are not needed (#686).
+
+## 0.1.791 - 2026-10-01
+
+### Controls
+- DirectInput now finds generic controllers and button boxes with no axes, including custom
+  Arduino, Pro Micro and STM32 devices, instead of silently leaving them disconnected.
+  Keyboards, mice and screen pointers remain filtered out (#71, #662).
+- Holding both opposite steering keys keeps the wheel at its current position, as in OMSI,
+  instead of always giving the left key priority. Releasing either key immediately continues
+  steering in the remaining direction (#663).
+- `Toggle game controllers` follows its configured key binding instead of also having a
+  hard-coded `K`. Leaving the action unbound now frees `K`, and rebinding it to another key
+  works as expected (#649, #670).
+
+## 0.1.785 - 2026-10-01
+
+### Multiplayer
+- In LAN multiplayer, a client's bus can take the host's waiting passengers again. They are
+  claimed from the stop where the client's bus is listed and handed over as that client's
+  waiting passengers.
+
+### Project
+- Repository, updater, website, documentation and release links now use the project's new
+  `openOMSI-Project/openOMSI` home after the repository moved to the openOMSI-Project
+  organization.
+
 ## 0.1.782 - 2026-10-01
 
 ### People

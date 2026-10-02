@@ -38,6 +38,8 @@ pub(crate) struct ServerCfg {
     /// Only these buses may be driven on the server (vehicle files, empty: every bus the
     /// server has installed).
     pub vehicles: Vec<String>,
+    /// `GET /players` on the web port tells who drives what and where (for a web map).
+    pub share_positions: bool,
 }
 
 pub(crate) const DEFAULT_CFG: &str = "\
@@ -82,6 +84,10 @@ time_speed = 1
 # the buses players may drive, separated by ; (vehicle files such as
 # Vehicles/MAN_SD200/MAN_SD77.bus; empty: every bus installed on the server)
 vehicles =
+
+# tell anyone who asks the web port (GET /players) the players' names, buses, lines and
+# positions - for a live map of the server on a website; tell your players when it is on
+share_positions = 0
 ";
 
 impl ServerCfg {
@@ -125,6 +131,7 @@ impl ServerCfg {
             admin_password: kv.get("admin_password").cloned().unwrap_or_default(),
             time_speed: kv.get("time_speed").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(1.0).clamp(1.0, 30.0),
             vehicles: kv.get("vehicles").map(|v| v.split(';').map(|x| x.trim().replace('\\', "/")).filter(|x| !x.is_empty()).collect()).unwrap_or_default(),
+            share_positions: flag("share_positions", false),
         })
     }
 }
@@ -144,6 +151,10 @@ pub(crate) fn info_of(cfg: &ServerCfg) -> omsi_net::ws::ServerInfo {
         password: false,
         vehicles: cfg.vehicles.clone(),
         reached_at: String::new(),
+        players_public: cfg.share_positions,
+        player_list: Vec::new(),
+        local_admin_password: cfg.admin_password.clone(),
+        ..Default::default()
     }
 }
 
@@ -185,8 +196,93 @@ pub(crate) static SERVER_ADMIN: std::sync::OnceLock<(String, f64)> = std::sync::
 /// A dedicated server run: graphics without a device, the whole world by interest.
 pub(crate) static SERVER_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Every second of a server run: what the status page says (players, time, weather).
+/// Every second of a server run: what the status page says (players, time, weather) and
+/// who is where (`GET /players`, when `share_positions` is on).
 pub(crate) fn tick_status(lan: &omsi_net::LanSession, time: f64, weather: &str) {
     let players = lan.peers().filter(|p| p.has_info).count();
-    crate::lan::update_server_info(players, &crate::schedule::hhmm(time), weather);
+    // (the admin's clock shift may take the time below 0 or past midnight: 23:08 had come
+    // out as "00:-52")
+    crate::lan::update_server_info(players, &crate::schedule::hhmm(time.rem_euclid(86400.0)), weather);
+    let poses: Vec<&omsi_net::Pose> = lan.peers().filter(|p| p.has_info && p.has_pose).map(|p| &p.pose).collect();
+    let list = poses.iter().filter_map(|q| player_info(q, |id| poses.iter().copied().find(|o| o.id == id))).collect();
+    crate::lan::update_server_players(list);
+}
+
+/// A player for `GET /players`: on foot - a walker in its state - where it walks, or with the
+/// bus it sits in (`Walker::aboard`; the walker's own point lags behind that bus); otherwise
+/// with the bus it drives. The walker comes first: a player who got out keeps its vehicle, so
+/// such a state carries `FLAG_VEHICLE` (the parked bus) and the walker. `None`: no place known.
+pub(crate) fn player_info<'a>(q: &omsi_net::Pose, pose_of: impl Fn(u32) -> Option<&'a omsi_net::Pose>) -> Option<omsi_net::ws::PlayerInfo> {
+    let driving = q.walker.is_none() && q.has_vehicle();
+    let (x, y, heading, speed_kmh, aboard) = match q.walker {
+        Some(w) => match w.aboard.and_then(|a| pose_of(a.owner)).filter(|b| b.has_vehicle()) {
+            Some(b) => (b.x, b.y, b.heading, b.speed_kmh, Some(b.id)),
+            // (a walker's speed is in m/s)
+            None => (w.x, w.y, w.heading, w.speed * 3.6, None),
+        },
+        None if driving => (q.x, q.y, q.heading, q.speed_kmh, None),
+        None => return None,
+    };
+    Some(omsi_net::ws::PlayerInfo {
+        id: q.id,
+        name: q.name.clone(),
+        // (what a player on foot last drove is not what it drives)
+        bus: if driving { q.bus.clone() } else { String::new() },
+        line: if driving { q.line.clone() } else { String::new() },
+        destination: if driving { q.destination.clone() } else { String::new() },
+        tour: q.tour.clone(),
+        x,
+        y,
+        heading,
+        speed_kmh,
+        on_foot: !driving,
+        aboard,
+        lat_lon: omsi_map::world_to_lat_lon(x, y),
+    })
+}
+
+#[cfg(test)]
+mod players_tests {
+    use super::player_info;
+    use omsi_net::{Aboard, Pose, Walker, FLAG_VEHICLE};
+
+    fn bus(id: u32, x: f64, y: f64) -> Pose {
+        Pose { id, name: format!("p{id}"), bus: "Vehicles/MAN_SD200/MAN_SD77.bus".into(), line: "37".into(), x, y, heading: 90.0, speed_kmh: 40.0, flags: FLAG_VEHICLE, ..Default::default() }
+    }
+
+    #[test]
+    fn a_player_is_where_it_is() {
+        let none = |_| None;
+        // driving: the bus
+        let d = player_info(&bus(2, 100.0, 200.0), none).unwrap();
+        assert_eq!((d.x, d.y, d.speed_kmh, d.on_foot, d.aboard, d.line.as_str()), (100.0, 200.0, 40.0, false, None, "37"));
+        // on foot: the walker, not the zeroed vehicle fields
+        let mut w = Pose { id: 3, name: "p3".into(), bus: "Vehicles/MAN_SD200/MAN_SD77.bus".into(), ..Default::default() };
+        w.walker = Some(Walker { x: 10.0, y: 20.0, heading: 45.0, speed: 1.5, ..Default::default() });
+        let f = player_info(&w, none).unwrap();
+        assert_eq!((f.x, f.y, f.heading, f.on_foot, f.bus.as_str()), (10.0, 20.0, 45.0, true, ""));
+        assert!((f.speed_kmh - 5.4).abs() < 1e-4);
+        // aboard player 2's bus: placed with it
+        let driver = bus(2, 100.0, 200.0);
+        w.walker = Some(Walker { x: 90.0, y: 190.0, aboard: Some(Aboard { owner: 2, ..Default::default() }), ..Default::default() });
+        let a = player_info(&w, |id| (id == 2).then_some(&driver)).unwrap();
+        assert_eq!((a.x, a.y, a.speed_kmh, a.on_foot, a.aboard), (100.0, 200.0, 40.0, true, Some(2)));
+        // aboard a bus that is gone: its own point
+        let g = player_info(&w, none).unwrap();
+        assert_eq!((g.x, g.y, g.aboard), (90.0, 190.0, None));
+        // got out of its own bus: the state keeps FLAG_VEHICLE and the parked bus's place, and
+        // has the walker - the walker wins
+        let mut out = bus(5, 100.0, 200.0);
+        out.walker = Some(Walker { x: 104.0, y: 197.0, heading: 180.0, speed: 1.0, ..Default::default() });
+        assert!(out.has_vehicle());
+        let o = player_info(&out, none).unwrap();
+        assert_eq!((o.x, o.y, o.heading, o.on_foot, o.aboard, o.bus.as_str(), o.line.as_str()), (104.0, 197.0, 180.0, true, None, "", ""));
+        assert!((o.speed_kmh - 3.6).abs() < 1e-4);
+        // and sitting in another player's bus after getting out of its own: with that bus
+        out.walker = Some(Walker { x: 1.0, y: 1.0, aboard: Some(Aboard { owner: 2, ..Default::default() }), ..Default::default() });
+        let oa = player_info(&out, |id| (id == 2).then_some(&driver)).unwrap();
+        assert_eq!((oa.x, oa.y, oa.on_foot, oa.aboard), (100.0, 200.0, true, Some(2)));
+        // neither a bus nor a walker: not listed
+        assert!(player_info(&Pose { id: 4, ..Default::default() }, none).is_none());
+    }
 }

@@ -34,6 +34,7 @@ pub(crate) struct Vr {
     mirror: Option<Mirror>,
     desktop_mirror: bool,
     origin: Option<Vec3>,
+    player_uid: Option<u64>,
     origin_rotation: Option<Quat>,
     smoothed_head: Option<(Vec3, Quat, Instant)>,
     mirror_camera: Option<(Camera, Mat4)>,
@@ -49,6 +50,7 @@ pub(crate) struct Vr {
     zoom_to: f32,
     zoom_changed: Instant,
     running: bool,
+    focused: bool,
     events: xr::EventDataBuffer,
     stats_since: Instant,
     stats_frames: u32,
@@ -97,7 +99,7 @@ impl UiAnchor {
         desktop_size: (u32, u32),
     ) -> Self {
         let mut anchor = Self::at(origin, camera, fov, distance);
-        anchor.half_height *= 0.75;
+        anchor.half_height *= 0.60;
         anchor.half_width =
             anchor.half_height * desktop_size.0.max(1) as f32 / desktop_size.1.max(1) as f32;
         anchor
@@ -355,6 +357,7 @@ impl Vr {
             mirror,
             desktop_mirror,
             origin: None,
+            player_uid: None,
             origin_rotation: None,
             smoothed_head: None,
             mirror_camera: None,
@@ -370,6 +373,7 @@ impl Vr {
             zoom_to: 0.0,
             zoom_changed: Instant::now(),
             running: false,
+            focused: false,
             events: xr::EventDataBuffer::new(),
             stats_since: Instant::now(),
             stats_frames: 0,
@@ -384,8 +388,12 @@ impl Vr {
     }
 
     pub(crate) fn poll(&mut self) -> Result<()> {
+        let mut refocus = false;
         while let Some(event) = self.instance.poll_event(&mut self.events)? {
             if let xr::Event::SessionStateChanged(change) = event {
+                let focused = change.state() == xr::SessionState::FOCUSED;
+                refocus |= focused && !self.focused;
+                self.focused = focused;
                 match change.state() {
                     xr::SessionState::READY => {
                         self.session
@@ -402,6 +410,11 @@ impl Vr {
                     _ => {}
                 }
             }
+        }
+        // Valid poses can already exist while the headset is resting on a desk.
+        // Its position when the runtime gives us focus is the seated reference.
+        if refocus {
+            self.recenter();
         }
         Ok(())
     }
@@ -523,6 +536,10 @@ impl Vr {
         Some((camera.position, direction, spread))
     }
 
+    pub(crate) fn navigator_edit_camera(&self) -> Option<Camera> {
+        self.mirror_camera.map(|(camera, _)| camera)
+    }
+
     pub(crate) fn render(
         &mut self,
         renderer: &mut Renderer,
@@ -536,10 +553,16 @@ impl Vr {
         tooltip_overlay: Option<usize>,
         cursor_position: (f32, f32),
         bus_pose: Option<(DVec3, Mat4)>,
+        navigator: Option<(usize, crate::vr_navigator::Display)>,
+        player_uid: Option<u64>,
         head_smoothing_ms: f32,
         cockpit_pointer_enabled: bool,
         zoom_active: bool,
     ) -> Result<bool> {
+        if self.player_uid != player_uid {
+            self.recenter();
+            self.player_uid = player_uid;
+        }
         self.poll()?;
         if !self.running {
             return Ok(false);
@@ -556,7 +579,7 @@ impl Vr {
                 .end(frame.predicted_display_time, self.blend, &[])?;
             return Ok(false);
         }
-        let (_, views) = self.session.locate_views(
+        let (view_state, views) = self.session.locate_views(
             xr::ViewConfigurationType::PRIMARY_STEREO,
             frame.predicted_display_time,
             &self.space,
@@ -565,6 +588,16 @@ impl Vr {
             self.frame_stream
                 .end(frame.predicted_display_time, self.blend, &[])?;
             bail!("OpenXR stopped providing stereo views");
+        }
+        // A runtime may supply placeholder poses before tracking is ready.
+        // Never use those poses as the seated origin (which would add room height).
+        let valid = xr::ViewStateFlags::POSITION_VALID | xr::ViewStateFlags::ORIENTATION_VALID;
+        let tracked = xr::ViewStateFlags::POSITION_TRACKED | xr::ViewStateFlags::ORIENTATION_TRACKED;
+        if !view_state.contains(valid)
+            || (self.origin.is_none() && (!self.focused || !view_state.contains(tracked)))
+        {
+            self.frame_stream.end(frame.predicted_display_time, self.blend, &[])?;
+            return Ok(false);
         }
         let midpoint = (xr_position(views[0].pose) + xr_position(views[1].pose)) * 0.5;
         let raw_rotation = xr_rotation(views[0].pose);
@@ -812,6 +845,12 @@ impl Vr {
                     }
                 })
         });
+        let navigator = navigator.zip(bus_pose).and_then(|((index, display), (position, body))| {
+            let (texture, rect) = scene.overlays.get(index)?;
+            let aspect = (rect[2] - rect[0]) / (rect[3] - rect[1]);
+            if !aspect.is_finite() || aspect <= 0.0 { return None; }
+            Some((*texture, [0, 1].map(|eye| display.transform(position, body, &eye_cameras[eye], eye_projections[eye], aspect))))
+        });
         renderer.render_xr_ui(
             scene,
             &targets,
@@ -822,6 +861,7 @@ impl Vr {
             cursor_overlay,
             tooltip_overlay,
             cursor_transforms,
+            navigator,
         );
         if let Some(mirror) = self.mirror.as_ref().filter(|_| self.desktop_mirror) {
             let mirror_start = Instant::now();

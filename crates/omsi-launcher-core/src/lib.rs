@@ -379,6 +379,7 @@ fn merged_entries(rel: &str) -> Vec<PathBuf> {
 /// all its copies, the content folder's first (a mod may add files to a stock folder).
 fn merged_folders(rel: &str) -> Vec<(String, Vec<PathBuf>)> {
     let mut out: Vec<(String, Vec<PathBuf>)> = Vec::new();
+    let mut at: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for base in bases() {
         let dir = base.join(rel);
         let Some(list) = omsi_cfg::vfs::list_dir(&dir) else { continue };
@@ -389,9 +390,13 @@ fn merged_folders(rel: &str) -> Vec<(String, Vec<PathBuf>)> {
             if name.starts_with('.') {
                 continue;
             }
-            match out.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(&name)) {
-                Some((_, dirs)) => dirs.push(p),
-                None => out.push((name, vec![p])),
+            // (by an index: thousands of folders compared each with all before took long)
+            match at.get(&name.to_ascii_lowercase()) {
+                Some(&i) => out[i].1.push(p),
+                None => {
+                    at.insert(name.to_ascii_lowercase(), out.len());
+                    out.push((name, vec![p]));
+                }
             }
         }
     }
@@ -814,25 +819,54 @@ fn log_line(line: &str) {
 }
 
 pub fn list_vehicles() -> Result<Vec<VehicleInfo>> {
+    list_vehicles_progress(|_, _, _| {})
+}
+
+/// The buses, as `list_vehicles`, with `progress` told after every few folders what they
+/// held, how many folders are done and how many there are: a big installation's first
+/// reading (thousands of vehicle folders, nothing in the cache yet) takes minutes, and the
+/// page showed nothing at all until the last folder was read.
+pub fn list_vehicles_progress(progress: impl Fn(&[VehicleInfo], usize, usize)) -> Result<Vec<VehicleInfo>> {
+    use rayon::prelude::*;
     root()?;
     let lang = content_language();
-    let mut out = Vec::new();
-    let mut keys = Vec::new();
-    for (folder, dirs) in merged_folders("Vehicles") {
+    let folders = merged_folders("Vehicles");
+    let keys: Vec<String> = folders.iter().map(|(_, dirs)| format!("bus4|{lang}|{}", dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>().join("|"))).collect();
+    let read = |(folder, dirs): &(String, Vec<PathBuf>), key: &String| -> Vec<VehicleInfo> {
         // the stamp covers every copy of the folder and their direct entries (Model/,
         // Texture/ ...); the paint folders the entry read are its dependencies
         let mut stamped: Vec<PathBuf> = dirs.clone();
-        for d in &dirs {
+        for d in dirs {
             if let Some(list) = omsi_cfg::vfs::list_dir(d) {
                 let mut subs: Vec<PathBuf> = list.into_iter().filter(|(_, is_dir)| *is_dir).map(|(n, _)| d.join(n)).collect();
                 subs.sort();
                 stamped.extend(subs);
             }
         }
-        let key = format!("bus4|{lang}|{}", dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>().join("|"));
-        keys.push(key.clone());
-        let list: Vec<VehicleInfo> = index::cached(&key, index::folder_stamp(&stamped), || read_vehicle_folder(&folder, &dirs, lang));
-        out.extend(list);
+        index::cached(key, index::folder_stamp(&stamped), || read_vehicle_folder(folder, dirs, lang))
+    };
+    // folders side by side (the files of one wait for the disk while another's are parsed),
+    // a handful of threads so that a hard disk is not sent seeking all over
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8)).build().ok();
+    let mut out = Vec::new();
+    let total = folders.len();
+    let mut done = 0;
+    let mut saved = std::time::Instant::now();
+    for (chunk, chunk_keys) in folders.chunks(32).zip(keys.chunks(32)) {
+        let lists: Vec<Vec<VehicleInfo>> = match &pool {
+            Some(pool) => pool.install(|| chunk.par_iter().zip(chunk_keys.par_iter()).map(|(f, k)| read(f, k)).collect()),
+            None => chunk.iter().zip(chunk_keys.iter()).map(|(f, k)| read(f, k)).collect(),
+        };
+        let batch: Vec<VehicleInfo> = lists.into_iter().flatten().collect();
+        done += chunk.len();
+        // what was read is kept every few seconds: a first reading left half-way (the
+        // launcher closed) starts from there the next time
+        if saved.elapsed().as_secs() >= 10 {
+            index::save("bus4|", None);
+            saved = std::time::Instant::now();
+        }
+        progress(&batch, done, total);
+        out.extend(batch);
     }
     index::save("bus4|", Some(&keys));
     if out.is_empty() {
@@ -888,8 +922,9 @@ fn read_vehicle_folder(folder: &str, dirs: &[PathBuf], lang: &str) -> (Vec<Vehic
     let hof_dir = |f: &PathBuf| rel_of.get(f).map(|r| r.rsplit_once('/').map(|(d, _)| d.to_ascii_lowercase()).unwrap_or_default()).unwrap_or_default();
     let mut hofs_in: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for f in files.iter().filter(|f| f.extension().map(|e| e.eq_ignore_ascii_case("hof")).unwrap_or(false)) {
-        if let Ok(h) = omsi_vehicle::Hof::load(f) {
-            hofs_in.entry(hof_dir(f)).or_default().push(h.name.trim().to_string());
+        // (the name alone: UK depot files carry megabytes of trips)
+        if let Some(name) = omsi_vehicle::Hof::read_name(f) {
+            hofs_in.entry(hof_dir(f)).or_default().push(name.trim().to_string());
         }
     }
     // OMSI offers what has a [friendlyname]: never the rear section of an articulated bus
@@ -1619,7 +1654,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
         v[k] = d;
     }
     // openOMSI's own: what passengers say, OMSI's route arrows, getting up from the seat
-    for (k, d) in [("pax_voices", json!("all")), ("nav_arrows", json!(false)), ("get_up", json!(false)), ("time_speed", json!("1")), ("machine_translation", json!(false)), ("shadow_casters", json!("all")), ("reflections", json!(true)), ("mouse_sens", json!(1.0)), ("graphics_api", json!("auto")), ("ctrl_off", json!("")), ("steering_linear", json!(false)), ("old_steering", json!(false)), ("red_steer_spd", json!(false)), ("ff_invert", json!(false)), ("ff_enabled", json!(true)), ("brake_hold", json!(true)), ("auto_clutch", json!(true)), ("wheel_range", json!(900.0)), ("wheel_lock", json!(0.0)), ("fov", json!(0.0)), ("camera_collision", json!(true)), ("steer_look", json!(false)), ("pedal_throttle", json!(1.0)), ("pedal_brake", json!(1.0)), ("seat_x", json!(0.0)), ("seat_y", json!(0.0)), ("seat_z", json!(0.0)), ("head_tracking", json!(false)), ("led_glow", json!(6)), ("led_mips", json!(1.3)), ("ui_scale", json!(1.0)), ("ui_scale_window", json!(true)), ("notes", json!(true))] {
+    for (k, d) in [("pax_voices", json!("all")), ("nav_arrows", json!(false)), ("get_up", json!(false)), ("time_speed", json!("1")), ("machine_translation", json!(false)), ("shadow_casters", json!("all")), ("shadow_blobs", json!(true)), ("reflections", json!(true)), ("mouse_sens", json!(1.0)), ("graphics_api", json!("auto")), ("ctrl_off", json!("")), ("steering_linear", json!(false)), ("old_steering", json!(false)), ("red_steer_spd", json!(false)), ("ff_invert", json!(false)), ("ff_enabled", json!(true)), ("brake_hold", json!(true)), ("auto_clutch", json!(true)), ("wheel_range", json!(900.0)), ("wheel_lock", json!(0.0)), ("fov", json!(0.0)), ("camera_collision", json!(true)), ("steer_look", json!(false)), ("pedal_throttle", json!(1.0)), ("pedal_brake", json!(1.0)), ("seat_x", json!(0.0)), ("seat_y", json!(0.0)), ("seat_z", json!(0.0)), ("head_tracking", json!(false)), ("led_glow", json!(6)), ("led_mips", json!(1.3)), ("ui_scale", json!(1.0)), ("ui_scale_window", json!(true)), ("notes", json!(true)), ("mouse_steering", json!(false)), ("mouse_right_off", json!(false))] {
         v[k] = d;
     }
     v["steer_look_angle"] = json!(30.0);
@@ -1641,7 +1676,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
         let (k, val) = (setting_key(k), val.trim());
         let b = |x: &str| matches!(x.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes");
         match k.as_str() {
-            "anisotropy" => v[&k] = json!(val.parse::<i64>().unwrap_or(8).clamp(1, 8)),
+            "anisotropy" => v[&k] = json!(val.parse::<i64>().unwrap_or(8).clamp(1, 16)),
             "msaa" | "shadow_size" => v[&k] = json!(val.parse::<i64>().unwrap_or(0)),
             "ui_opacity" | "volume" | "vol_ai" | "vol_scenery" | "min_obj_size" => v[&k] = json!(val.parse::<f64>().unwrap_or(0.0)),
             "pax_density" => v[&k] = json!(val.trim_end_matches('%').parse::<f64>().map(|x| if x > 5.0 { x / 100.0 } else { x }).unwrap_or(1.0)),
@@ -1651,7 +1686,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
             "mirror_size" => v[&k] = json!(val.parse::<i64>().map(|x| if x == 0 { 0 } else { x.clamp(64, 2048) }).unwrap_or(256)),
             "max_fps" => v[&k] = json!(val.parse::<f64>().map(|x| x as i64).unwrap_or(0)),
             "max_obj_dist" => v[&k] = if val.eq_ignore_ascii_case("auto") { json!("auto") } else { json!(val.parse::<f64>().map(|m| (m.round() as i64).to_string()).unwrap_or_else(|_| "auto".into())) },
-            "ssao" | "shadows" | "navigator" | "enhanced" | "vr" | "vr_desktop_mirror" | "fullscreen" | "vsync" | "exact_fare" | "detail_textures" | "texture_compression" | "chat" | "tooltips" | "name_tags" | "show_fps" | "clouds" | "doppler" | "driver" | "use_real_time" | "use_real_date" | "use_real_year" | "collision_vehicles" | "collision_objects" | "collision_pedestrians" | "head_movement" | "driverview_smooth" | "hands_in_cab" | "alt_view" => v[&k] = json!(b(val)),
+            "ssao" | "shadows" | "shadow_blobs" | "navigator" | "enhanced" | "vr" | "vr_desktop_mirror" | "fullscreen" | "vsync" | "exact_fare" | "detail_textures" | "texture_compression" | "chat" | "tooltips" | "name_tags" | "show_fps" | "clouds" | "doppler" | "driver" | "use_real_time" | "use_real_date" | "use_real_year" | "collision_vehicles" | "collision_objects" | "collision_pedestrians" | "head_movement" | "driverview_smooth" | "hands_in_cab" | "alt_view" => v[&k] = json!(b(val)),
             "maintenance" | "ai_unsched_factor" | "ai_max_scheduled" | "ai_max_parked" => v[&k] = json!(val.trim_end_matches('%').parse::<f64>().map(|x| x.max(0.0) as i64).unwrap_or(0)),
             "drive_keys" | "navigator_corner" | "boarding" | "render_scale" | "pax_voices" => v[&k] = json!(val),
             "ctrl_off" => v[&k] = json!(val),
@@ -1672,7 +1707,7 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
             "steer_look_response" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.05, 1.0)).unwrap_or(0.25)),
             "pedal_throttle" | "pedal_brake" => v[&k] = json!(val.parse::<f64>().map(|x| x.clamp(0.25, 4.0)).unwrap_or(1.0)),
             "seat_x" | "seat_y" | "seat_z" => v[&k] = json!(val.parse::<f64>().map(|x| x.clamp(-1.5, 1.5)).unwrap_or(0.0)),
-            "nav_arrows" | "get_up" | "ui_scale_window" | "notes" | "machine_translation" | "update_check" | "update_auto" | "reflections" | "steering_linear" | "old_steering" | "red_steer_spd" | "ff_invert" | "ff_enabled" | "brake_hold" | "auto_clutch" => v[&k] = json!(b(val)),
+            "nav_arrows" | "get_up" | "ui_scale_window" | "notes" | "machine_translation" | "update_check" | "update_auto" | "reflections" | "steering_linear" | "old_steering" | "red_steer_spd" | "ff_invert" | "ff_enabled" | "brake_hold" | "auto_clutch" | "mouse_steering" | "mouse_right_off" => v[&k] = json!(b(val)),
             "time_speed" => v[&k] = json!(val.trim_start_matches(['x', 'X']).parse::<f64>().map(|x| x.clamp(1.0, 30.0)).map(|x| if x.fract() == 0.0 { format!("{}", x as i64) } else { x.to_string() }).unwrap_or_else(|_| "1".into())),
             "language" => v[&k] = json!(language_code(val)),
             "graphics" | "renderer" => graphics = Some(graphics_mode(val)),
@@ -1757,7 +1792,7 @@ pub fn option_presets() -> Vec<(String, Value)> {
         v["min_obj_size"] = json!(o.f32("performance_minobjsize", 0.013) as f64);
         v["max_obj_dist"] = json!((o.f32("performance_maxobjdist", 900.0).round() as i64).to_string());
         if let Some(af) = o.values.get("texfilter").and_then(|x| x.get(1)).and_then(|x| x.parse::<i64>().ok()) {
-            v["anisotropy"] = json!(af.clamp(1, 8));
+            v["anisotropy"] = json!(af.clamp(1, 16));
         }
         let mem = o.f32("texmemlimit", 0.0);
         if mem > 0.0 {
@@ -1870,7 +1905,7 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
         b("alt_view", true),
     );
     let text = format!(
-        "{text}pax_voices={}\nnav_arrows={}\nget_up={}\ntime_speed={}\nmachine_translation={}\nshadow_casters={}\nctrl_deadzone={}\nupdate_check={}\nupdate_auto={}\nreflections={}\nmouse_sens={}\ngraphics_api={}\nctrl_off={}\nsteering_linear={}\nold_steering={}\nred_steer_spd={}\nff_invert={}\nwheel_range={}\nwheel_lock={}\nfov={}\ncamera_collision={}\npedal_throttle={}\npedal_brake={}\nseat_x={}\nseat_y={}\nseat_z={}\nsteer_look={}\nhead_tracking={}\nff_enabled={}\nbrake_hold={}\nauto_clutch={}\nled_glow={}\nled_mips={}\nui_scale={}\nui_scale_window={}\nnotes={}\n",
+        "{text}pax_voices={}\nnav_arrows={}\nget_up={}\ntime_speed={}\nmachine_translation={}\nshadow_casters={}\nshadow_blobs={}\nctrl_deadzone={}\nupdate_check={}\nupdate_auto={}\nreflections={}\nmouse_sens={}\ngraphics_api={}\nctrl_off={}\nsteering_linear={}\nold_steering={}\nred_steer_spd={}\nff_invert={}\nwheel_range={}\nwheel_lock={}\nfov={}\ncamera_collision={}\npedal_throttle={}\npedal_brake={}\nseat_x={}\nseat_y={}\nseat_z={}\nsteer_look={}\nhead_tracking={}\nff_enabled={}\nbrake_hold={}\nauto_clutch={}\nled_glow={}\nled_mips={}\nui_scale={}\nui_scale_window={}\nnotes={}\nmouse_steering={}\nmouse_right_off={}\n",
         match v.get("pax_voices").and_then(|x| x.as_str()).unwrap_or("all") {
             "tickets" => "tickets",
             "off" => "off",
@@ -1885,6 +1920,7 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
         },
         b("machine_translation", false),
         if v.get("shadow_casters").and_then(|x| x.as_str()) == Some("omsi") { "omsi" } else { "all" },
+        b("shadow_blobs", true),
         f("ctrl_deadzone", 0.0).clamp(0.0, 0.3),
         b("update_check", true),
         b("update_auto", false),
@@ -1920,6 +1956,8 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
         f("ui_scale", 1.0).clamp(0.5, 2.0),
         b("ui_scale_window", true),
         b("notes", true),
+        b("mouse_steering", false),
+        b("mouse_right_off", false),
     );
     let vr_scale = v.get("vr_scale").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(0.65).clamp(0.5, 1.0);
     let vr_head_smoothing_ms = v.get("vr_head_smoothing_ms").and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse().ok()))).filter(|x| x.is_finite()).unwrap_or(0.0).clamp(0.0, 30.0);
@@ -2428,6 +2466,15 @@ mod tests {
         assert_eq!(v["mirror_size"], 0);
         let text = settings_to_text(&v, None);
         assert!(text.lines().any(|l| l == "mirror_size=0"), "{text}");
+    }
+
+    #[test]
+    fn sixteen_x_anisotropy_survives_the_launcher() {
+        let v = settings_from_text(Some("anisotropy=16\n"));
+        assert_eq!(v["anisotropy"], 16);
+        let text = settings_to_text(&v, None);
+        assert!(text.lines().any(|l| l == "anisotropy=16"), "{text}");
+        assert_eq!(settings_from_text(Some("anisotropy=32\n"))["anisotropy"], 16);
     }
 
     #[test]

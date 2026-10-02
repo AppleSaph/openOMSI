@@ -431,7 +431,8 @@ impl Ui {
         let px = if rr.h >= 44.0 { 14.5 } else { 13.0 };
         let weight = if kind == ButtonKind::Primary { Weight::Bold } else { Weight::Medium };
         let tw = self.width(label, px, weight);
-        let iw = if icon.is_some() { px * 1.3 + 6.0 } else { 0.0 };
+        // (the gap after the icon only when a label follows it)
+        let iw = if icon.is_some() { px * 1.3 + if label.is_empty() { 0.0 } else { 6.0 } } else { 0.0 };
         let x0 = rr.center().x - (tw + iw) * 0.5;
         if let Some(i) = icon {
             self.icon(i, Vec2::new(x0 + px * 0.65, rr.center().y), px * 1.3, text_c);
@@ -979,6 +980,13 @@ impl Ui {
             ranges.push((a..verts.len() as u32, tex));
         }
         // the input of this frame is used up
+        self.discard_input();
+        (layers, verts, ranges)
+    }
+
+    /// Forget the clicks, keys and text since the last frame (used up by a frame, or come
+    /// while nothing was drawn).
+    pub fn discard_input(&mut self) {
         self.input.pressed = false;
         self.input.released = false;
         self.input.right_pressed = false;
@@ -987,7 +995,6 @@ impl Ui {
         self.input.keys.clear();
         self.input.raw_key = None;
         self.input.double_click = false;
-        (layers, verts, ranges)
     }
 
     fn draw_popup(&mut self) {
@@ -1192,5 +1199,38 @@ mod tests {
         assert_eq!(days_in_month(2024, 2), 29);
         assert_eq!(days_in_month(1900, 2), 28);
         assert_eq!(parse_date("1989-05-30"), (1989, 5, 30));
+    }
+
+    #[test]
+    fn a_button_with_only_an_icon_has_it_in_the_middle() {
+        let mut ui = Ui::new();
+        ui.begin(Vec2::new(400.0, 300.0), 1.0, 1.0 / 60.0);
+        let r = Rect::new(100.0, 100.0, 46.0, 46.0);
+        ui.button("b", r, "", Some("chevron_left"), ButtonKind::Normal);
+        // the icon is the only sprite drawn
+        let xs: Vec<f32> = ui.p().verts.iter().filter(|v| v.mode == [0.0, 1.0]).map(|v| v.pos[0]).collect();
+        assert!(!xs.is_empty());
+        let middle = (xs.iter().cloned().fold(f32::MAX, f32::min) + xs.iter().cloned().fold(f32::MIN, f32::max)) * 0.5;
+        assert!((middle - r.center().x).abs() <= 0.5, "the icon is at {middle}, the button's middle at {}", r.center().x);
+    }
+
+    /// What was clicked and typed while the launcher drew nothing (a game ran) is gone:
+    /// the first frame drawn afterwards pressed the button under the mouse, Start again.
+    #[test]
+    fn input_while_nothing_is_drawn_is_not_used_afterwards() {
+        let mut ui = Ui::new();
+        ui.input.pressed = true;
+        ui.input.released = true;
+        ui.input.right_pressed = true;
+        ui.input.double_click = true;
+        ui.input.wheel = Vec2::new(0.0, -3.0);
+        ui.input.text.push_str("abc");
+        ui.input.keys.push(Key::Enter);
+        ui.input.raw_key = Some(winit::keyboard::KeyCode::Enter);
+        ui.discard_input();
+        let i = &ui.input;
+        assert!(!i.pressed && !i.released && !i.right_pressed && !i.double_click);
+        assert_eq!(i.wheel, Vec2::ZERO);
+        assert!(i.text.is_empty() && i.keys.is_empty() && i.raw_key.is_none());
     }
 }

@@ -395,7 +395,6 @@ enum Placement {
     Attached {
         parent: i64,
         index: usize,
-        instance: usize,
         rot: [f64; 3],
     },
 }
@@ -3720,7 +3719,6 @@ impl World {
                 place: Placement::Attached {
                     parent,
                     index: o.attach_index,
-                    instance: o.instance,
                     rot: omsi_geometry::map_rotation(o.rot),
                 },
                 rules: o.rules.clone(),
@@ -3978,22 +3976,15 @@ impl World {
         loop {
             let mut progress = false;
             for (o, fp) in st.objects.iter().zip(final_poses.iter_mut()) {
-                let Placement::Attached {
-                    parent,
-                    index,
-                    instance,
-                    rot,
-                } = &o.place
-                else {
+                let Placement::Attached { parent, index, rot } = &o.place else {
                     continue;
                 };
                 if fp.is_some() {
                     continue;
                 }
-                let Some((pp, pt)) = poses
-                    .get(&(*parent, *instance))
-                    .or_else(|| poses.get(&(*parent, 0)))
-                else {
+                // (a spline attachment row by its first object: Omsi.exe refuses objects
+                // on its later ones)
+                let Some((pp, pt)) = poses.get(&(*parent, 0)) else {
                     continue;
                 };
                 // a point the parent does not have (its object was changed after the map
@@ -9661,6 +9652,22 @@ fn text_alpha(materials: &[omsi_o3d::Material], slot: usize, overrides: &[Materi
 /// The decision must not depend on one creator's language or on a particular bus name:
 /// use the model metadata and the material's actual mesh volume, while keeping thin glass
 /// and explicit overlay/transparency materials on their authored paths.
+/// Words that name a pane of glass in a mesh or texture file, in the languages OMSI's
+/// add-ons are made in. The body-depth repair must not turn one of these opaque when the
+/// model.cfg declares it blended: a Czech bus's `okna.o3d` (windows) on the shared
+/// `body.png` was drawn as a black wall, where OMSI shows the tinted glass.
+const GLASS_WORDS: [&str; 20] = [
+    "window", "fenster", "glas", "scheibe", "windshield", "windscreen", // en, de ("glas" is also German: `Leuchtmelderglas.tga`)
+    "okn", "sklo", // cs, sk (okna, okno, sklo)
+    "szyb", "okien", // pl
+    "ablak", // hu
+    "steklo", // ru (transliterated)
+    "vitre", "fenetre", // fr
+    "vetro", "finestr", // it
+    "raam", "ruit", // nl
+    "ventan", "cristal", // es
+];
+
 fn is_vehicle_body_material(
     mesh_file: &str,
     texture: &str,
@@ -9673,25 +9680,63 @@ fn is_vehicle_body_material(
         return false;
     }
     let name = format!("{} {}", mesh_file, texture).to_ascii_lowercase();
-    let glass_or_overlay = [
-        "window",
-        "fenster",
-        "glas",
-        "scheibe",
-        "windshield",
-        "windscreen",
-        "regen",
-        "dirt",
-        "dreck",
-        "wiper",
-        "matrix",
-        "display",
-        "shadow",
-    ];
-    if glass_or_overlay.iter().any(|part| name.contains(part)) {
+    let overlay = ["regen", "dirt", "dreck", "wiper", "matrix", "display", "shadow"];
+    if GLASS_WORDS.iter().chain(overlay.iter()).any(|part| name.contains(part)) {
         return false;
     }
     true
+}
+
+/// Side of the square a texture's alpha is kept at for [`slot_is_see_through`].
+const ALPHA_MASK: usize = 256;
+
+/// A texture's alpha channel, thinned out to [`ALPHA_MASK`] squared (a body texture is
+/// 4096 squared, and every blended slot of a bus asks). None for a file that cannot be
+/// read or has no alpha.
+fn alpha_mask(path: &Path) -> Option<Arc<Vec<u8>>> {
+    static MASKS: std::sync::OnceLock<Mutex<HashMap<PathBuf, Option<Arc<Vec<u8>>>>>> = std::sync::OnceLock::new();
+    let masks = MASKS.get_or_init(Default::default);
+    if let Some(m) = masks.lock().get(path) {
+        return m.clone();
+    }
+    let mask = omsi_texture::decode_file(path).ok().filter(|img| img.has_alpha && img.width > 0 && img.height > 0).map(|img| {
+        let (w, h) = (img.width as usize, img.height as usize);
+        let mut out = vec![255u8; ALPHA_MASK * ALPHA_MASK];
+        for y in 0..ALPHA_MASK {
+            for x in 0..ALPHA_MASK {
+                let (sx, sy) = ((x * w / ALPHA_MASK).min(w - 1), (y * h / ALPHA_MASK).min(h - 1));
+                out[y * ALPHA_MASK + x] = img.rgba[(sy * w + sx) * 4 + 3];
+            }
+        }
+        Arc::new(out)
+    });
+    masks.lock().insert(path.to_path_buf(), mask.clone());
+    mask
+}
+
+/// Whether the triangles of material `slot` lie on a see-through part of their texture
+/// (`mask`, see [`alpha_mask`]): nine in ten of them with an alpha under 0.9 at their
+/// middle. A pane does - the SOR NB12's glass is 62 of 255 on its body texture; a door or
+/// a body panel blended by `[matl_alpha] 2` has its paint at 255 and does not.
+fn slot_is_see_through(mesh: &MeshData, slot: usize, mask: &[u8]) -> bool {
+    let (mut clear, mut all) = (0usize, 0usize);
+    for &(first, count, material) in &mesh.ranges {
+        if material as usize != slot {
+            continue;
+        }
+        let start = first as usize;
+        let end = start.saturating_add(count as usize).min(mesh.indices.len());
+        for tri in mesh.indices.get(start..end).unwrap_or_default().chunks_exact(3) {
+            let Some(uv) = tri.iter().map(|&i| mesh.uvs.get(i as usize).copied()).sum::<Option<glam::Vec2>>() else { continue };
+            let uv = uv / 3.0;
+            let at = |t: f32| ((t.rem_euclid(1.0) * ALPHA_MASK as f32) as usize).min(ALPHA_MASK - 1);
+            all += 1;
+            if mask[at(uv.y) * ALPHA_MASK + at(uv.x)] < 230 {
+                clear += 1;
+            }
+        }
+    }
+    all > 0 && clear * 10 >= all * 9
 }
 
 /// Return whether the triangles of one material occupy a volumetric part of the vehicle.
@@ -11360,17 +11405,27 @@ impl World {
                     // Keep real glass/dirt/display layers blended, and keep explicit
                     // transmaps on the mask path; repair only the unambiguous body case.
                     let mesh_name = def.file.to_ascii_lowercase();
-                    let transparent_layer_name = [
-                        // ("glas" is also German glass: `Leuchtmelderglas.tga`, the warning
-                        // lamps' glass of the Thüringer Wald buses and the O 407, was a row of
-                        // white tiles)
-                        "window", "fenster", "glas", "scheibe", "windshield", "windscreen",
-                        "regen", "dreck", "dirt", "folie",
-                    ];
+                    let transparent_layer_name = ["regen", "dreck", "dirt", "folie"];
                     let material_name = format!("{} {}", mesh_name, m.texture).to_ascii_lowercase();
-                    let transparent_layer_hint = transparent_layer_name
+                    let named_pane = GLASS_WORDS
                         .iter()
+                        .chain(transparent_layer_name.iter())
                         .any(|part| material_name.contains(part));
+                    // A pane whose name says nothing: its faces lie on a see-through part of
+                    // its texture. No list of words finds the SOR NB12's `celokint.o3d` (its
+                    // windscreen), `okridic.o3d` (the driver's window) or `vyklopnel1.o3d`
+                    // (a tilting window): taken for bodywork they wrote their depth, and the
+                    // glow of every lamp and the lit lenses of the traffic lights behind them
+                    // were gone - seen only through an opened window.
+                    let see_through = !named_pane
+                        && declared_alpha == AlphaMode::Blend
+                        && omsi_texture::find_texture(&subst(&m.texture), &dirs_ref).and_then(|p| alpha_mask(&p)).is_some_and(|mask| slot_is_see_through(&vm.data, slot, &mask));
+                    if see_through {
+                        log::debug!("  {} slot {slot} '{}': see-through by its texture's alpha, writes no depth", def.file, m.texture);
+                    }
+                    // (the name alone still says what is drawn as glass: the same test finds
+                    // a gauge's needle film, a blind's net and the shadow under the bus)
+                    let transparent_layer_hint = named_pane;
                     let named_body = ["body", "wagenkasten", "karos", "chassis", "kuzov"].iter().any(|part| mesh_name.contains(part));
                     let mesh_has_overlay = def.materials.iter().any(|o| o.no_z_write);
                     // (a body-sized part in any case: a name or a bump map alone also took a
@@ -11476,7 +11531,7 @@ impl World {
                     // though their alpha mode is Blend. They are transparent colour layers,
                     // not solid shadow casters; letting them into the shadow map paints the
                     // bus shadow with the pane/film texture (the striped triangular artifact).
-                    if transparent_layer_hint && alpha == AlphaMode::Blend {
+                    if (transparent_layer_hint || see_through) && alpha == AlphaMode::Blend {
                         extra.no_z_write = true;
                     }
                     // Name the pane explicitly for the shader. A plain blended window has

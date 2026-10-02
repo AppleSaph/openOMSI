@@ -39,7 +39,8 @@
 //! NEAR|<id>|<footprints>                         host → client
 //! CLOCK|<map>|<date>|<time>|<weather>|<season>   host → clients, every five seconds
 //! CHAT|<id>|<text>                               client → host
-//! SAY|<id>|<name>|<text>                         host → clients (a chat line)
+//! SAY|<id>|<name>|<text>                         host → clients (a chat line; to one client
+//!                                                 alone: an admin's private word)
 //! NOTE|<text>                                    host → clients (joined, left, who is here)
 //! BYE|<id>
 //! WORLD (binary, see `world`)                    host → client: the traffic, people and
@@ -1865,6 +1866,24 @@ impl LanSession {
     }
 
     /// Say something to everybody. Our own line comes back as an event as well.
+    /// The host: a chat line for one player only, under `name` - `SAY` to that player's
+    /// address alone, so the others never see it, and a game of any version shows it like any
+    /// chat line (an admin's private word to a driver).
+    pub fn say_to(&mut self, to: u32, name: &str, text: &str) -> Result<(), String> {
+        let text = clean_text(text, MAX_CHAT);
+        if text.is_empty() {
+            return Err("nothing to say".into());
+        }
+        if !matches!(self.role, Role::Host) {
+            return Err("only the host speaks to one player".into());
+        }
+        let name = clean_text(name, MAX_NAME);
+        let addr = self.peers.get(&to).and_then(|p| p.addr).ok_or_else(|| format!("no player {to}"))?;
+        self.send(format!("SAY|{}|{name}|{text}", self.my_id).as_bytes(), addr);
+        log::info!("LAN chat to {to} <{name}> {text}");
+        Ok(())
+    }
+
     pub fn say(&mut self, text: &str) -> Result<(), String> {
         let text = clean_text(text, MAX_CHAT);
         if text.is_empty() {

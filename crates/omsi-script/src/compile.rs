@@ -518,7 +518,10 @@ impl<'a> Compiler<'a> {
                                     ifs.push((block.ops.len(), false));
                                     block.ops.push(Op::JumpIfZero(u32::MAX));
                                 } else {
-                                    self.err(&f.path, line_no, "{if} outside block".into());
+                                    // (code between blocks is never run - Omsi.exe reads only
+                                    // block headers there; the Procity's cockpit.osc has a
+                                    // whole {if} {else} {endif} between two triggers)
+                                    log::debug!("{}:{}: {{if}} outside block", f.path.display(), line_no);
                                 }
                             }
                             "else" => {

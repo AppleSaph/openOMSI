@@ -197,8 +197,10 @@ lines, as in the game, whose default date is 1989-05-30.
 ## Settings, enhanced graphics, the navigator
 
 `~/.openomsi/settings.cfg` (written by the launcher's settings page, or by hand) holds
-`msaa` (1/2/4; a count the GPU cannot do falls back to the next lower one), `anisotropy`
-(1..16), `ssao`, `shadows`, `shadow_size`, `navigator`, `ui_opacity` (how much of the interface's backgrounds shows - the navigator's, the
+`msaa` (1/2/4/8; a count the GPU cannot do falls back to the next lower one), `anisotropy`
+(1..16), `ssao`, `shadows`, `shadow_size`, `shadow_blobs` (the models' `[isshadow]` shadow
+meshes, OMSI's flat blob under a vehicle, laid on the road its wheels stand on; off, only the
+sun shadow map shades under a vehicle), `navigator`, `ui_opacity` (how much of the interface's backgrounds shows - the navigator's, the
 menu's, the timetable's, the plates under the notes - 0.2 to 1, the texts staying solid; 0.85
 as designed; `navigator_opacity` in older files),
 `navigator_corner` (`bottom-left` default, `bottom-right`, `top-left`, `top-right`),

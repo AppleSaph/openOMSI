@@ -1332,6 +1332,9 @@ pub struct Renderer {
     /// Sort the blended draws by origin distance alone, as before the camera-enclosing
     /// objects were drawn last (only for before/after pictures, `OMSI_BLEND_AB`).
     pub blend_by_origin: bool,
+    /// Draw the models' `[isshadow]` shadow blobs (see [`RenderOptions::shadow_blobs`]).
+    /// Settable while the game runs, so the graphics list can switch it off at once.
+    pub shadow_blobs: bool,
     /// GPU time per pass (OMSI_GPU_TIMERS, when the device has timestamp queries): the
     /// mirrors and the window's picture apart, each timed on its own.
     gpu_timers: [Option<GpuTimers>; 2],
@@ -1402,6 +1405,11 @@ pub struct RenderOptions {
     /// Only the meshes the models mark `[shadow]` cast sun shadows, as in OMSI 2 (else every
     /// solid mesh does).
     pub omsi_shadow_casters: bool,
+    /// Draw the models' `[isshadow]` shadow meshes - OMSI's flat blob under a vehicle,
+    /// standing in for the sky light the body keeps off the road (see [`Instance::blob`]).
+    /// Off, the sun shadow map is all the shading under a vehicle, and the blob (which
+    /// OMSI draws whatever the depth) cannot be seen at all.
+    pub shadow_blobs: bool,
     /// The materials' reflection maps (`[matl_envmap]`: the shine of paint, chrome and
     /// glass). Off, nothing mirrors the sky photo - some players find it too strong.
     pub reflections: bool,
@@ -1425,6 +1433,7 @@ impl Default for RenderOptions {
             min_obj_size: 0.013,
             max_obj_dist: 0.0,
             omsi_shadow_casters: false,
+            shadow_blobs: true,
             reflections: true,
             no_enhanced: false,
         }
@@ -1655,18 +1664,19 @@ impl Renderer {
             })
             .unwrap_or(wgpu::TextureFormat::Rgba8UnormSrgb);
         // Every target the scene is drawn into with multisampling (the swap chain or mirror
-        // format, the HDR target of the enhanced path, the depth buffer) must take the
-        // sample count, and the colour targets must resolve. A device judges that by the
-        // WebGPU table, which promises only 1x and 4x, unless it was asked for the
-        // adapter's own table: the launcher's "2x MSAA" (which Apple GPUs do support) was
-        // a fatal validation error before the first frame because the adapter's table said
-        // yes and the device's said no. So the adapter's table is asked for when the wanted
-        // count needs it, and the count is checked against the table the device will use.
+        // format, the HDR target of the enhanced path and its screen mask, the depth buffer)
+        // must take the sample count, and the colour targets must resolve. A device judges
+        // that by the WebGPU table, which promises only 1x and 4x, unless it was asked for
+        // the adapter's own table: the launcher's "2x MSAA" (which Apple GPUs do support)
+        // was a fatal validation error before the first frame because the adapter's table
+        // said yes and the device's said no. So the adapter's table is asked for when the
+        // wanted count needs it (2x, 8x), and the count is checked against the table the
+        // device will use.
         let wanted = match options.msaa {
             1 | 2 | 4 | 8 => options.msaa,
             _ => MSAA,
         };
-        let targets = [format, wgpu::TextureFormat::Rgba16Float, DEPTH_FORMAT];
+        let targets = [format, wgpu::TextureFormat::Rgba16Float, DEPTH_FORMAT, MASK_FORMAT];
         let takes = |flags: wgpu::TextureFormatFeatureFlags, f: wgpu::TextureFormat, n: u32| {
             flags.sample_count_supported(n)
                 && (n == 1
@@ -1741,10 +1751,11 @@ impl Renderer {
         let options = RenderOptions {
             msaa,
             shadow_size,
-            // (at most 8x: at 16x the sharper mip the filter picks far down a road let the
-            // dashes of a lane line alias into two blurred streaks running apart like an
-            // arrow - one line near, two further off, seen on every long straight)
-            anisotropy: options.anisotropy.clamp(1, 8),
+            // (16x was held at 8x once, for lane-line dashes far down a road seen to alias
+            // into two streaks running apart like an arrow; Spandau's Heerstrasse at 8x and
+            // 16x showed none of it - 16x kept the far dashes narrow where 8x smeared them
+            // sideways - so 16x is the player's choice again, 8x the default)
+            anisotropy: options.anisotropy.clamp(1, 16),
             ..options
         };
         let bc = device
@@ -3875,6 +3886,7 @@ impl Renderer {
             shadow_sampler,
             shadow_layout,
             shadow_pipelines,
+            shadow_blobs: options.shadow_blobs,
             options,
             gpu_error,
             env_heading: Default::default(),
@@ -7075,9 +7087,10 @@ impl Renderer {
         cursor_overlay: Option<usize>,
         tooltip_overlay: Option<usize>,
         cursor_transforms: [Option<Mat4>; 2],
+        navigator: Option<(TextureId, [Mat4; 2])>,
     ) {
         let Some(menu) = scene.overlays.get(menu_range) else { return };
-        if menu.is_empty() && cursor_transforms.iter().all(Option::is_none) {
+        if menu.is_empty() && cursor_transforms.iter().all(Option::is_none) && navigator.is_none() {
             return;
         }
         let (w, h) = (desktop_size.0.max(1) as f32, desktop_size.1.max(1) as f32);
@@ -7103,6 +7116,12 @@ impl Renderer {
         };
         let mut prepared = [Vec::new(), Vec::new()];
         for eye in 0..2 {
+            if let Some((id, transforms)) = navigator.as_ref() {
+                let quad = [Vec4::new(-1.0, 1.0, 0.0, 1.0), Vec4::new(1.0, 1.0, 0.0, 1.0),
+                            Vec4::new(1.0, -1.0, 0.0, 1.0), Vec4::new(-1.0, -1.0, 0.0, 1.0)]
+                    .map(|p| transforms[eye] * p);
+                if let Some(item) = prepare(id, quad) { prepared[eye].push(item); }
+            }
             for (index, (id, rect)) in menu.iter().enumerate() {
                 // The first rectangle dims the view. Every other rectangle is
                 // projected from the same menu plane in world space.
@@ -7834,6 +7853,10 @@ impl Renderer {
             if m.ranges.is_empty() || !inst.visible || (inst.mirror_only && main_view) {
                 return None;
             }
+            // OMSI's `[isshadow]` shadow blobs, switched off (see `RenderOptions::shadow_blobs`)
+            if inst.blob && !self.shadow_blobs {
+                return None;
+            }
             let (c, r) = Self::bounding_sphere(scene, inst);
             let v = view.transform_point3(c);
             let z = -v.z; // distance along the view direction
@@ -8302,6 +8325,13 @@ impl Renderer {
             list.extend(pre_list);
             prepass_batches = pre_batches;
         }
+        // OMSI_SKIP_PIPE=3,1: leave pipeline kinds out of the main pass (0 opaque, 1 alpha
+        // tested, 2 blended, 3 blended without depth writes, 4 surface depth) - with
+        // OMSI_GPU_TIMERS_RAW, what each kind costs the GPU
+        if let Ok(skip) = omsi_cfg::env::var("OMSI_SKIP_PIPE") {
+            let skip: Vec<u8> = skip.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            main_batches.retain(|b| !skip.contains(&(b.pipe / 4)));
+        }
         if debug_draws {
             log::info!("  main pass: {} opaque/alpha-tested and {} blended draws in {} batches; prepass {} batches; draw list {} entries", main_draws[0], main_draws[1], main_batches.len(), prepass_batches.len(), list.len());
         }
@@ -8331,17 +8361,24 @@ impl Renderer {
         }
         if self.profiling && with_overlays && self.draw_audit_at.elapsed().as_secs() >= 10 {
             self.draw_audit_at = std::time::Instant::now();
-            let mut assets: HashMap<&str, (usize, usize)> = HashMap::new();
+            // (batches, draws, triangles) per asset: what the CPU encodes and what the GPU
+            // goes through
+            let mut assets: HashMap<&str, (usize, usize, u64)> = HashMap::new();
             for b in &main_batches {
                 let source = scene.meshes[b.mesh as usize].source.as_deref().unwrap_or("procedural / vehicle");
                 let cost = assets.entry(source).or_default();
                 cost.0 += 1;
                 cost.1 += b.instances.len();
+                cost.2 += b.count as u64 / 3 * b.instances.len() as u64;
             }
             let mut assets: Vec<_> = assets.into_iter().collect();
             assets.sort_unstable_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(b.0)));
-            for (source, (batches, draws)) in assets.into_iter().take(12) {
-                log::info!("draw audit: {batches} batches, {draws} draws: {source}");
+            for (source, (batches, draws, tris)) in assets.iter().take(12) {
+                log::info!("draw audit: {batches} batches, {draws} draws, {tris} triangles: {source}");
+            }
+            assets.sort_unstable_by(|a, b| b.1.2.cmp(&a.1.2).then(a.0.cmp(b.0)));
+            for (source, (batches, draws, tris)) in assets.iter().take(12) {
+                log::info!("triangle audit: {tris} triangles in {draws} draws ({batches} batches): {source}");
             }
         }
         stage(self, "items", "mirror.items");

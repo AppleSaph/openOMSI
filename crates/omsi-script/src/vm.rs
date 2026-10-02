@@ -119,6 +119,7 @@ impl Host for NullHost {
 }
 
 /// Executes blocks of a [`Program`].
+#[derive(Clone)]
 pub struct Vm {
     pub stacks: Stacks,
     rng: u64,

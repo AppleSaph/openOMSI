@@ -11,6 +11,7 @@ use crate::App;
 pub(crate) enum ListKind {
     Admin,
     Options,
+    VrNavigator,
     Lines,
     Tours(String),
     Drivers,
@@ -133,6 +134,26 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     match kind {
         ListKind::Admin => return crate::admin::items(app),
+        ListKind::VrNavigator => {
+            let p = app.vr_nav_profile();
+            out.push((tr("Navigator position (this bus)"), HEADING.into()));
+            out.push((tr("Move and rotate with the mouse..."), "edit".into()));
+            let mut setting = |name: &str, value: String, field: &str| {
+                out.push((format!("{}\t{value}", tr(name)), format!("{field}{ADJUST}")));
+            };
+            setting("Navigator", tr(on_off(p.enabled)), "enabled");
+            setting("Position right / left", format!("{:+.0} cm", p.offset[0] * 100.0), "x");
+            setting("Position forward / back", format!("{:+.0} cm", p.offset[1] * 100.0), "y");
+            setting("Position up / down", format!("{:+.0} cm", p.offset[2] * 100.0), "z");
+            setting("Display width", format!("{:.0} cm", p.width * 100.0), "width");
+            setting("Display rotation", format!("{:+.0}°", p.yaw), "yaw");
+            setting("Display tilt", format!("{:+.0}°", p.tilt), "tilt");
+            setting("Display roll", format!("{:+.0}°", p.roll), "roll");
+            setting("Interface opacity", format!("{:.0} %", p.opacity * 100.0), "opacity");
+            out.push((tr("Reset navigator position"), "reset".into()));
+            out.push((tr("Back"), "options".into()));
+            return out;
+        }
         ListKind::Options => {
             let s = &app.settings;
             // one line a setting with its value on the right, which Left and Right change,
@@ -157,16 +178,20 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
             line(&mut out, tr("Interface grows with the window"), on(s.ui_scale_window), "ui_window");
             // (the backgrounds of all of it, the navigator's as well; the texts stay solid)
             line(&mut out, tr("Interface opacity"), format!("{:.0} %", s.ui_opacity * 100.0), "ui_opacity");
-            line(&mut out, tr("Navigator"), on(app.navigator.as_ref().is_some_and(|n| n.enabled)), "navigator");
+            line(&mut out, tr("Navigator"), on(if app.vr_active() { app.vr_nav_profile().enabled } else { app.navigator.as_ref().is_some_and(|n| n.enabled) }), "navigator");
             line(&mut out, tr("Frame rate"), on(s.show_fps), "fps");
             line(&mut out, tr("Notes in the top-left corner"), on(s.notes), "notes");
             line(&mut out, tr("Sun shadows"), on(s.shadows), "shadows");
+            // (the models' `[isshadow]` blob: the fake shadow OMSI draws under a vehicle
+            // whatever the sun shadow map says)
+            line(&mut out, tr("OMSI's shadow meshes"), on(s.shadow_blobs), "shadow_blobs");
             // (the LED panels' dots glow, and how much of the mip chain they are held at)
             line(&mut out, tr("LED glow"), format!("{}/15", s.led_glow), "led_glow");
             line(&mut out, tr("LED mip strength"), format!("{:.2}", s.led_mips), "led_mips");
             line(&mut out, tr("Volume"), format!("{:.0} %", s.volume * 100.0), "volume");
             head(&mut out, "Driving");
             line(&mut out, tr("Steering with the mouse"), on(app.mouse_drive), "mouse");
+            line(&mut out, tr("A right click ends the mouse steering"), on(s.mouse_right_off), "mouse_right");
             // (how far the wheel turns for the cursor's way across the window: 100% is OMSI's)
             line(&mut out, tr("Mouse steering sensitivity"), format!("{:.0} %", s.mouse_sens * 100.0), "mouse_sens");
             line(&mut out, tr("Keyboard brake stays on until the throttle"), on(s.brake_hold), "brake_hold");
@@ -187,6 +212,10 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
             line(&mut out, tr("Seat up / down"), seat(s.seat[2]), "seat 2");
             line(&mut out, tr("Seat right / left"), seat(s.seat[0]), "seat 0");
             out.push((tr("Reset the seat position"), "seat_reset".into()));
+            if app.vr_active() && app.player.is_some() {
+                head(&mut out, "VR");
+                out.push((tr("Navigator position (this bus)"), "vr_navigator".into()));
+            }
         }
         ListKind::Lines => {
             if let Some(sch) = app.schedule.as_ref() {
@@ -305,11 +334,25 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
     }
     let (verb, arg) = action.split_once(' ').unwrap_or((action, ""));
     match kind {
+        ListKind::VrNavigator => {
+            if verb == "edit" { app.start_vr_nav_edit(); return None; }
+            if verb == "options" { return Some(ListKind::Options); }
+            let direction = if arg.trim() == "-" { -1.0 } else { 1.0 };
+            app.vr_nav_adjust(verb, direction);
+            Some(ListKind::VrNavigator)
+        }
         ListKind::Admin => {
             crate::admin::run(app, action);
             Some(ListKind::Admin)
         }
         ListKind::Options => {
+            if app.vr_active() {
+                if verb == "vr_navigator" { return Some(ListKind::VrNavigator); }
+                if verb == "navigator" {
+                    app.vr_nav_adjust("enabled", 1.0);
+                    return Some(ListKind::Options);
+                }
+            }
             // (Left and Right: the last word; Enter leaves `ADJUST`'s mark there)
             let dir = arg.split_whitespace().last().filter(|d| matches!(*d, "+" | "-")).unwrap_or("");
             let s = &mut app.settings;
@@ -345,6 +388,16 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
                     s.shadows = !s.shadows;
                     Some(("shadows", (s.shadows as u8).to_string()))
                 }
+                "shadow_blobs" => {
+                    s.shadow_blobs = !s.shadow_blobs;
+                    let on = s.shadow_blobs;
+                    // (the blobs are the renderer's, not the lighting's: switch them off
+                    // in the picture at once, not at the next start)
+                    if let Some(r) = app.renderer.as_mut() {
+                        r.shadow_blobs = on;
+                    }
+                    Some(("shadow_blobs", (on as u8).to_string()))
+                }
                 "head" => {
                     s.head_movement = !s.head_movement;
                     Some(("head_movement", (s.head_movement as u8).to_string()))
@@ -368,17 +421,12 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
                     Some(("collision_vehicles", (s.collision_vehicles as u8).to_string()))
                 }
                 "mouse" => {
-                    app.mouse_drive = !app.mouse_drive;
-                    if !app.mouse_drive {
-                        crate::player::keep_wheel(app.player.as_mut());
-                    }
-                    #[cfg(windows)]
-                    if !app.mouse_drive {
-                        app.reset_vr_pointer();
-                    }
-                    app.mouse_steer = (app.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
-                    app.mouse_pedals = app.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
+                    app.set_mouse_drive(!app.mouse_drive);
                     None
+                }
+                "mouse_right" => {
+                    s.mouse_right_off = !s.mouse_right_off;
+                    Some(("mouse_right_off", (s.mouse_right_off as u8).to_string()))
                 }
                 "fps" => {
                     s.show_fps = !s.show_fps;
@@ -610,7 +658,7 @@ fn natural(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// Write one key of `~/.openomsi/settings.cfg` (the launcher's file; the other lines
 /// stay as they are).
-fn remember_setting(key: &str, value: &str) {
+pub(crate) fn remember_setting(key: &str, value: &str) {
     let Ok(mut v) = omsi_launcher_lib::get_settings() else { return };
     let parsed: serde_json::Value = value.parse::<f64>().map(serde_json::Value::from).unwrap_or_else(|_| serde_json::Value::from(value));
     // a switch goes in as true/false, as the launcher's own values are: written as 1 it

@@ -56,6 +56,20 @@ impl App {
 
     /// A key of the window, or of an `OMSI_INPUT` script.
     pub(crate) fn on_key(&mut self, event_loop: &ActiveEventLoop, code: KeyCode, pressed: bool, repeat: bool) {
+        if self.vr_nav_edit.is_some() {
+            if !pressed { self.keys.remove(&code); }
+            if matches!(code, KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::ShiftLeft | KeyCode::ShiftRight) && pressed {
+                self.keys.insert(code);
+            }
+            if pressed && !repeat {
+                match code {
+                    KeyCode::Escape | KeyCode::Enter => self.finish_vr_nav_edit(),
+                    KeyCode::KeyR => self.vr_nav_adjust("reset", 1.0),
+                    _ => {}
+                }
+            }
+            return;
+        }
         // Escape closes the city map first (it would end the session)
         if pressed && code == KeyCode::Escape {
             if let Some(n) = self.navigator.as_mut().filter(|n| n.map_open()) {
@@ -330,7 +344,7 @@ impl App {
                         if let Some(p) = self.player.as_mut() {
                             let groups = crate::player::door_keys(&p.vehicle.ty);
                             if let Some(group) = groups.get(n - 1) {
-                                let fire = crate::player::door_group_to_fire(&p.vehicle, group);
+                                let fire = crate::player::door_group_to_fire(&mut p.vehicle, group);
                                 log::info!("door key Shift+{n}: {}", fire.join(" + "));
                                 // the automatic rear doors of the stock Berlin buses (SD, NL): the
                                 // key is their release, and switched off with the doors open it
@@ -414,6 +428,17 @@ impl App {
                         {
                             // Shift+N: navigator → navigator with the schedule → off (N alone is
                             // the gearbox's neutral)
+                            if self.vr_active() {
+                                if !self.vr_nav_profile().enabled {
+                                    self.vr_nav_adjust("enabled", 1.0);
+                                } else if self.navigator.as_ref().is_some_and(|n| n.schedule) {
+                                    if let Some(n) = self.navigator.as_mut() { n.schedule = false; }
+                                    self.vr_nav_adjust("enabled", 1.0);
+                                } else if let Some(n) = self.navigator.as_mut() {
+                                    n.schedule = true;
+                                }
+                                return;
+                            }
                             if let Some(n) = self.navigator.as_mut() {
                                 match (n.enabled, n.schedule) {
                                     (true, false) => n.schedule = true,
@@ -664,14 +689,15 @@ impl App {
                 cam.yaw = (cam.yaw + dx).rem_euclid(360.0);
                 cam.pitch = (cam.pitch - dy).clamp(-89.0, 89.0);
             }
+        } else if self.view == "outside" {
+            // F3 chase orbit: full turn in yaw; pitch stops between near
+            // top-down and just below eye level so the camera never swings
+            // under the bus (see `chase_orbit_step` for the mouse gain).
+            self.look.0 = (self.look.0 + dx).rem_euclid(360.0);
+            self.look.1 = (self.look.1 - dy).clamp(-60.0, 25.0);
         } else {
-            self.look.0 += dx;
+            self.look.0 = (self.look.0 + dx).clamp(-140.0, 140.0);
             self.look.1 = (self.look.1 - dy).clamp(-85.0, 85.0);
-            if self.view != "outside" {
-                self.look.0 = self.look.0.clamp(-140.0, 140.0);
-            } else {
-                self.look.0 = self.look.0.rem_euclid(360.0);
-            }
         }
     }
 
@@ -742,14 +768,26 @@ impl App {
         if !pressed {
             self.both_drag = None;
         }
-        // a right click lets go of the mouse steering, as in OMSI (#162)
-        if pressed && self.mouse_drive && self.game_menu.is_none() {
-            self.mouse_drive = false;
-            crate::player::keep_wheel(self.player.as_mut());
+        // a right click lets go of the mouse steering as in OMSI (#162) when the player
+        // wants it so; otherwise the right button looks round and the wheel and pedals stay
+        // where the mouse left them (it went off with every look round, and with every
+        // look round in the pause)
+        if pressed && self.mouse_drive && self.game_menu.is_none() && self.settings.mouse_right_off && !self.paused {
+            self.set_mouse_drive(false);
             self.service_msg = Some(("Mouse steering off".into(), 3.0));
         }
         if pressed && self.right_zooms() && self.start_both_drag() {
             return;
+        }
+        if self.mouse_drive && self.game_menu.is_none() {
+            if pressed {
+                self.steer_cursor = Some(self.cursor);
+            } else if let Some((x, y)) = self.steer_cursor.take() {
+                self.cursor = (x, y);
+                if let Some(win) = self.window.as_ref() {
+                    let _ = win.set_cursor_position(winit::dpi::PhysicalPosition::new(x as f64, y as f64));
+                }
+            }
         }
         self.mouse_look = pressed;
         // (the cursor shows it at once, not with the next look at what is under it)
@@ -822,6 +860,7 @@ impl App {
 
     #[cfg(windows)]
     pub(crate) fn poll_vr_cursor_position(&mut self) {
+        if self.vr_nav_edit.is_some() { return; }
         let cockpit = self.vr.is_some() && self.game_menu.is_none()
             && self.chooser.is_none() && !self.mouse_drive
             && matches!(self.view.as_str(), "driver" | "pax");
@@ -948,6 +987,7 @@ impl App {
     }
 
     pub(crate) fn on_left(&mut self, pressed: bool) {
+        if self.vr_nav_edit.is_some() { return; }
         // the object editor: the mouse picks and drags
         if self.game_menu.is_none() && self.editor_mouse(pressed) {
             return;
@@ -955,6 +995,7 @@ impl App {
         // the city map: a click on the navigator opens it; while it is open the mouse is
         // the map's (a click outside closes it)
         let (x, y) = self.cursor;
+        let vr_active = self.vr_active();
         if let Some(n) = self.navigator.as_mut() {
             if n.map_open() {
                 let ctrl = self.keys.contains(&KeyCode::ControlLeft) || self.keys.contains(&KeyCode::ControlRight);
@@ -974,7 +1015,7 @@ impl App {
                 }
                 return;
             }
-            if pressed && n.over_panel(x, y) {
+            if pressed && !vr_active && n.over_panel(x, y) {
                 n.toggle_map();
                 return;
             }
@@ -1317,6 +1358,18 @@ impl App {
                         let (fwd, right) = (glam::DVec2::new(h.sin(), h.cos()), glam::DVec2::new(h.cos(), -h.sin()));
                         log::info!("input script: view {} camera in the bus ({:.2}, {:.2}, {:.2}), on foot {:?}", self.view, d.truncate().dot(right), d.truncate().dot(fwd), d.z, self.on_foot.as_ref().map(|f| f.pos));
                     }
+                }
+                // `log mouse`: the mouse steering's state
+                "log" if arg == "mouse" => {
+                    log::info!(
+                        "input script: mouse steering {} look {} menu {:?} paused {} focused {} steer {:.3}",
+                        self.mouse_drive,
+                        self.mouse_look,
+                        self.game_menu,
+                        self.paused,
+                        self.window_focused,
+                        self.mouse_steer.0
+                    );
                 }
                 "log" => {
                     let v = self
@@ -2217,6 +2270,8 @@ impl App {
                 self.service_msg = Some((if visible { "Desktop VR mirror on" }
                                          else { "Desktop VR mirror off" }.into(), 2.0));
             }
+            "vr_toggle_navigator" => self.vr_nav_adjust("enabled", 1.0),
+            "vr_position_navigator" => self.start_vr_nav_edit(),
             _ => return false,
         }
         true
@@ -2344,17 +2399,7 @@ impl App {
                 }
             }
             "toggel_mouse_ctrl" => {
-                self.mouse_drive = !self.mouse_drive;
-                if !self.mouse_drive {
-                    crate::player::keep_wheel(self.player.as_mut());
-                }
-                #[cfg(windows)]
-                if !self.mouse_drive {
-                    self.reset_vr_pointer();
-                }
-                // (the wheel eases from where it is to the cursor for the first second)
-                self.mouse_steer = (self.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
-                self.mouse_pedals = self.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
+                self.set_mouse_drive(!self.mouse_drive);
                 let msg = if self.mouse_drive { "Mouse steering on: across steers, up is the throttle, down the brake (O turns it off)" } else { "Mouse steering off" };
                 self.service_msg = Some((msg.into(), 4.0));
             }
@@ -2411,6 +2456,24 @@ impl App {
         p.vehicle.trigger(n);
         p.vehicle.trigger(&format!("{n}_off"));
         true
+    }
+
+    /// Switch the mouse steering on or off, and remember it for the next game. Switched off,
+    /// the wheel stays where the mouse left it; switched on, it eases from where it is to
+    /// the cursor for the first second.
+    pub(crate) fn set_mouse_drive(&mut self, on: bool) {
+        self.mouse_drive = on;
+        if !on {
+            crate::player::keep_wheel(self.player.as_mut());
+            #[cfg(windows)]
+            self.reset_vr_pointer();
+        }
+        self.mouse_steer = (self.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
+        self.mouse_pedals = self.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
+        if self.settings.mouse_steering != on {
+            self.settings.mouse_steering = on;
+            crate::game_lists::remember_setting("mouse_steering", if on { "1" } else { "0" });
+        }
     }
 
     pub(crate) fn toggle_pause(&mut self) {
@@ -2604,6 +2667,12 @@ impl App {
     }
 
     pub(crate) fn update_hover(&mut self) {
+        if self.vr_nav_edit.is_some() {
+            self.hover = None;
+            self.hover_part = None;
+            self.hover_hand = false;
+            return;
+        }
         #[cfg(windows)]
         if !self.mouse_drive && self.vr.as_ref().is_some_and(|vr| vr.needs_cursor_surface(
             self.cursor, self.game_menu.is_some() || self.chooser.is_some())) {
@@ -2689,11 +2758,35 @@ fn look_deg_per_px(fov_deg: f32) -> f32 {
     fov_deg / 78.75
 }
 
+/// F3 chase orbit step from raw drag pixels: full turn in yaw at 0.35
+/// deg/px (faster than the head's 0.15), pitch between -60 (near top-down)
+/// and +25 (just below eye level) around the -15 rest pose, so the camera
+/// never swings under the bus. Pure (tested below).
+pub(crate) fn chase_orbit_step(yaw: f32, pitch: f32, dx_px: f32, dy_px: f32) -> (f32, f32) {
+    const GAIN: f32 = 0.35;
+    (
+        (yaw + dx_px * GAIN).rem_euclid(360.0),
+        (pitch - dy_px * GAIN).clamp(-60.0, 25.0),
+    )
+}
+
 #[cfg(test)]
 mod look_tests {
     #[test]
     fn a_cursor_way_of_78_75_px_turns_by_the_field_of_view() {
         assert!((78.75 * super::look_deg_per_px(60.0) - 60.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn chase_orbits_at_035_deg_px_with_stops_above_and_below() {
+        // 100 px drag down-right: +35 yaw, -35 pitch.
+        let (y, p) = super::chase_orbit_step(0.0, 0.0, 100.0, 100.0);
+        assert!((y - 35.0).abs() < 1e-4 && (p + 35.0).abs() < 1e-4, "{y} {p}");
+        // yaw wraps the full circle.
+        assert!((super::chase_orbit_step(350.0, 0.0, 100.0, 0.0).0 - 25.0).abs() < 1e-3);
+        // pitch never leaves the stops, whichever way it is dragged.
+        assert_eq!(super::chase_orbit_step(0.0, 0.0, 0.0, -1000.0).1, 25.0);
+        assert_eq!(super::chase_orbit_step(0.0, 0.0, 0.0, 1000.0).1, -60.0);
     }
 }
 
