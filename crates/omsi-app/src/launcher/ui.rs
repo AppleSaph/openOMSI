@@ -81,6 +81,8 @@ struct Popup {
     opened: f32,
     /// Filled when an option was clicked: read by `select` next frame.
     picked: Option<usize>,
+    /// The scrollbar is being dragged: where in the thumb it was taken.
+    drag: Option<f32>,
 }
 
 /// A calendar dropdown for a date field.
@@ -565,7 +567,7 @@ impl Ui {
             } else if open {
             } else {
                 let sel = (*selected).min(options.len().saturating_sub(1));
-                let mut p = Popup { id, anchor: r, options: options.to_vec(), selected: sel, scroll: 0.0, opened: 0.0, picked: None };
+                let mut p = Popup { id, anchor: r, options: options.to_vec(), selected: sel, scroll: 0.0, opened: 0.0, picked: None, drag: None };
                 // the chosen option in view
                 let row = 34.0;
                 let visible = popup_rect(&p, self.size).h;
@@ -1010,8 +1012,27 @@ impl Ui {
         self.p().rounded_border(rr, 8.0, 1.0, Color::WHITE.alpha(0.1 * e));
         let row = 34.0;
         let content = p.options.len() as f32 * row;
+        let max = (content - rr.h + 8.0).max(0.0);
         if rr.contains(self.input.mouse) && self.input.wheel.y.abs() > 0.0 {
-            p.scroll = (p.scroll - self.input.wheel.y * 40.0).clamp(0.0, (content - rr.h + 8.0).max(0.0));
+            p.scroll = (p.scroll - self.input.wheel.y * 40.0).clamp(0.0, max);
+        }
+        // the scrollbar: its thumb is dragged, a press on the track beside it jumps there
+        let bar_h = (rr.h * rr.h / content.max(1.0)).max(24.0);
+        let track = Rect::new(rr.right() - 14.0, rr.y, 14.0, rr.h);
+        if max > 0.0 {
+            if self.input.pressed && !fresh && track.contains(self.input.mouse) {
+                let y = rr.y + (rr.h - bar_h) * (p.scroll / max.max(1.0));
+                let inside = self.input.mouse.y - y;
+                p.drag = Some(if (0.0..=bar_h).contains(&inside) { inside } else { bar_h * 0.5 });
+            }
+            if let Some(grab) = p.drag {
+                let at = (self.input.mouse.y - grab - rr.y) / (rr.h - bar_h).max(1.0);
+                p.scroll = (at * max).clamp(0.0, max);
+            }
+        }
+        let dragging = p.drag.is_some();
+        if !self.input.down || self.input.released {
+            p.drag = None;
         }
         self.push_clip(rr.inset(4.0), 8.0);
         for (k, o) in p.options.iter().enumerate() {
@@ -1020,7 +1041,7 @@ impl Ui {
                 continue;
             }
             let cell = Rect::new(rr.x + 4.0, y, rr.w - 8.0, row);
-            let h = cell.contains(self.input.mouse) && rr.contains(self.input.mouse);
+            let h = cell.contains(self.input.mouse) && rr.contains(self.input.mouse) && !dragging && !(max > 0.0 && track.contains(self.input.mouse));
             if k == p.selected {
                 self.p().rounded(cell, 5.0, SELECTED);
                 self.icon("check", Vec2::new(cell.right() - 16.0, cell.center().y), 15.0, ACCENT);
@@ -1036,10 +1057,11 @@ impl Ui {
             }
         }
         self.pop_clip();
-        if content > rr.h {
-            let bar_h = (rr.h * rr.h / content).max(24.0);
-            let y = rr.y + (rr.h - bar_h) * (p.scroll / (content - rr.h + 8.0).max(1.0));
-            self.p().rounded(Rect::new(rr.right() - 5.0, y, 3.0, bar_h), 1.5, Color::WHITE.alpha(0.3));
+        if max > 0.0 {
+            let y = rr.y + (rr.h - bar_h) * (p.scroll / max.max(1.0));
+            let wide = dragging || track.contains(self.input.mouse);
+            let w = if wide { 5.0 } else { 3.0 };
+            self.p().rounded(Rect::new(rr.right() - 2.0 - w, y, w, bar_h), w * 0.5, Color::WHITE.alpha(if wide { 0.5 } else { 0.3 }));
         }
         if rr.contains(self.input.mouse) {
             self.over_ui = true;
@@ -1232,5 +1254,51 @@ mod tests {
         assert!(!i.pressed && !i.released && !i.right_pressed && !i.double_click);
         assert_eq!(i.wheel, Vec2::ZERO);
         assert!(i.text.is_empty() && i.keys.is_empty() && i.raw_key.is_none());
+    }
+
+    /// A long dropdown (a bus with hundreds of fleet numbers) scrolls by dragging its bar,
+    /// and letting go over an option does not pick it.
+    #[test]
+    fn a_long_dropdown_scrolls_by_dragging_its_bar() {
+        let options: Vec<String> = (0..200).map(|k| format!("{k}")).collect();
+        let mut ui = Ui::new();
+        let mut sel = 0;
+        let field = Rect::new(20.0, 20.0, 240.0, 30.0);
+        let mut frame = |ui: &mut Ui, sel: &mut usize| {
+            ui.begin(Vec2::new(800.0, 600.0), 1.0, 1.0 / 60.0);
+            ui.select("n", field, sel, &options);
+            ui.finish();
+        };
+        // open it and let it finish opening
+        ui.input.mouse = field.center();
+        ui.input.pressed = true;
+        ui.input.down = true;
+        frame(&mut ui, &mut sel);
+        ui.input.down = false;
+        ui.input.released = true;
+        frame(&mut ui, &mut sel);
+        for _ in 0..30 {
+            frame(&mut ui, &mut sel);
+        }
+        let r = popup_rect(ui.popup.as_ref().unwrap(), ui.size);
+        assert_eq!(ui.popup.as_ref().unwrap().scroll, 0.0);
+        // take the thumb at the top and pull it down to the end of the track
+        ui.input.mouse = Vec2::new(r.right() - 4.0, r.y + 5.0);
+        ui.input.pressed = true;
+        ui.input.down = true;
+        frame(&mut ui, &mut sel);
+        ui.input.mouse = Vec2::new(r.x + 40.0, r.bottom() + 50.0);
+        frame(&mut ui, &mut sel);
+        let max = 200.0 * 34.0 - r.h + 8.0;
+        assert!((ui.popup.as_ref().unwrap().scroll - max).abs() < 0.5, "scrolled to {}", ui.popup.as_ref().unwrap().scroll);
+        // let go over an option: it is not picked, the list stays open
+        ui.input.mouse = Vec2::new(r.x + 40.0, r.center().y);
+        ui.input.down = false;
+        ui.input.released = true;
+        frame(&mut ui, &mut sel);
+        frame(&mut ui, &mut sel);
+        assert_eq!(sel, 0);
+        let p = ui.popup.as_ref().expect("the list is still open");
+        assert!(p.drag.is_none() && p.picked.is_none());
     }
 }
