@@ -1436,3 +1436,56 @@ fn a_returning_player_is_known_by_its_nonce_not_its_name() {
     let back = hello_id(&raw(), &mut host, "alice", 0x1234).expect("welcomed");
     assert_eq!(back, first);
 }
+
+/// Ticks a client (a second at a time, so that the slow hello comes round) and a host until
+/// the client is connected.
+fn until_connected(c: &mut LanSession, host: &mut LanSession) -> bool {
+    let t0 = Instant::now();
+    while !c.connected && t0.elapsed() < Duration::from_secs(3) {
+        c.tick(1.0, &Pose::default());
+        host.tick(0.05, &pose(0.0));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    c.connected
+}
+
+#[test]
+fn a_client_that_gave_up_comes_back_when_the_host_does() {
+    let port = 27961;
+    // nobody hosts yet: the client gives up
+    let mut c = LanSession::join(&format!("127.0.0.1:{port}"), "c", world("m"), Duration::from_millis(10))
+        .unwrap();
+    c.join_timeout = Duration::from_millis(300);
+    let t0 = Instant::now();
+    while c.rejected.is_none() && t0.elapsed() < Duration::from_secs(3) {
+        c.tick(0.05, &Pose::default());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(c.rejected.is_some() && !c.connected);
+    // the host starts: the client's slow hello finds it and the give-up is taken back
+    let mut host = LanSession::host(port, "host", world("m"), false).unwrap();
+    assert!(until_connected(&mut c, &mut host));
+    assert!(c.rejected.is_none());
+    assert_eq!(c.welcomes, 1);
+}
+
+#[test]
+fn reconnect_tries_again_after_the_host_sent_us_away() {
+    let mut host = LanSession::host(27991, "host", world("m"), false).unwrap();
+    let mut c = LanSession::join("127.0.0.1:27991", "c", world("m"), Duration::from_millis(10)).unwrap();
+    assert!(until_connected(&mut c, &mut host));
+    // the host sends us away: we stay out, with its reason
+    host.kick(c.my_id, "test", false);
+    for _ in 0..10 {
+        c.tick(1.0, &Pose::default());
+        host.tick(0.05, &pose(0.0));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!c.connected);
+    assert!(c.rejected.as_deref().is_some_and(|r| r.contains("test")));
+    assert!(c.reconnect());
+    assert!(c.rejected.is_none());
+    assert!(until_connected(&mut c, &mut host));
+    // a host has nothing to reconnect to
+    assert!(!host.reconnect());
+}
