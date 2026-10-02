@@ -63,6 +63,10 @@ impl TextCache {
     /// Text width in pixels, without rendering it.
     pub fn width(&self, text: &str, px: f32) -> f32 {
         let text = &*omsi_ui::tr(text);
+        self.width_raw(text, px)
+    }
+
+    fn width_raw(&self, text: &str, px: f32) -> f32 {
         let mut w = 0.0;
         let mut prev: Option<(ab_glyph::GlyphId, *const FontVec)> = None;
         for c in text.chars() {
@@ -822,10 +826,16 @@ impl TextCache {
         let key = (format!("\u{0}rr{w}x{h}r{}", rad as u32), 0, rgba);
         self.cached(r, scene, key, (w, h), || {
             let mut data = vec![0u8; (w * h * 4) as usize];
+            let ri = rad as u32;
             for py in 0..h {
+                let band_y = py >= ri && py + ri < h;
                 for px in 0..w {
-                    let d = rr_dist(px as f32 + 0.5, py as f32 + 0.5, 0.0, 0.0, w as f32, h as f32, rad);
-                    let cover = (0.5 - d).clamp(0.0, 1.0);
+                    let cover = if band_y || (px >= ri && px + ri < w) {
+                        1.0
+                    } else {
+                        let d = rr_dist(px as f32 + 0.5, py as f32 + 0.5, 0.0, 0.0, w as f32, h as f32, rad);
+                        (0.5 - d).clamp(0.0, 1.0)
+                    };
                     let o = ((py * w + px) * 4) as usize;
                     data[o..o + 3].copy_from_slice(&rgba[..3]);
                     data[o + 3] = (rgba[3] as f32 * cover).round() as u8;
@@ -1198,7 +1208,7 @@ impl Ui {
                 (t.to_string(), String::new())
             }
         };
-        let head_cy = self.menu_header(r, scene, x, y, list_w, header_h, &title, &sub, s);
+        self.menu_header(r, scene, x, y, w, header_h, &title, &sub, s);
         // the scroll bar: where the lines shown lie in the whole menu
         let scrolls = nl > rows;
         if scrolls {
@@ -1213,8 +1223,6 @@ impl Ui {
             self.text.rounded(r, scene, thumb, 1.5 * s, ACCENT);
             // (a wider grip than the drawn thumb: three pixels are hard to hit)
             self.menu_scroll_thumb = Some([thumb[0] - 6.0 * s, thumb[1], thumb[2] + 6.0 * s, thumb[3]]);
-            let more = omsi_ui::tr("{} of {}").replacen("{}", &(sel_l + 1).to_string(), 1).replacen("{}", &nl.to_string(), 1);
-            self.put_right(r, scene, &more, (12.0 * s) as u32, MUTED, list_r - pad - tin, head_cy);
         }
         // (the line under the mouse is the one lit; the keyboard's choice only while the
         // mouse is off the lines - both lit at once read as two choices)
@@ -1554,7 +1562,7 @@ impl Ui {
             Some((t, u)) => (t.clone(), u.clone()),
             None => ("Options".to_string(), String::new()),
         };
-        let head_cy = self.menu_header(r, scene, x, y, w, header_h, &title, &sub, s);
+        self.menu_header(r, scene, x, y, w, header_h, &title, &sub, s);
         let over = |rect: [f32; 4]| f.cursor.0 >= rect[0] && f.cursor.0 <= rect[2] && f.cursor.1 >= rect[1] && f.cursor.1 <= rect[3];
         // the sidebar: the pages, and the way back at its foot
         if side_w > 0.0 {
@@ -1618,8 +1626,6 @@ impl Ui {
             let thumb = [track[0], t0, track[2], t1];
             self.text.rounded(r, scene, thumb, 1.5 * s, ACCENT);
             self.menu_scroll_thumb = Some([thumb[0] - 6.0 * s, thumb[1], thumb[2] + 6.0 * s, thumb[3]]);
-            let more = omsi_ui::tr("{} of {}").replacen("{}", &(sel + 1).to_string(), 1).replacen("{}", &items.len().to_string(), 1);
-            self.put_right(r, scene, &more, (12.0 * s) as u32, MUTED, x + w - pad - tin, head_cy);
         }
         // the rows
         let any_hovered = over([x + side_w, y + header_h, x + w, y + h]);
@@ -1823,11 +1829,22 @@ fn clip_to(tc: &TextCache, text: &str, px: f32, width: f32) -> String {
     if tc.width(text, px) <= width {
         return text.to_string();
     }
-    let mut t: String = text.to_string();
-    while !t.is_empty() && tc.width(&format!("{t}…"), px) > width {
-        t.pop();
+    let chars: Vec<char> = text.chars().collect();
+    let head = |n: usize| {
+        let mut t: String = chars[..n].iter().collect();
+        t.push('…');
+        t
+    };
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        if tc.width_raw(&head(mid), px) <= width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
     }
-    format!("{t}…")
+    head(lo)
 }
 
 /// `text` cut at the start to fit (the end of what is being typed stays visible).
