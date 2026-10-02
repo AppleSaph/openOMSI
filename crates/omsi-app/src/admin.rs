@@ -129,7 +129,9 @@ fn host_action(app: &mut App, action: &str, by: Option<u32>) {
             }
         }
         "speed" => {
-            if let Some(s) = finite(arg) {
+            if app.real_time_locked() {
+                app.service_msg = Some(("The time speed is fixed while the real-time sync is on".into(), 3.0));
+            } else if let Some(s) = finite(arg) {
                 let s = s.clamp(1.0, 30.0);
                 if let Some(l) = app.lan.as_mut() {
                     l.clock_speed = s;
@@ -395,6 +397,9 @@ pub(crate) struct ServerAdmin {
     pub next_weather: bool,
     /// An admin set the clock to this time of day (s).
     pub set_clock: Option<f64>,
+    /// An admin chose this weather (`Weather/….owt`, checked against the installed ones by
+    /// the host loop).
+    pub set_weather: Option<String>,
     /// The challenge each asking player was given (used once).
     challenges: std::collections::HashMap<u32, String>,
     /// When wrong answers came lately (the lock counts them, whoever sent them: a player
@@ -419,6 +424,15 @@ impl ServerAdmin {
         self.failures.len() >= LOCK_AFTER
     }
 }
+
+/// A weather file an admin may choose: a `Weather/….owt` path, nothing above it.
+fn weather_file_ok(file: &str) -> bool {
+    let f = file.replace('\\', "/").to_ascii_lowercase();
+    f.starts_with("weather/") && f.ends_with(".owt") && !f.contains("..") && f.matches('/').count() == 1
+}
+
+/// Who the commands of the web gateway's `POST /admin` come from: no player has this id.
+pub(crate) const LOCAL_ADMIN: u32 = u32::MAX;
 
 /// A command a player sent the dedicated server.
 pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &mut ServerAdmin, positions: &dyn Fn(u32) -> Option<(glam::DVec3, f64)>) {
@@ -475,19 +489,36 @@ pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &
                         lan.command(from, &format!("teleport {x:.2} {y:.2} {:.2} {h:.1}", pos.z));
                     }
                 }
-                "time" => {
+                // (a server on the real time keeps its clock and its speed)
+                "time" if !crate::real_time::server_real() => {
                     if let Some(s) = finite(a) {
                         adm.shift += s.clamp(-86400.0, 86400.0);
                     }
                 }
-                "speed" => {
+                "speed" if !crate::real_time::server_real() => {
                     if let Some(s) = finite(a) {
                         lan.clock_speed = s.clamp(1.0, 30.0);
                     }
                 }
-                "weather" => adm.next_weather = true,
+                // the menu offers "weather next" and "weather set <file>" for each installed
+                // weather; a server took every one of them for "next"
+                "weather" => match a.trim().split_once(' ').map(|(k, f)| (k, f.trim())) {
+                    Some(("set", file)) if weather_file_ok(file) => adm.set_weather = Some(file.replace('\\', "/")),
+                    _ => adm.next_weather = true,
+                },
                 "say" => {
                     let _ = lan.say(a);
+                }
+                // a word for one player only: `tell <id> <text>`, a chat line from "Admin
+                // (private)" that the others do not get
+                "tell" => {
+                    if let Some((who, msg)) = a.trim().split_once(' ') {
+                        if let Ok(id) = who.parse::<u32>() {
+                            if let Err(e) = lan.say_to(id, "Admin (private)", msg.trim()) {
+                                log::info!("server: tell {id}: {e}");
+                            }
+                        }
+                    }
                 }
                 "bringall" => {
                     if let Some((pos, h)) = positions(from) {
@@ -512,7 +543,7 @@ pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &
                         lan.command(id, "unstick");
                     }
                 }
-                "clock" => {
+                "clock" if !crate::real_time::server_real() => {
                     // (the server's clock is the session's: moved by the difference)
                     if let Some(s) = finite(a) {
                         adm.set_clock = Some(s.rem_euclid(86400.0));
@@ -558,5 +589,20 @@ pub(crate) fn guard_fall(app: &mut App, dt: f32) {
             app.safe_age = 0.0;
             app.safe_pose = Some((glam::DVec3::new(at.x, at.y, g), p.vehicle.heading));
         }
+    }
+}
+
+#[cfg(test)]
+mod weather_file_tests {
+    use super::weather_file_ok;
+
+    #[test]
+    fn only_a_weather_file() {
+        assert!(weather_file_ok("Weather/#CAVOK.owt"));
+        assert!(weather_file_ok("weather\\Bodennebel.OWT"));
+        assert!(!weather_file_ok("Weather/../server.cfg"));
+        assert!(!weather_file_ok("Weather/sub/x.owt"));
+        assert!(!weather_file_ok("maps/x.owt"));
+        assert!(!weather_file_ok("Weather/x.cfg"));
     }
 }

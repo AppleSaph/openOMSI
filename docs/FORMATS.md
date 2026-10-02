@@ -227,10 +227,24 @@ change `1000_FPW_19910602` of 1991-06-02 removed.
 `[object]`: `0`, path, IDCode, **x, y, z** (z relative to the terrain, except for `[absheight]`
 objects and objects that carry `[splinehelper]` connectors such as crossings and switches,
 whose z is absolute like the splines they connect to),
-heading, pitch, bank (degrees, heading clockwise from north), a type flag (0 plain, 1 = has
-text-texture strings, 4 = tree, 7 = bus stop) and type-specific lines (tree: texture, height,
-height/width ratio; bus stop: name and timetable data). `[attachObj]` has the parent IDCode
-after its own and only **x, z** as offsets. `[spline]` / `[spline_h]`: `0`, path, IDCode,
+heading, pitch, bank (degrees, heading clockwise from north), then the object's **labels**:
+a count and exactly that many lines, whatever they say (an empty one, or one that looks like
+a keyword, is a label too). They are what the editor's Labels dialog edits - sign texts
+(`@` breaks a line), line numbers, a tree's texture, height and height/width ratio, a bus
+stop's name and timetable data - and fill the object's string variables in order; the count
+is no type (trees write 3 or 4). `[attachObj]`: `0`, path, IDCode, the parent's IDCode, the
+parent's instance (only `0` loads: Omsi.exe refuses objects on later objects of a spline
+attachment row), the index of the parent's `[new_attachment]` point, heading, pitch, bank,
+labels. The parent is looked up among the records ([object], [attachObj],
+[splineAttachement]) written **before** it in the tile; an attachment whose parent comes
+later is not loaded.
+Older tile versions write shorter records (TMapKachel.loadMapFile): the leading detail level
+(`0`) only from version 9 on (an object above the detail setting is not loaded), IDCodes
+from 6 on (older records are numbered as they load), an `[attachObj]` parent by IDCode from 10
+on (before: its index among the tile's records so far), its heading from 8 on, pitch and bank
+from 12 on, labels from 4 on. A `[spline]` before version 11 has one line instead of the two
+neighbour IDs (-1: none, else it continues the spline written before it), cant from 5 on,
+skew from 14 on, the texture offset from 11 on and the `mirror` line from 7 on. `[spline]` / `[spline_h]`: `0`, path, IDCode,
 previous, next, **x, height, y**, heading, length, radius (0 straight, > 0 turns right),
 gradient start/end (%), cant start/end, skew start/end, alignment length, optional `mirror`.
 Field orders were verified by prev/next continuity and bus-stop link distances of the stock maps.
@@ -266,9 +280,10 @@ saved in a neighbouring tile's file with coordinates beyond the edge. `tile.map.
 The plate is one flat object a couple of hundred metres across, placed at an absolute
 height; the named mesh is a coarse version of the same plate. Every vertex of the object is
 moved by the difference between the ground under it and that base mesh, so the plate keeps
-its kerbs and camber while its arms come down onto the roads that run into them. The ground
-under the plate is then pressed into the base mesh as well, which is what closes the seam
-along its edges.
+its kerbs and camber while its arms come down onto the roads that run into them, and the
+plate's paths take their heights from it (Omsi.exe 0x7ba818). The ground is not pressed into
+it at load: nothing in Omsi.exe reads that mesh for the terrain, and objects stand on the
+`.terrain` heights.
 
 `[spline_terrain_align]` (no parameter) and `[spline_terrain_align_2] <n>` follow a
 `[spline]` in a tile file (Berlin-Spandau: 33 and 203 of 2486 splines). The editor's

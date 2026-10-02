@@ -54,6 +54,10 @@ impl ScriptTexture {
             self.pending = None;
         }
         self.clear();
+        // `STNewTex` starts a new drawing surface.  RHLib's transparency-map scaler
+        // checks the target's current alpha before its first `STSetColor`; this must
+        // therefore match the new transparent canvas rather than the prior draw state.
+        self.color = [0; 4];
     }
 
     pub fn clear(&mut self) {
@@ -220,9 +224,11 @@ mod tests {
         t.load(8, 2, &px);
         assert_eq!((t.width, t.height, t.rgba.as_slice()), (8, 2, px.as_slice()));
         // STNewTex: back to the declared size, empty
+        t.color = [255; 4];
         t.renew();
         assert_eq!((t.width, t.height), (4, 2));
         assert!(t.rgba.iter().all(|b| *b == 0));
+        assert_eq!(t.color, [0; 4]);
     }
 
     #[test]

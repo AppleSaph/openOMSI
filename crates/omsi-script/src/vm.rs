@@ -96,6 +96,12 @@ pub trait Host {
     /// `(M.V.name)`. Arguments are on the stacks; results are pushed by the callback.
     fn callback(&mut self, name: &str, id: NameId, stacks: &mut Stacks, state: &mut State);
     fn sound_trigger(&mut self, name: &str, id: NameId);
+    /// `(T.L.name)` with the variables as they stand at that point of the script: Omsi.exe
+    /// starts the sounds of a trigger right there (0x74f2e8 runs their update at once), so
+    /// their volume curves read the values of that moment, not of the frame's end.
+    fn sound_trigger_vars(&mut self, name: &str, id: NameId, _vars: &[f32]) {
+        self.sound_trigger(name, id)
+    }
     /// `(T.F.name)`: trigger `name` with a sound file chosen by the script.
     fn sound_trigger_file(&mut self, _name: &str, _file: &str) {}
     fn message(&mut self, text: &str) {
@@ -119,6 +125,7 @@ impl Host for NullHost {
 }
 
 /// Executes blocks of a [`Program`].
+#[derive(Clone)]
 pub struct Vm {
     pub stacks: Stacks,
     rng: u64,
@@ -205,13 +212,13 @@ impl Vm {
     pub fn run_trigger(&mut self, p: &Program, name: &str, state: &mut State, host: &mut dyn Host) -> bool {
         match p.trigger(name) {
             Some(b) => {
-                // OMSI seeds the float stack with 1 when a trigger fires; scripts guard the
-                // body with a bare `{if}` (`{trigger:x} {if} ... {endif}`), which pops it -
-                // on an empty stack the guard read 0 and the whole body never ran (the
-                // ticket printer's switch did nothing). The engine's own blocks run on
-                // empty stacks (`run_top`).
+                // OMSI passes the key state to a trigger: 1 on press and 0 on release.
+                // Scripts guard the press body with a bare `{if}`; keeping that value on
+                // the stack also lets release blocks such as `kw_m_enginestart_off` store
+                // the released state in their anti-repeat variable.
                 self.stacks.clear();
-                self.stacks.push(1.0);
+                let value = if name.to_ascii_lowercase().ends_with("_off") { 0.0 } else { 1.0 };
+                self.stacks.push(value);
                 self.run_block(p, b, state, host);
                 true
             }
@@ -313,7 +320,7 @@ fn exec_op(s: &mut Stacks, op: &Op, p: &Program, state: &mut State, host: &mut d
         }
         Op::Macro(_) | Op::Random | Op::JumpIfZero(_) | Op::Jump(_) => unreachable!("handled by run_block"),
         Op::Callback(n) => host.callback(p.name(*n), *n, s, state),
-        Op::SoundTrigger(n) => host.sound_trigger(p.name(*n), *n),
+        Op::SoundTrigger(n) => host.sound_trigger_vars(p.name(*n), *n, &state.vars),
         Op::SoundTriggerFile(n) => {
             let file = s.pop_str();
             host.sound_trigger_file(p.name(*n), &file);
@@ -706,6 +713,28 @@ mod tests {
         let p = prog("{init}\n\"f1\" (M.V.GetFontIndex) (S.L.a) \"x\" \"f2\" (M.V.GetFontIndex) (S.L.b)\n{end}\n");
         assert_eq!(p.literal_arguments("getfontindex"), vec!["f1".to_string(), "f2".to_string()]);
         assert_eq!(p.callbacks_used(), vec!["GetFontIndex".to_string()]);
+    }
+
+    #[test]
+    fn release_triggers_receive_zero_state() {
+        let mut p = Program::default();
+        let a = p.declare_var("a");
+        p.blocks.push(crate::compile::Block {
+            ops: vec![Op::Store(a)],
+            ..Default::default()
+        });
+        p.blocks.push(crate::compile::Block {
+            ops: vec![Op::Store(a)],
+            ..Default::default()
+        });
+        p.triggers.insert("start".into(), 0);
+        p.triggers.insert("start_off".into(), 1);
+        let mut vm = Vm::new();
+        let mut st = State::new(&p);
+        vm.run_trigger(&p, "start", &mut st, &mut NullHost);
+        assert_eq!(st.get(p.var("a").unwrap()), 1.0);
+        vm.run_trigger(&p, "start_off", &mut st, &mut NullHost);
+        assert_eq!(st.get(p.var("a").unwrap()), 0.0);
     }
 
     /// `$` words that are no string operator compile to nothing and leave both stacks alone,

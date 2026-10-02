@@ -12,6 +12,12 @@ use std::time::Instant;
 /// Results of background work.
 pub enum Msg {
     Content(Result<(Vec<core::MapInfo>, Vec<core::VehicleInfo>, Vec<core::WeatherInfo>), String>),
+    /// The first reading of the content: the maps and weathers (quick to read), before the
+    /// buses.
+    ContentEarly { maps: Vec<core::MapInfo>, weathers: Vec<core::WeatherInfo> },
+    /// The first reading of the content: the buses of the next few folders, how many
+    /// folders are read and how many there are.
+    VehiclesRead { batch: Vec<core::VehicleInfo>, done: usize, total: usize },
     Lines { map: String, date: String, lines: Result<Vec<core::LineInfo>, String> },
     Poll(Result<core::Poll, String>),
     Profile(Result<core::Profile, String>),
@@ -89,6 +95,7 @@ pub struct Choice {
     pub free: bool,
     /// Minutes of the day.
     pub time: i32,
+    pub start_trip: Option<(String, String, usize, i32)>,
     pub date: String,
     /// "auto", spring, summer, autumn, winter.
     pub season: String,
@@ -121,6 +128,7 @@ impl Default for Choice {
             tour: None,
             free: false,
             time: 9 * 60,
+            start_trip: None,
             date: "1989-05-30".into(),
             season: "auto".into(),
             weather: String::new(),
@@ -169,11 +177,17 @@ pub struct State {
     pub lines: Vec<core::LineInfo>,
     pub lines_for: (String, String),
     pub loading_content: bool,
+    /// The lists are filled while they are read (the first reading: nothing to show yet).
+    pub content_first: bool,
+    /// The content changed while it was being read: read it again when that is done.
+    pub reload_content: bool,
     pub loading_lines: bool,
     pub choice: Choice,
     pub choice_dirty: f32,
     /// Map, whether it has a `laststn.osn`, when that was looked up.
-    pub last_sit: Option<(String, bool, std::time::Instant)>,
+    pub last_sit: Option<(String, Vec<core::SavedSituation>, std::time::Instant)>,
+    /// Which of them "Continue" starts (0: the newest, the last situation when there is one).
+    pub save_pick: usize,
     pub profiles: Vec<String>,
     pub profile: Option<core::Profile>,
     pub settings: serde_json::Value,
@@ -186,7 +200,10 @@ pub struct State {
     pub keybindings_error: String,
     pub instances: Vec<core::Instance>,
     pub queued_launch: Option<core::Duty>,
+    /// Start was pressed: the graphics device stays given up until the list of games has the
+    /// game started (its process, once it is known), 15 s at most.
     pub launch_hold: Option<std::time::Instant>,
+    launched_pid: Option<u32>,
     /// A game started from here ended on an error: what it said, and the end of its log
     /// (see `crash_of`), for the dialog that asks to report it.
     pub crash: Option<(String, String)>,
@@ -237,10 +254,13 @@ impl State {
             lines: Vec::new(),
             lines_for: (String::new(), String::new()),
             loading_content: false,
+            content_first: false,
+            reload_content: false,
             loading_lines: false,
             choice,
             choice_dirty: 0.0,
             last_sit: None,
+            save_pick: 0,
             profiles: Vec::new(),
             profile: None,
             settings,
@@ -251,6 +271,7 @@ impl State {
             instances: Vec::new(),
             queued_launch: None,
             launch_hold: None,
+            launched_pid: None,
             crash: None,
             jobs: Vec::new(),
             mods: None,
@@ -298,8 +319,18 @@ impl State {
         self.status = (t, err, Instant::now());
     }
 
+    /// A game is about to start, starting (not in the list of games yet) or running.
+    pub fn in_game(&self) -> bool {
+        self.queued_launch.is_some() || self.launch_hold.is_some_and(|t| t.elapsed().as_secs_f32() < 15.0) || self.instances.iter().any(|i| i.running)
+    }
+
+    pub fn instances_ready(&self) -> bool {
+        self.stamp.is_some()
+    }
+
     pub fn spawn_launch(&mut self, d: core::Duty) {
         self.launch_hold = Some(std::time::Instant::now());
+        self.launched_pid = None;
         self.spawn(move || Msg::Launched(core::launch(&d).map_err(|e| format!("{e:#}"))));
     }
 
@@ -322,11 +353,44 @@ impl State {
 
     pub fn load_content(&mut self) {
         self.loading_content = true;
+        // the first reading shows what it has read as it goes: a big installation's buses
+        // (thousands of folders) took minutes, with nothing on the page all that time
+        self.content_first = self.maps.is_empty() && self.vehicles.is_empty();
         self.set_status("Reading the OMSI folder…", false);
-        self.spawn(|| {
-            let r = (|| -> anyhow::Result<_> { Ok((core::list_maps()?, core::list_vehicles()?, core::list_weather()?)) })();
+        let tx = self.tx.clone();
+        self.spawn(move || {
+            let r = (|| -> anyhow::Result<_> {
+                let maps = core::list_maps()?;
+                let weathers = core::list_weather()?;
+                let _ = tx.send(Msg::ContentEarly { maps: maps.clone(), weathers: weathers.clone() });
+                let vehicles = core::list_vehicles_progress(|batch, done, total| {
+                    let _ = tx.send(Msg::VehiclesRead { batch: batch.to_vec(), done, total });
+                })?;
+                Ok((maps, vehicles, weathers))
+            })();
             Msg::Content(r.map_err(|e| format!("{e:#}")))
         });
+    }
+
+    /// A reading of the lists ended: the next poll's stamp is the new reference, and a change
+    /// that came while reading is read now.
+    fn content_done(&mut self) {
+        self.stamp = None;
+        if std::mem::take(&mut self.reload_content) {
+            self.load_content();
+        }
+    }
+
+    /// The map chosen last time where it still exists, else the one OMSI 2 had last, else
+    /// the first.
+    fn pick_map(&mut self) {
+        if !self.maps.iter().any(|m| m.file == self.choice.map) {
+            let last = core::omsi_options(std::path::Path::new(&self.config.root)).and_then(|o| o.last_map);
+            if let Some(m) = last.and_then(|l| self.maps.iter().find(|m| m.file.eq_ignore_ascii_case(&l))).or(self.maps.first()) {
+                self.choice.map = m.file.clone();
+                self.choice.entry = -1;
+            }
+        }
     }
 
     pub fn load_lines(&mut self) {
@@ -517,7 +581,8 @@ impl State {
             entry: Some(c.entry),
             line: if c.free { None } else { c.line.clone() },
             tour: if c.free { None } else { c.tour.clone() },
-            trip: None,
+            trip: if c.free { None } else { self.picked_trip().map(|i| i.to_string()) },
+            whole_tour: !c.free && self.picked_trip().is_some(),
             time: format!("{:02}:{:02}", c.time / 60, c.time % 60),
             date: Some(c.date.clone()),
             weather: Some(c.weather.clone()).filter(|w| !w.is_empty()),
@@ -535,23 +600,34 @@ impl State {
         }
     }
 
-    /// Whether a situation to continue lies on the chosen map (looked up at most every
-    /// two seconds: the page asks every frame).
-    pub fn has_last_situation(&mut self) -> bool {
+    /// The situations to continue on the chosen map: the last one and the save slots
+    /// (looked up at most every two seconds: the page asks every frame).
+    pub fn saved_situations(&mut self) -> &[core::SavedSituation] {
         let fresh = self.last_sit.as_ref().is_some_and(|(m, _, t)| *m == self.choice.map && t.elapsed().as_secs_f32() < 2.0);
         if !fresh {
-            let there = core::last_situation(&self.choice.map).is_some();
-            self.last_sit = Some((self.choice.map.clone(), there, std::time::Instant::now()));
+            if self.last_sit.as_ref().is_some_and(|(m, _, _)| *m != self.choice.map) {
+                self.save_pick = 0;
+            }
+            let list = core::saved_situations(&self.choice.map);
+            self.save_pick = self.save_pick.min(list.len().saturating_sub(1));
+            self.last_sit = Some((self.choice.map.clone(), list, std::time::Instant::now()));
         }
-        self.last_sit.as_ref().map(|x| x.1).unwrap_or(false)
+        self.last_sit.as_ref().map(|x| x.1.as_slice()).unwrap_or(&[])
     }
 
-    /// Continue the situation the game left on the chosen map (`laststn.osn`).
+    /// Whether a situation to continue lies on the chosen map.
+    pub fn has_last_situation(&mut self) -> bool {
+        !self.saved_situations().is_empty()
+    }
+
+    /// Continue the situation chosen of the map's (`laststn.osn`, or a save slot, #341).
     pub fn launch_last_situation(&mut self) {
         if !self.save_pending_settings() {
             return;
         }
-        let Some(file) = core::last_situation(&self.choice.map) else {
+        let pick = self.save_pick;
+        let list = self.saved_situations();
+        let Some(file) = list.get(pick).or_else(|| list.first()).map(|s| s.file.clone()) else {
             self.set_status("No situation left on this map yet", true);
             return;
         };
@@ -612,10 +688,31 @@ impl State {
     }
 
     /// Work done each frame: results of background work, the regular poll, saving.
+    fn follow_clock(&mut self) {
+        let on = |k: &str| self.settings.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+        let (time, date, year) = (on("use_real_time"), on("use_real_date"), on("use_real_year"));
+        if !time && !date {
+            return;
+        }
+        let Some((y, mo, d, h, m)) = core::local_now() else { return };
+        if time {
+            self.choice.time = h * 60 + m;
+        }
+        if date {
+            let y = if year { y } else { self.choice.date.get(..4).and_then(|x| x.parse().ok()).unwrap_or(y) };
+            let today = format!("{y:04}-{mo:02}-{d:02}");
+            if self.choice.date != today {
+                self.choice.date = today;
+                self.load_lines();
+            }
+        }
+    }
+
     pub fn update(&mut self, dt: f32) {
         while let Ok(m) = self.rx.try_recv() {
             self.handle(m);
         }
+        self.follow_clock();
         self.poll_t -= dt;
         if self.poll_t <= 0.0 {
             self.poll_t = 2.5;
@@ -677,6 +774,26 @@ impl State {
                 }
                 self.server_info.insert(address, (Instant::now(), info));
             }
+            Msg::ContentEarly { maps, weathers } => {
+                if !self.content_first {
+                    return;
+                }
+                crate::mt::protect(maps.iter().flat_map(|m| [m.name.as_str(), m.friendly.as_str()]));
+                crate::mt::protect(weathers.iter().map(|w| w.name.as_str()));
+                self.maps = maps;
+                self.weathers = weathers;
+                self.pick_map();
+                self.load_lines();
+                self.set_status(format!("{} maps - reading the buses…", self.maps.len()), false);
+            }
+            Msg::VehiclesRead { batch, done, total } => {
+                if !self.content_first {
+                    return;
+                }
+                crate::mt::protect(batch.iter().flat_map(|v| [v.name.as_str(), v.manufacturer.as_str(), v.type_name.as_str()]).chain(batch.iter().flat_map(|v| v.paints.iter().map(|p| p.as_str()))));
+                self.vehicles.extend(batch);
+                self.set_status(format!("{} maps, {} buses - reading the vehicle folders: {done} of {total}", self.maps.len(), self.vehicles.len()), false);
+            }
             Msg::Content(Ok((maps, vehicles, weathers))) => {
                 // (names of things, not the interface: never machine-translated)
                 crate::mt::protect(maps.iter().flat_map(|m| [m.name.as_str(), m.friendly.as_str()]));
@@ -703,20 +820,19 @@ impl State {
                         self.choice.hof = self.default_hof();
                     }
                 }
-                if !self.maps.iter().any(|m| m.file == self.choice.map) {
-                    // the map OMSI 2 had last, else the first
-                    let last = core::omsi_options(std::path::Path::new(&self.config.root)).and_then(|o| o.last_map);
-                    if let Some(m) = last.and_then(|l| self.maps.iter().find(|m| m.file.eq_ignore_ascii_case(&l))).or(self.maps.first()) {
-                        self.choice.map = m.file.clone();
-                        self.choice.entry = -1;
-                    }
+                self.pick_map();
+                // (the first reading asked for the lines with the maps already)
+                if !std::mem::take(&mut self.content_first) || self.lines_for != (self.choice.map.clone(), self.choice.date.clone()) {
+                    self.load_lines();
                 }
-                self.load_lines();
                 self.load_args();
                 self.load_ibis();
+                self.content_done();
             }
             Msg::Content(Err(e)) => {
                 self.loading_content = false;
+                self.content_first = false;
+                self.content_done();
                 if omsi_cfg::missing_original_essentials(std::path::Path::new(&self.config.root)).is_empty() {
                     self.set_status(format!("{e}\nSet the OMSI 2 folder under Setup."), true);
                 } else {
@@ -796,15 +912,29 @@ impl State {
                             }
                         }
                         self.instances = p.instances;
+                        // the game started from here is in the list: whether it runs is known
+                        // (one that ended at once left the launcher blank until the 15 s were out)
+                        if game_listed(self.launched_pid, &self.instances) {
+                            self.launch_hold = None;
+                            self.launched_pid = None;
+                        }
                         for i in &self.instances {
                             if !i.running {
                                 self.stopping.remove(&i.pid);
                             }
                         }
+                        // (while the lists are read the stamp moves by itself - the cache gains
+                        // the folders each bus depends on - and every poll started the whole
+                        // reading over on top of the one going: a big installation never
+                        // finished. A change then is taken up when the reading is done.)
                         let changed = self.stamp.as_ref().map(|s| *s != p.stamp).unwrap_or(false);
-                        self.stamp = Some(p.stamp);
+                        self.stamp = if self.loading_content { None } else { Some(p.stamp) };
                         if changed || installed {
-                            self.load_content();
+                            if self.loading_content {
+                                self.reload_content = true;
+                            } else {
+                                self.load_content();
+                            }
                             self.load_mods();
                         }
                         for pid in self.open_logs.clone() {
@@ -838,6 +968,7 @@ impl State {
             }
             Msg::Launched(Ok(l)) => {
                 core::log_to_file(&format!("launched pid {} ({} other game(s) running): {}", l.pid, l.others, l.command));
+                self.launched_pid = Some(l.pid);
                 self.set_status(format!("Game started (process {}), log {}{}", l.pid, l.log, if l.others > 0 { format!(" - {} other game(s) keep running", l.others) } else { String::new() }), false);
                 self.poll_now();
             }
@@ -983,9 +1114,24 @@ impl State {
     /// that left a minute or two ago still counts), else the tour's last.
     pub fn first_trip(&self) -> Option<usize> {
         let t = self.tour()?;
+        if let Some(i) = self.picked_trip() {
+            if let Some(k) = t.trips.iter().position(|x| x.index == i) {
+                return Some(k);
+            }
+        }
         let now = self.choice.time as f64 * 60.0;
         trip_index_at(t, now)
     }
+
+    pub fn picked_trip(&self) -> Option<usize> {
+        let (line, tour, index, time) = self.choice.start_trip.as_ref()?;
+        (self.choice.line.as_ref() == Some(line) && self.choice.tour.as_ref() == Some(tour) && *time == self.choice.time).then_some(*index)
+    }
+}
+
+/// Whether the game started from here (its process `pid`) is in a list of games.
+fn game_listed(pid: Option<u32>, instances: &[core::Instance]) -> bool {
+    pid.is_some_and(|p| instances.iter().any(|i| i.pid == p))
 }
 
 /// The trip a tour starts with at `now`, shared by the route preview and the launch choice.
@@ -1085,6 +1231,28 @@ mod choice_tests {
         c.plate = "B-AB 1234".into();
         let back: super::Choice = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back.plate, "B-AB 1234");
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use omsi_launcher_lib::Instance;
+
+    fn game(pid: u32, running: bool) -> Instance {
+        Instance { pid, running, ..Default::default() }
+    }
+
+    /// The wait after Start ends with the first list of games that has the one started,
+    /// running or ended already - a game that died at once left the launcher blank for the
+    /// whole 15 seconds.
+    #[test]
+    fn the_wait_after_start_ends_once_the_game_is_listed() {
+        // (a list asked for before the game was started)
+        assert!(!super::game_listed(Some(7), &[game(3, true)]));
+        assert!(super::game_listed(Some(7), &[game(3, true), game(7, true)]));
+        assert!(super::game_listed(Some(7), &[game(7, false)]));
+        // (Start pressed, the game not started yet)
+        assert!(!super::game_listed(None, &[game(7, true)]));
     }
 }
 

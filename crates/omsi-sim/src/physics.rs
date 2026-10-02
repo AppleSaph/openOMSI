@@ -44,6 +44,9 @@ pub struct VehiclePhysics {
     /// Longitudinal speed, m/s (forward positive).
     pub speed: f32,
     pub accel: Vec3,
+    /// The body's acceleration without gravity (m/s², x right, y forward, z up): what the
+    /// scripts read as `A_Trans_*`.
+    pub a_trans: Vec3,
     /// Current steering angle of the front wheels, degrees, positive = right.
     pub steer_deg: f32,
     pub max_steer_deg: f32,
@@ -69,7 +72,7 @@ impl VehiclePhysics {
         // inv_min_turnradius = tan(alpha_max) / s  →  alpha_max
         let s = (front - def.rot_pnt_long).abs().max(1.0);
         let max_steer_deg = (def.inv_min_turn_radius * s).atan().to_degrees().clamp(10.0, 60.0);
-        VehiclePhysics { mass_kg: mass_kg.max(500.0), rolling_resistance: def.rolling_resistance, inv_min_turn_radius: def.inv_min_turn_radius, rot_pnt_long: def.rot_pnt_long, wheelbase, wheels, speed: 0.0, accel: Vec3::ZERO, steer_deg: 0.0, max_steer_deg, controls: Controls::default(), steer_rate: 0.8 }
+        VehiclePhysics { mass_kg: mass_kg.max(500.0), rolling_resistance: def.rolling_resistance, inv_min_turn_radius: def.inv_min_turn_radius, rot_pnt_long: def.rot_pnt_long, wheelbase, wheels, speed: 0.0, accel: Vec3::ZERO, a_trans: Vec3::ZERO, steer_deg: 0.0, max_steer_deg, controls: Controls::default(), steer_rate: 0.8 }
     }
 
     /// Advance one step. `drive_torque` is `M_Wheel`, `brake_forces` the per-wheel brake

@@ -68,7 +68,7 @@ shows or hides it. **Shift+N** cycles between the map, map with stop list, and o
 The display stays attached to the bus as you drive and look around.
 
 Press **Ctrl+Shift+M** to position it with the mouse, or open
-**Esc → Options → VR → Navigator position (this bus) → Move and rotate with the mouse...**.
+**Esc → Options → VR → Move and rotate with the mouse...**.
 Opening placement mode also enables the navigator. These controls and the placement
 menu are available only in VR.
 

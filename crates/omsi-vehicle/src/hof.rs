@@ -50,6 +50,37 @@ impl Hof {
         Ok(Self::parse(&f))
     }
 
+    /// Only the `[name]` of a depot file ("" when it has none), kept for the session: the
+    /// searches by name below read every depot file of every vehicle folder, and parsing
+    /// each whole (termini, stops, the IVU trips) made a big installation's start take
+    /// minutes.
+    pub fn read_name(path: &Path) -> Option<String> {
+        type Names = std::collections::HashMap<PathBuf, Option<String>>;
+        static CACHE: std::sync::OnceLock<std::sync::Mutex<(u64, Names)>> = std::sync::OnceLock::new();
+        let cache = CACHE.get_or_init(Default::default);
+        let generation = omsi_cfg::content_generation();
+        {
+            let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+            if c.0 != generation {
+                *c = (generation, Names::new());
+            }
+            if let Some(n) = c.1.get(path) {
+                return n.clone();
+            }
+        }
+        let name = CfgFile::read(path).ok().map(|f| {
+            let mut r = f.reader().with_rule(omsi_cfg::KeywordRule::TrimEnd);
+            while let Some(k) = r.next_keyword() {
+                if k == "name" {
+                    return r.str().to_string();
+                }
+            }
+            String::new()
+        });
+        cache.lock().unwrap_or_else(|e| e.into_inner()).1.insert(path.to_path_buf(), name.clone());
+        name
+    }
+
     pub fn parse(f: &CfgFile) -> Hof {
         let mut h = Hof { path: f.path.clone(), string_count_terminus: 0, string_count_busstop: 0, ..Default::default() };
         // `stringcount_terminus` / `stringcount_busstop` are bare (unbracketed) directives.
@@ -128,10 +159,19 @@ impl Hof {
                     let route = r.str().to_string();
                     let line = r.str().to_string();
                     h.info_trips.push(InfoTrip { code, name, route, line, extra: Vec::new() });
+                    // every trip has a stop list, empty until one follows (THof.LoadFromFile
+                    // 0x7ea142), so that the lists stay in step with the trips
+                    h.info_busstop_lists.push(Vec::new());
                 }
                 "infosystem_busstop_list" => {
+                    // the list of the trip read last (0x7ea16f: DynArrayHigh of the trips);
+                    // pushed as one more list, a trip without one (the IVU data routes of
+                    // some depot files) gave every later trip the stops of the one before
                     let n = r.usize();
-                    h.info_busstop_lists.push((0..n).map(|_| r.str().to_string()).collect());
+                    let list: Vec<String> = (0..n).map(|_| r.str().to_string()).collect();
+                    if let Some(last) = h.info_busstop_lists.last_mut() {
+                        *last = list;
+                    }
                 }
                 "infosystem_busstop" => h.info_busstops.push((0..3).map(|_| r.str().to_string()).collect()),
                 _ => {}
@@ -177,7 +217,10 @@ pub fn depot_in(dir: &Path, name: &str) -> Option<Hof> {
             return Some(h);
         }
     }
-    files.iter().filter_map(|f| Hof::load(f).ok()).find(|h| h.name.trim().eq_ignore_ascii_case(name))
+    files
+        .iter()
+        .filter(|f| Hof::read_name(f).is_some_and(|n| n.trim().eq_ignore_ascii_case(name)))
+        .find_map(|f| Hof::load(f).ok())
 }
 
 /// The depot file called `name` in any vehicle folder of any content root (`Vehicles/*/`).
@@ -189,10 +232,29 @@ pub fn depot_in(dir: &Path, name: &str) -> Option<Hof> {
 /// map's .hof into such a folder; this finds the copy that is already installed with
 /// another bus.
 pub fn depot_anywhere(name: &str) -> Option<Hof> {
+    // (asked for every type of AI bus without the map's depot: the file found is kept for
+    // the session, and a big installation's thousands of folders are gone through once)
+    type Found = std::collections::HashMap<String, Option<PathBuf>>;
+    static FOUND: std::sync::OnceLock<std::sync::Mutex<(u64, Found)>> = std::sync::OnceLock::new();
+    let found = FOUND.get_or_init(Default::default);
+    let key = name.trim().to_ascii_lowercase();
+    let generation = omsi_cfg::content_generation();
+    let known = {
+        let mut f = found.lock().unwrap_or_else(|e| e.into_inner());
+        if f.0 != generation {
+            *f = (generation, Found::new());
+        }
+        f.1.get(&key).cloned()
+    };
+    if let Some(path) = known {
+        return path.and_then(|p| Hof::load(&p).ok());
+    }
     // every vehicle folder once over all roots (depot_in looks at each root's copy)
     let mut dirs: Vec<PathBuf> = omsi_cfg::read_dir_merged("Vehicles").into_iter().filter(|d| omsi_cfg::vfs::is_dir(d)).collect();
     dirs.sort_by_key(|d| d.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase());
-    dirs.iter().find_map(|d| depot_in(d, name))
+    let h = dirs.iter().find_map(|d| depot_in(d, name));
+    found.lock().unwrap_or_else(|e| e.into_inner()).1.insert(key, h.as_ref().map(|h| h.path.clone()));
+    h
 }
 
 #[cfg(test)]
@@ -210,5 +272,22 @@ mod tests {
         assert_eq!(h.termini[1].terminus_stop.as_deref(), Some("U Ruhleben"));
         assert_eq!(h.termini[1].strings, vec!["RUHLEBEN", "U-BAHNHOF", "RUHLEBEN  "]);
         assert_eq!(h.terminus_by_code(282).map(|t| t.texture_id.as_str()), Some("U Ruhleben"));
+    }
+
+    /// #667: a trip without a stop list (an IVU data route) keeps the lists of the trips
+    /// after it on their own trips.
+    #[test]
+    fn stop_lists_belong_to_the_trip_before_them() {
+        let text = "[infosystem_trip]\r\n45581\r\nZOB-HOHENECK\r\n81\r\n455\r\n\r\n\
+            [infosystem_busstop_list]\r\n2\r\nZOB\r\nHoheneck\r\n\r\n\
+            [infosystem_trip]\r\n455900\r\nIVU\r\n81\r\n455\r\n\r\n\
+            [infosystem_trip]\r\n45503\r\nHBF-BERGERFUERTH\r\n3\r\n455\r\n\r\n\
+            [infosystem_busstop_list]\r\n3\r\nHauptbahnhof\r\nMarkt\r\nBergerfuerth\r\n";
+        let h = Hof::parse(&CfgFile::from_str("test.hof", text));
+        assert_eq!(h.info_trips.len(), 3);
+        assert_eq!(h.info_busstop_lists.len(), 3);
+        assert_eq!(h.info_busstop_lists[0], vec!["ZOB", "Hoheneck"]);
+        assert!(h.info_busstop_lists[1].is_empty());
+        assert_eq!(h.info_busstop_lists[2], vec!["Hauptbahnhof", "Markt", "Bergerfuerth"]);
     }
 }

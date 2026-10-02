@@ -719,6 +719,21 @@ impl App {
             }
             // (no view from outside the walker: out of the eyes, or the free camera)
             KeyCode::F2 | KeyCode::F3 => true,
+            // the city map (Shift+M) and the navigator (Shift+N) go on foot as well (#705)
+            KeyCode::KeyM if shift && !ctrl => {
+                if pressed && !repeat {
+                    if let Some(n) = self.navigator.as_mut() {
+                        n.toggle_map();
+                    }
+                }
+                true
+            }
+            KeyCode::KeyN if shift && !ctrl => {
+                if pressed && !repeat {
+                    self.cycle_navigator();
+                }
+                true
+            }
             // the free camera's keys are its own
             _ if self.on_foot.as_ref().map(|f| f.cam == FootCam::Free).unwrap_or(false) => false,
             KeyCode::KeyG => {

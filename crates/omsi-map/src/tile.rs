@@ -10,9 +10,11 @@ pub struct MapObject {
     pub pos: [f64; 3],
     /// Heading (about Z), then pitch (X) and bank (Y), degrees.
     pub rot: [f64; 3],
-    /// Type flag written by the editor (0 plain, 1 text strings, 4 tree, 7 bus stop, …).
+    /// The number of labels the record says it has (not a type: a tree writes 3 or 4, a
+    /// bus stop 7).
     pub flag: i32,
-    /// Type-specific trailing lines (text-texture strings, tree parameters, bus stop data).
+    /// The labels (text-texture strings, tree parameters, bus stop data), without the
+    /// trailing empty ones.
     pub extra: Vec<String>,
     /// For `[attachObj]`: the id of the object this one is attached to.
     pub parent_id: Option<i64>,
@@ -22,8 +24,6 @@ pub struct MapObject {
     /// beyond the parent's count is the parent's own origin (the original takes the identity
     /// matrix then; 17 of Ahlheim V5's 10 892 attachments rely on it).
     pub attach_index: usize,
-    /// For `[attachObj]`: the instance of a spline-attachment row it hangs on.
-    pub instance: usize,
     /// For `[varparent]` following the object.
     pub var_parent: Option<i64>,
     /// `[rule]` / `[kill_rule]` lines that follow the object: they apply to its `[path]`s.
@@ -179,20 +179,29 @@ impl Tile {
     }
 }
 
-fn read_extra(r: &mut omsi_cfg::CfgReader) -> Vec<String> {
-    let mut v: Vec<String> = r
-        .rest_of_block()
-        .into_iter()
-        .map(|s| s.trim_end().to_string())
-        .collect();
-    while v
-        .last()
-        .map(|s| s.trim().is_empty() || s.starts_with("Object Nr."))
-        .unwrap_or(false)
-    {
+/// Tile versions before `[version]` was written are read as the newest.
+fn has(version: i32, min: i32) -> bool {
+    version == 0 || version >= min
+}
+
+/// The IDCode of an object or spline of a tile older than version 6, which has none: such
+/// tiles number their records as they load (negative, never one a newer tile writes).
+fn auto_id(next: &mut usize) -> i64 {
+    *next += 1;
+    -(*next as i64)
+}
+
+/// An object's labels (the strings the editor's "Labels" dialog edits: sign texts, line
+/// numbers, a tree's texture and size): a count, then exactly that many lines, as
+/// Omsi.exe reads them (0x7938b8). Trailing empty ones say nothing - the original pads
+/// the list with empty strings to the object's own count anyway.
+fn read_labels(r: &mut omsi_cfg::CfgReader) -> (i32, Vec<String>) {
+    let n = r.i32();
+    let mut v: Vec<String> = (0..n.clamp(0, 4096)).map(|_| r.line().to_string()).collect();
+    while v.last().is_some_and(|s| s.trim().is_empty()) {
         v.pop();
     }
-    v
+    (n, v)
 }
 
 fn read_rule(r: &mut omsi_cfg::CfgReader, kill: bool) -> MapRule {
@@ -258,6 +267,12 @@ impl Tile {
             Chrono,
         }
         let mut last = Last::None;
+        // IDCodes of the records an [attachObj] may hang on, in file order ([object],
+        // [attachObj], [splineAttachement]: Omsi.exe's one list of the tile's objects)
+        let mut records: Vec<i64> = Vec::new();
+        // attachments whose parent was not written before them
+        let mut forward: Vec<(usize, i64)> = Vec::new();
+        let mut auto = 0usize;
         while let Some(k) = r.next_keyword() {
             match k.as_str() {
                 "version" => t.version = r.i32(),
@@ -266,21 +281,37 @@ impl Tile {
                 "variable_terrain" => t.variable_terrain = true,
                 "variable_terrainlightmap" => t.variable_terrain_lightmap = true,
                 "object" | "attachobj" => {
-                    let _zero = r.line();
+                    // The record's lines depend on the tile's [version] (TMapKachel.loadMapFile
+                    // 0x7929a0 / 0x7931a0): the detail level only from version 9 on, the
+                    // IDCode from 6 on (older objects are numbered as they load), the parent
+                    // of an [attachObj] by IDCode from 10 on - before, the index of the
+                    // parent among the records of the tile so far - and its heading from 8 on.
+                    // Read as a version 14 tile, an old one took its path for the detail
+                    // level and its coordinates for IDs, and its objects hung on the wrong
+                    // parents.
+                    let attach = k == "attachobj";
+                    if has(t.version, 9) {
+                        let _detail = r.line();
+                    }
                     let file_name = r.str().to_string();
-                    let id = r.i64();
-                    let parent_id = if k == "attachobj" {
+                    let id = if has(t.version, 6) { r.i64() } else { auto_id(&mut auto) };
+                    let parent_id = if !attach {
+                        None
+                    } else if has(t.version, 10) {
                         Some(r.i64())
                     } else {
-                        None
+                        let at = r.i64();
+                        Some(usize::try_from(at).ok().and_then(|i| records.get(i).copied()).unwrap_or(i64::MIN))
                     };
                     // [object]: x y z (z relative to terrain unless [absheight]).
-                    // [attachObj]: a line that is always 0 in the stock maps, then the index
-                    // of the parent's [new_attachment] point; the point is the position.
+                    // [attachObj]: the instance of the parent (0x793649: anything but "0" -
+                    // an object on a later object of a spline attachment row - is refused:
+                    // "nicht mehr unterstützt"), then the index of the parent's
+                    // [new_attachment] point; the point is the position.
                     let mut attach_index = 0;
-                    let mut instance = 0usize;
-                    let pos = if k == "attachobj" {
-                        instance = r.line().trim().parse().unwrap_or(0);
+                    let mut refused = false;
+                    let pos = if attach {
+                        refused = r.line() != "0";
                         attach_index = r.i32().max(0) as usize;
                         [0.0; 3]
                     } else {
@@ -289,8 +320,23 @@ impl Tile {
                     // (Omsi.exe 0x792ee7: pitch and bank only from tile version 12 on, the
                     // strings from version 4 on - an older tile's string count read as a
                     // bank tilted the object and lost its strings)
-                    let rot = if t.version >= 12 || t.version == 0 { r.f64s::<3>() } else { [r.f64(), 0.0, 0.0] };
-                    let (flag, extra) = if t.version >= 4 || t.version == 0 { (r.i32(), read_extra(&mut r)) } else { (0, Vec::new()) };
+                    let heading = if attach && !has(t.version, 8) { 0.0 } else { r.f64() };
+                    let rot = if has(t.version, 12) { [heading, r.f64(), r.f64()] } else { [heading, 0.0, 0.0] };
+                    // the object's labels: a count and that many lines, whatever they say
+                    // (a label may be empty, or look like a keyword)
+                    let (flag, extra) = if has(t.version, 4) { read_labels(&mut r) } else { (0, Vec::new()) };
+                    records.push(id);
+                    if refused || parent_id == Some(i64::MIN) {
+                        // (the original drops it, and the rules after it with it)
+                        last = Last::None;
+                        continue;
+                    }
+                    if let Some(p) = parent_id.filter(|_| has(t.version, 10)) {
+                        // a parent must come before its attachment in the file
+                        if !records[..records.len() - 1].contains(&p) {
+                            forward.push((t.attach_objects.len(), p));
+                        }
+                    }
                     let o = MapObject {
                         file: file_name,
                         id,
@@ -300,11 +346,10 @@ impl Tile {
                         extra,
                         parent_id,
                         attach_index,
-                        instance,
                         var_parent: None,
                         rules: Vec::new(),
                     };
-                    if k == "attachobj" {
+                    if attach {
                         t.attach_objects.push(o);
                         last = Last::Attach;
                     } else {
@@ -313,11 +358,27 @@ impl Tile {
                     }
                 }
                 "spline" | "spline_h" => {
-                    let _zero = r.line();
+                    // (0x795530: the detail level from version 9 on, the IDCode from 6 on;
+                    // before version 11 one line links the spline to the one written before
+                    // it - -1 for none - instead of the IDs of both neighbours, before 5 there
+                    // is no cant, before 14 no skew, before 11 no texture offset)
+                    if has(t.version, 9) {
+                        let _detail = r.line();
+                    }
                     let file_name = r.str().to_string();
-                    let id = r.i64();
-                    let prev_id = r.i64();
-                    let next_id = r.i64();
+                    let id = if has(t.version, 6) { r.i64() } else { auto_id(&mut auto) };
+                    let (prev_id, next_id) = if has(t.version, 11) {
+                        (r.i64(), r.i64())
+                    } else {
+                        let linked = r.i64() != -1;
+                        match t.splines.last_mut().filter(|_| linked) {
+                            Some(p) => {
+                                p.next_id = id;
+                                (p.id, 0)
+                            }
+                            None => (0, 0),
+                        }
+                    };
                     // Splines store x, height, y (verified by prev/next continuity of stock maps).
                     let x = r.f64();
                     let z = r.f64();
@@ -331,8 +392,7 @@ impl Tile {
                     // [spline_h]: gradients, then the height change, then the rest as in [spline]
                     let is_h = k == "spline_h";
                     let delta_h = if is_h { Some(r.f64()) } else { None };
-                    let cant_start = r.f64();
-                    let cant_end = r.f64();
+                    let (cant_start, cant_end) = if has(t.version, 5) { (r.f64(), r.f64()) } else { (0.0, 0.0) };
                     // Newer files have skew_start/skew_end; count remaining numeric lines.
                     let mut nums: Vec<f64> = Vec::new();
                     let mut mirror = false;
@@ -385,7 +445,10 @@ impl Tile {
                     last = Last::Spline;
                 }
                 "splineattachement" | "splineattachement_repeater" => {
-                    let _zero = r.line();
+                    // (the detail level from version 9 on, the IDCode from 6 on, as for objects)
+                    if has(t.version, 9) {
+                        let _detail = r.line();
+                    }
                     let repeater = if k.ends_with("repeater") {
                         let tile = r.i64().max(0) as usize;
                         let first = r.i64().max(0) as usize;
@@ -394,7 +457,8 @@ impl Tile {
                         None
                     };
                     let file_name = r.str().to_string();
-                    let id = r.i64();
+                    let id = if has(t.version, 6) { r.i64() } else { auto_id(&mut auto) };
+                    records.push(id);
                     let spline_index = r.i32();
                     let offset = r.f64s::<3>();
                     // (as for objects: pitch, bank and the tilt flag from version 12 on,
@@ -404,8 +468,7 @@ impl Tile {
                     let interval = r.f64();
                     let range = r.f64();
                     let tilt = if modern { r.i32() != 0 } else { false };
-                    let (count, mut strings) = if t.version >= 4 || t.version == 0 { (r.i32().max(0) as usize, read_extra(&mut r)) } else { (0, Vec::new()) };
-                    strings.truncate(count);
+                    let strings = if has(t.version, 4) { read_labels(&mut r).1 } else { Vec::new() };
                     t.spline_attachments.push(SplineAttachment {
                         file: file_name,
                         id,
@@ -423,6 +486,12 @@ impl Tile {
                     last = Last::SplineAttach;
                 }
                 "varparent" => {
+                    // (two numbers before version 6, of a numbering that is gone)
+                    if !has(t.version, 6) {
+                        r.line();
+                        r.line();
+                        continue;
+                    }
                     let id = r.i64();
                     match last {
                         Last::Object => {
@@ -518,6 +587,12 @@ impl Tile {
                 }
                 _ => t.unknown_keywords.push((k, r.block_line())),
             }
+        }
+        // Omsi.exe looks the parent up among the objects already read and drops an
+        // attachment whose parent comes later; one whose parent is not in this file at all
+        // may hang on the base tile of a chrono patch
+        for (i, _) in forward.iter().rev().filter(|(_, p)| records.contains(p)) {
+            t.attach_objects.remove(*i);
         }
         t
     }
@@ -648,6 +723,58 @@ Object Nr. 3\n[splineAttachement_repeater]\n0\n12\n5\nSceneryobjects\\lamp.sco\n
         assert_eq!((o.pos, o.rot, o.flag), ([10.0, 20.0, 0.5], [90.0, 0.0, 0.0], 2));
         assert_eq!(o.extra, vec!["first".to_string(), "second".to_string()]);
         assert_eq!((t.objects[1].rot, t.objects[1].flag), ([45.0, 0.0, 0.0], 0));
+    }
+
+    /// Labels are a count and exactly that many lines: an empty one in the middle and one
+    /// that looks like a keyword are labels too, and what follows is the next record.
+    #[test]
+    fn labels_are_exactly_their_count() {
+        let t = tile("[version]\n14\n\n[object]\n0\nSceneryobjects\\sign.sco\n5\n1\n2\n0\n0\n0\n0\n3\n\n[A38]\nTotnes@Road\n[object]\n0\nSceneryobjects\\x.sco\n6\n1\n2\n0\n0\n0\n0\n0\n");
+        assert_eq!(t.objects.len(), 2);
+        assert_eq!(t.objects[0].extra, vec!["".to_string(), "[A38]".to_string(), "Totnes@Road".to_string()]);
+        assert!(t.unknown_keywords.is_empty());
+    }
+
+    /// An `[attachObj]` on a later object of a spline attachment row, or on an object
+    /// written after it, is not loaded (Omsi.exe 0x793649, 0x7934f0).
+    #[test]
+    fn refused_attachments() {
+        let t = tile("[version]\n14\n\n[attachObj]\n0\nSceneryobjects\\early.sco\n2\n1\n0\n0\n0\n0\n0\n0\n\n\
+[object]\n0\nSceneryobjects\\pole.sco\n1\n5\n6\n0\n0\n0\n0\n0\n\n\
+[attachObj]\n0\nSceneryobjects\\later.sco\n3\n1\n2\n0\n0\n0\n0\n0\n\n[rule]\n0\nspeedlimit\n30\n0\n\n\
+[attachObj]\n0\nSceneryobjects\\plate.sco\n4\n1\n0\n1\n0\n0\n0\n0\n\n\
+[attachObj]\n0\nSceneryobjects\\on_row.sco\n5\n1\n2\n0\n0\n0\n0\n0\n");
+        assert_eq!(t.attach_objects.len(), 1);
+        assert_eq!((t.attach_objects[0].id, t.attach_objects[0].attach_index), (4, 1));
+        assert!(t.objects[0].rules.is_empty());
+    }
+
+    /// Tiles older than version 11 write their records shorter (TMapKachel.loadMapFile):
+    /// no detail level before 9, an `[attachObj]` names its parent by its place among the
+    /// tile's records before 10 and has no heading before 8, a spline has one line linking
+    /// it to the spline before it instead of both neighbours' IDs and no texture offset.
+    #[test]
+    fn old_tile_versions() {
+        let t = tile("[version]\n7\n\n\
+[spline]\nSplines\\road.sli\n100\n-1\n10\n0.5\n20\n0\n50\n0\n0\n0\n0\n0\n\n\
+[spline]\nSplines\\road.sli\n101\n0\n10\n0.5\n70\n0\n30\n0\n0\n0\n0\n0\n\n\
+[object]\nSceneryobjects\\pole.sco\n7\n5\n6\n0.25\n90\n0\n\n\
+[object]\nSceneryobjects\\other.sco\n8\n1\n1\n0\n0\n0\n\n\
+[attachObj]\nSceneryobjects\\plate.sco\n9\n0\n0\n2\n1\n76\n");
+        assert_eq!(t.splines.len(), 2);
+        let (a, b) = (&t.splines[0], &t.splines[1]);
+        assert_eq!((a.prev_id, a.next_id, b.prev_id, b.next_id), (0, 101, 100, 0));
+        assert_eq!((b.pos, b.heading, b.length), ([10.0, 70.0, 0.5], 0.0, 30.0));
+        assert_eq!(t.objects[0].pos, [5.0, 6.0, 0.25]);
+        let p = &t.attach_objects[0];
+        assert_eq!((p.parent_id, p.attach_index, p.rot[0]), (Some(7), 2, 0.0));
+        assert_eq!(p.extra, vec!["76".to_string()]);
+        // version 5: no IDCode at all, the records are numbered as they load
+        let t = tile("[version]\n5\n\n[object]\nSceneryobjects\\pole.sco\n5\n6\n0\n90\n0\n\n[attachObj]\nSceneryobjects\\plate.sco\n0\n0\n1\n0\n");
+        let (o, p) = (&t.objects[0], &t.attach_objects[0]);
+        assert_eq!((o.pos, o.rot[0]), ([5.0, 6.0, 0.0], 90.0));
+        assert!(o.id < 0 && p.id < 0 && o.id != p.id);
+        assert_eq!((p.parent_id, p.attach_index), (Some(o.id), 1));
     }
 
     #[test]

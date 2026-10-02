@@ -359,8 +359,14 @@ pub struct Place {
 
 /// The installation this process runs from (refused for a development build).
 pub fn install_place() -> anyhow::Result<Place> {
-    let exe = std::env::current_exe()?;
-    let exe = exe.canonicalize().unwrap_or(exe);
+    // (taken once: on Linux `current_exe` follows the running file, so after the swap it
+    // named `openomsi.old-update` - the old program, started again as "the new launcher" -
+    // and after a second swap a deleted file that could not be started at all, #811)
+    static EXE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    let exe = EXE
+        .get_or_init(|| std::env::current_exe().ok().map(|e| program_path(&e.canonicalize().unwrap_or(e))))
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("the program's own path is not known"))?;
     if is_dev_build(&exe) {
         anyhow::bail!("this is a development build ({}); update it with git and cargo", short_path(&exe));
     }
@@ -371,6 +377,24 @@ pub fn install_place() -> anyhow::Result<Place> {
     let bundle = exe.ancestors().find(|p| p.extension().map(|e| e.eq_ignore_ascii_case("app")).unwrap_or(false)).map(Path::to_path_buf);
     let dir = bundle.as_deref().unwrap_or(&exe).parent().ok_or_else(|| anyhow::anyhow!("no folder around {}", exe.display()))?.to_path_buf();
     Ok(Place { dir, bundle, exe })
+}
+
+/// The program's own path from what the system says the running file is: on Linux that
+/// follows a rename (`openomsi.old-update`) and an unlinked file (`... (deleted)`), but the
+/// program to start is the one at the original name.
+fn program_path(exe: &Path) -> PathBuf {
+    let mut s = exe.to_string_lossy().to_string();
+    if let Some(t) = s.strip_suffix(" (deleted)") {
+        s = t.to_string();
+    }
+    while let Some(t) = s.strip_suffix(OLD) {
+        s = t.to_string();
+    }
+    if s == exe.to_string_lossy() {
+        exe.to_path_buf()
+    } else {
+        PathBuf::from(s)
+    }
 }
 
 /// A path short enough for a dialog's line: its end, where the telling part is.
@@ -652,6 +676,14 @@ mod tests {
         let mut n = v.clone();
         n["assets"] = serde_json::json!([]);
         assert!(parse_release(&n, "0.1.7").unwrap().is_none());
+    }
+
+    #[test]
+    fn the_program_path_survives_the_swap() {
+        assert_eq!(program_path(Path::new("/home/me/openOMSI/openomsi")), PathBuf::from("/home/me/openOMSI/openomsi"));
+        assert_eq!(program_path(Path::new("/home/me/openOMSI/openomsi.old-update")), PathBuf::from("/home/me/openOMSI/openomsi"));
+        assert_eq!(program_path(Path::new("/home/me/openOMSI/openomsi.old-update (deleted)")), PathBuf::from("/home/me/openOMSI/openomsi"));
+        assert_eq!(program_path(Path::new("C:\\Games\\openOMSI\\openomsi.exe.old-update")), PathBuf::from("C:\\Games\\openOMSI\\openomsi.exe"));
     }
 
     #[test]

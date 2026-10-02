@@ -157,6 +157,10 @@ struct Seat {
     seated: bool,
     /// The `[passpos]`'s seat height (+0x20; 0: a standing place).
     height: f32,
+    /// Its number for the scripts (`GetHumanCountOnSeat`): Omsi.exe's place in the file
+    /// among the `[passpos]` and `[drivpos]`, the sections behind counted on after those
+    /// in front (0x7d39a4 asks the next one for a number past its own places).
+    omsi_seat: usize,
 }
 
 /// What passengers need to know about one vehicle type's cabin.
@@ -191,6 +195,21 @@ struct Cabin {
     money_point: Option<Vec3>,
     money_var: Option<(Vec3, [f32; 2])>,
     change_point: Option<Vec3>,
+}
+
+/// The people on each seat by the scripts' numbers (`Seat::omsi_seat`, the `[drivpos]`
+/// counted with the `[passpos]`), from the places (indices into `seats`) taken by people
+/// sitting there. (Counted by the `[passpos]` alone, every seat of a cabin with the
+/// driver's place first was one off: a tip-up seat folded down under the next one.)
+fn seat_numbers(seats: &[Seat], sitting: impl Iterator<Item = usize>) -> Vec<u32> {
+    let n = seats.iter().map(|s| s.omsi_seat + 1).max().unwrap_or(0);
+    let mut out = vec![0u32; n];
+    for k in sitting {
+        if let Some(c) = seats.get(k).and_then(|s| out.get_mut(s.omsi_seat)) {
+            *c += 1;
+        }
+    }
+    out
 }
 
 /// A section of an articulated bus in its cabin's unfolded frame.
@@ -251,7 +270,9 @@ impl Cabin {
         // (merged path point or -1, sells tickets, {withbutton}, half width of the section)
         let mut entry_points: Vec<(i32, bool, bool, f32)> = Vec::new();
         let mut exit_points: Vec<(i32, f32)> = Vec::new();
-        let mut places: Vec<(omsi_vehicle::cabin::PassPos, Vec3)> = Vec::new();
+        let mut places: Vec<(omsi_vehicle::cabin::PassPos, Vec3, usize)> = Vec::new();
+        // (the script seat numbers of the sections in front)
+        let mut seat_base = 0usize;
         let mut cabin_parts: Vec<CabinPart> = Vec::new();
         // the point of the section in front that leads on to the next one
         let mut rear_link: Option<usize> = None;
@@ -328,7 +349,8 @@ impl Cabin {
                     .map(|e| (shift(e.path_point), !e.no_ticket_sale, e.with_button, half)),
             );
             exit_points.extend(cab.exits.iter().map(|e| (shift(*e), half)));
-            places.extend(cab.pass_positions.iter().map(|p| (p.clone(), *offset)));
+            places.extend(cab.pass_positions.iter().map(|p| (p.clone(), *offset, seat_base + p.file_index)));
+            seat_base += cab.pass_positions.len() + cab.driver_positions.len();
             cabin_parts.push(CabinPart {
                 offset: *offset,
                 joint_y: *joint_y,
@@ -439,7 +461,7 @@ impl Cabin {
         });
         let seats = places
             .iter()
-            .map(|(p, offset)| {
+            .map(|(p, offset, omsi_seat)| {
                 let pos = Vec3::from(p.pos) + *offset;
                 let seated = p.height > 0.01;
                 let floor = if seated {
@@ -458,6 +480,7 @@ impl Cabin {
                     rot: p.rot,
                     seated,
                     height: p.height,
+                    omsi_seat: *omsi_seat,
                 }
             })
             .collect();
@@ -1208,6 +1231,11 @@ pub struct Person {
     t_state: f32,
     /// Skinned positions and normals, per mesh.
     skins: Vec<(Vec<Vec3>, Vec<Vec3>)>,
+    /// The bones the skins were made with, and whether this frame's pose changed them
+    /// (somebody standing still keeps the mesh of the frame before: skinning and uploading
+    /// thirty waiting people every frame took 2 ms of the frame at a bus station).
+    skin_bones: Option<[glam::Affine3A; omsi_sim::human::SLOTS]>,
+    pose_changed: bool,
     /// Interior light of the bus the person is in (0 outside).
     interior: f32,
     /// The interior light as drawn: it follows `interior` over a moment (stepping through
@@ -1427,6 +1455,9 @@ pub struct Humans {
     /// wants one of them and boards only a bus showing one of its termini; at a stop no trip
     /// goes on from, anybody takes the first bus (0x61c33c).
     pub stop_targets: Option<HashMap<i64, Vec<(String, HashSet<String>)>>>,
+    /// The timetable's name of each stop object (`Schedule::stop_names`), the names the
+    /// targets above are made of.
+    pub stop_names: Option<HashMap<i64, String>>,
     /// Buses whose validator somebody used since the app last looked (`take_stamped`).
     stamped: Vec<BusId>,
     /// Pedestrians to keep strolling near the player (scaled by `density`).
@@ -1452,6 +1483,9 @@ pub struct Humans {
     message: Option<String>,
     /// Frames ticked, total and longest tick (ms).
     tick_stats: (u32, f64, f64),
+    /// Where the time of this tick went (stage, ms since the one before), for the slow
+    /// ticks OMSI_PROFILE reports.
+    tick_stages: Vec<(&'static str, f64)>,
     /// Speed, heading and floor acceleration of each bus last frame (for the riders' balance).
     bus_motion: HashMap<BusId, (f64, f64, DVec2)>,
     /// `types` has been cut down to the map's `humans.txt`.
@@ -1481,6 +1515,15 @@ pub struct Humans {
     claimed: HashMap<u32, f64>,
     /// The host's people waiting at a stop (client): (stop, waiting place).
     mirror_wait: HashMap<u32, (i64, usize)>,
+    /// How the player's bus is driven, for its riders' complaints.
+    comfort: RideComfort,
+    /// LAN play (host): the waiting people handed over to another player's bus, by stop and
+    /// that bus. They count among the people of the stop while the bus stands there, as
+    /// the people who board a bus of ours keep their stop until it has left: without them
+    /// the stop filled up again at once - one more person a frame once its 10..15 s were
+    /// up - and the client's bus took them all, one stream of passengers that never ended
+    /// (#842, #840, #830).
+    handed: Vec<(i64, u64)>,
 }
 
 /// Resolve each map entry directly, including human packs with nested folders.
@@ -1639,6 +1682,7 @@ impl Humans {
             avatar_only: false,
             driver_away: false,
             stop_targets: None,
+            stop_names: None,
             stamped: Vec::new(),
             pedestrians: 14,
             stroll_timer: 0.0,
@@ -1651,6 +1695,7 @@ impl Humans {
             center: DVec3::ZERO,
             message: None,
             tick_stats: (0, 0.0, 0.0),
+            tick_stages: Vec::new(),
             bus_motion: HashMap::new(),
             map_humans_done: false,
             last_sync: 0.0,
@@ -1669,6 +1714,8 @@ impl Humans {
             claims_out: Vec::new(),
             claimed: HashMap::new(),
             mirror_wait: HashMap::new(),
+            comfort: RideComfort::default(),
+            handed: Vec::new(),
         }
     }
 
@@ -2084,6 +2131,8 @@ impl Humans {
             state,
             t_state: 0.0,
             skins: Vec::new(),
+            skin_bones: None,
+            pose_changed: false,
             interior: 0.0,
             lit: 0.0,
             tilt: Mat4::IDENTITY,
@@ -2232,13 +2281,19 @@ impl Humans {
             };
             // (sub_7f0db8 / sub_7f0d3c: the stop less the object)
             let v = pos - *opos;
-            if v.length() > 40.0 {
+            // (Omsi.exe looks at every object of the stop's tile and the ones round it; the
+            // region below reaches the stop's length ahead, which a long bus station stop
+            // takes past 40 m)
+            if v.length() > 40.0_f64.max(length as f64 + 15.0) {
                 continue;
             }
             // (0x7efb08 with -heading: in the stop's frame)
             let lat = h.cos() * v.x - h.sin() * v.y;
             let along = h.cos() * v.y + h.sin() * v.x;
             if !(-along < 10.0 && -along > -(length as f64).max(10.0) && -lat < xmax && -lat > xmin) {
+                if debug_pax() && v.length() < 30.0 {
+                    log::info!("stop {id}: object {obj} (waiting place {p:?}) not the stop's: across {:.1}, along {:.1}", -lat, -along);
+                }
                 continue;
             }
             spots.push(WaitSpot { pos: *p, face: *face, height: *height });
@@ -2267,11 +2322,18 @@ impl Humans {
             Vec::new()
         };
         if debug_pax() {
-            log::info!("stop {id} '{name}' at ({:.1}, {:.1}): {} waiting places, length {length}, side {side}, {} destinations", pos.x, pos.y, spots.len(), dests.len());
+            log::info!("stop {id} '{name}' at ({:.1}, {:.1}, {:.2}) heading {heading:.0}: {} waiting places, length {length}, side {side}, {} destinations", pos.x, pos.y, pos.z, spots.len(), dests.len());
         }
         let n = spots.len();
+        // what the timetable calls it - its id when the timetable does not know it, as the
+        // targets then do
+        let alias = match &self.stop_names {
+            Some(n) => n.get(&id).cloned().unwrap_or_else(|| id.to_string()),
+            None => String::new(),
+        };
         PaxStop {
             name: name.to_string(),
+            alias,
             pos,
             heading,
             gather,
@@ -2304,6 +2366,15 @@ impl Humans {
         let mut ids: Vec<i64> = self.stops.keys().copied().collect();
         ids.sort_unstable();
         let forced = omsi_cfg::env::var("OMSI_PAX_WAITING").ok().and_then(|v| v.parse::<usize>().ok());
+        // the people handed over to another player's bus stop counting once it has left
+        // their stop (or the session)
+        if !self.handed.is_empty() {
+            let (stops, remote) = (&self.stops, &self.remote_now);
+            self.handed.retain(|(stop, bus)| {
+                let Some(s) = stops.get(stop) else { return false };
+                remote.iter().any(|b| b.id == BusId::Ai(*bus) && (b.pos - s.pos).length() < 60.0)
+            });
+        }
         for id in ids {
             let center = self.center;
             let near = {
@@ -2346,7 +2417,7 @@ impl Humans {
                 };
                 s.factor = (r * 2.0 - 1.0) * k + 1.0;
             }
-            let count = self.people.iter().filter(|p| matches!(&p.state, State::Pax(x) if x.stop == Some(id))).count();
+            let count = self.people.iter().filter(|p| matches!(&p.state, State::Pax(x) if x.stop == Some(id))).count() + self.handed.iter().filter(|h| h.0 == id).count();
             let want = {
                 let s = &self.stops[&id];
                 let mean = (s.enter_max + s.enter_min) / 2.0;
@@ -2378,15 +2449,13 @@ impl Humans {
         }
     }
 
-    /// A person put at a free waiting place of stop `id` (sub_626044) with a destination
-    /// drawn from the stop's (sub_61baa8); they settle there as task 6 does.
-    fn spawn_waiting(&mut self, world: &World, renderer: &Renderer, scene: &mut Scene, id: i64) -> Option<usize> {
-        let k = self.take_spot(id)?;
-        let sp = self.stops[&id].spots[k].clone();
-        // the destination: by weight; none when the weights leave the draw over
+    /// A destination drawn from stop `id`'s (sub_61baa8): by weight; none when the weights
+    /// leave the draw over. Also the stop's line record it matched.
+    fn draw_dest(&mut self, id: i64) -> (Option<String>, Option<usize>) {
         let mut r = self.rand_f() as f32;
         let mut dest: Option<String> = None;
-        for (n, w) in &self.stops[&id].dests {
+        let Some(stop) = self.stops.get(&id) else { return (None, None) };
+        for (n, w) in &stop.dests {
             if r <= 0.0 {
                 break;
             }
@@ -2395,7 +2464,16 @@ impl Humans {
                 dest = Some(n.clone());
             }
         }
-        let line = dest.as_ref().and_then(|d| self.stops[&id].lines.iter().position(|(n, _)| n.trim() == d.trim()));
+        let line = dest.as_ref().and_then(|d| stop.lines.iter().position(|(n, _)| n.trim() == d.trim()));
+        (dest, line)
+    }
+
+    /// A person put at a free waiting place of stop `id` (sub_626044) with a destination
+    /// drawn from the stop's (sub_61baa8); they settle there as task 6 does.
+    fn spawn_waiting(&mut self, world: &World, renderer: &Renderer, scene: &mut Scene, id: i64) -> Option<usize> {
+        let k = self.take_spot(id)?;
+        let sp = self.stops[&id].spots[k].clone();
+        let (dest, line) = self.draw_dest(id);
         let walk = 1.1 + (self.rand_f() as f32 * 2.0 - 1.0) * 0.2;
         let mut pax = Pax::new(walk);
         pax.stop = Some(id);
@@ -3261,6 +3339,31 @@ impl Humans {
         }
     }
 
+    /// Who wants a timetable bus to stop, as Omsi.exe asks before it lets one pull in
+    /// (0x7da91f): the AI buses with somebody aboard on the way to a door to get off
+    /// (task 5), and the stops where somebody is waiting for a bus or walking to one
+    /// (tasks 1 to 3).
+    pub fn stop_wishes(&self) -> (HashSet<u64>, HashSet<i64>) {
+        let (mut alighting, mut waiting) = (HashSet::new(), HashSet::new());
+        for p in &self.people {
+            let State::Pax(x) = &p.state else { continue };
+            match x.task {
+                Task::InBusToExit => {
+                    if let Some(BusId::Ai(id)) = x.inside {
+                        alighting.insert(id);
+                    }
+                }
+                Task::WaitingForBus | Task::ToBus | Task::WalkingToBus => {
+                    if let Some(s) = x.stop {
+                        waiting.insert(s);
+                    }
+                }
+                _ => {}
+            }
+        }
+        (alighting, waiting)
+    }
+
     /// Timetable buses to hold at their stop, for the traffic.
     pub fn take_holds(&mut self) -> Vec<(u64, f32)> {
         std::mem::take(&mut self.holds)
@@ -3293,17 +3396,11 @@ impl Humans {
         let Some(cabin) = self.player_cabin.as_ref() else {
             return Vec::new();
         };
-        let mut out = vec![0u32; cabin.seats.len()];
-        for p in &self.people {
-            if let State::Pax(x) = &p.state {
-                if let (Some(BusId::Player), Task::SittingInBus, Some(seat)) = (x.inside, x.task, x.seat) {
-                    if let Some(c) = out.get_mut(seat) {
-                        *c += 1;
-                    }
-                }
-            }
-        }
-        out
+        let sitting = self.people.iter().filter_map(|p| match &p.state {
+            State::Pax(x) if x.inside == Some(BusId::Player) && x.task == Task::SittingInBus => x.seat,
+            _ => None,
+        });
+        seat_numbers(&cabin.seats, sitting)
     }
 
     /// How many people stand on each `paths.cfg` link inside the player's bus, for the
@@ -3377,17 +3474,39 @@ impl Humans {
         scene: &mut Scene,
     ) -> bool {
         let started = std::time::Instant::now();
+        self.tick_stages.clear();
         let took = self.tick_inner(dt, world, bus, traffic, renderer, scene);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
-        if debug_pax() && ms > 30.0 {
+        if (debug_pax() || omsi_cfg::env::var_os("OMSI_PROFILE").is_some()) && ms > 30.0 {
             log::info!(
-                "t={:.1} slow people tick: {ms:.1} ms ({} people)",
+                "t={:.1} slow people tick: {ms:.1} ms ({} people): {}",
                 self.time,
-                self.people.len()
+                self.people.len(),
+                self.tick_stages.iter().filter(|s| s.1 >= 1.0).map(|(n, t)| format!("{n} {t:.1}")).collect::<Vec<_>>().join(", ")
             );
         }
         if omsi_cfg::env::var_os("OMSI_CHECK_WALLS").is_some() {
             self.check_walls();
+        }
+        // OMSI_CHECK_GROUND=1: people on foot with a walkable surface over their heads'
+        // reach above them, every two seconds (people "in the ground")
+        if omsi_cfg::env::var_os("OMSI_CHECK_GROUND").is_some() && (self.time / 2.0).floor() != ((self.time - dt as f64) / 2.0).floor() {
+            for p in &self.people {
+                if !matches!(p.place, Place::Ground) || p.puppet.is_some() {
+                    continue;
+                }
+                // the floor under the feet: the highest face up to a step (0.5 m) over them
+                let floor = world.walk_height_near(p.position.x, p.position.y, p.position.z);
+                if let Some(f) = floor {
+                    if f - p.position.z > 0.05 {
+                        let detail = match &p.state {
+                            State::Pax(x) => format!(" st {} pax_state {} task {:?} pos.z {:.2}", x.st, x.pax_state, x.task, x.pos.z),
+                            _ => String::new(),
+                        };
+                        log::warn!("t={:.1} person {} ({}) {:.2} m under the floor at ({:.1}, {:.1}, {:.2}), top surface {:?}{detail}", self.time, p.id, p.state.name(), f - p.position.z, p.position.x, p.position.y, p.position.z, world.walk_height(p.position.x, p.position.y));
+                    }
+                }
+            }
         }
         self.tick_stats.0 += 1;
         self.tick_stats.1 += ms;
@@ -3395,6 +3514,7 @@ impl Humans {
         took
     }
 
+    #[allow(unused_assignments)]
     fn tick_inner(
         &mut self,
         dt: f32,
@@ -3404,6 +3524,14 @@ impl Humans {
         renderer: &Renderer,
         scene: &mut Scene,
     ) -> bool {
+        let mut mark = std::time::Instant::now();
+        macro_rules! stage {
+            ($name:expr) => {{
+                let now = std::time::Instant::now();
+                self.tick_stages.push(($name, (now - mark).as_secs_f64() * 1000.0));
+                mark = now;
+            }};
+        }
         self.use_map_humans(world);
         self.time += dt as f64;
         let net = traffic.map(|t| &t.net);
@@ -3417,6 +3545,7 @@ impl Humans {
             self.tiles_seen = generation;
             self.tiles_changed(world);
         }
+        stage!("tiles");
         // tiles brought lanes: their pavements join the network, and stops without one look again
         if let (Some(pn), Some(n)) = (self.ped.as_mut(), net) {
             if pn.built < n.lanes.len() {
@@ -3440,6 +3569,7 @@ impl Humans {
                 }
             }
         }
+        stage!("pedestrian network");
         if let Some(n) = net {
             self.stroll_timer -= dt;
             if self.stroll_timer <= 0.0 {
@@ -3452,6 +3582,7 @@ impl Humans {
                 }
             }
         }
+        stage!("populate");
         let mut buses = self.gather_buses(world, bus, traffic);
         for b in &buses {
             if b.entry_open.iter().chain(b.exit_open.iter()).any(|o| *o) {
@@ -3481,13 +3612,16 @@ impl Humans {
         // the stops: which buses stand at them (sub_61f93c), who waits there (sub_61bf94)
         let at_stops = self.register_buses(&buses, dt);
         self.claim_waiting();
+        self.ride_comfort(dt, bus, &buses, &bus_ix, world);
         if !self.avatar_only {
             self.stops_tick(dt, world, renderer, scene);
         }
+        stage!("stops");
         // the passengers (sub_6ffc7c)
         let mut taken_ticket = false;
         let mut remove: Vec<usize> = Vec::new();
         self.pax_frame(dt, world, &buses, &bus_ix, &at_stops, bus, renderer, scene, &mut taken_ticket, &mut remove);
+        stage!("passengers");
         // the pedestrians: a crowd on the pavements
         let mut cars: Vec<(DVec2, DVec2, f64)> = Vec::new();
         let mut blocks: Vec<Block> = Vec::new();
@@ -3621,6 +3755,7 @@ impl Humans {
             self.retire(&p);
         }
         self.give_ticket = false;
+        stage!("pedestrians");
         taken_ticket
     }
 
@@ -4248,10 +4383,15 @@ impl Humans {
         }
         let n_due = due.iter().filter(|d| **d).count();
         let pose_one = |p: &mut Person| {
-            let Person { anim, ty, skins, .. } = p;
+            let Person { anim, ty, skins, skin_bones, pose_changed, .. } = p;
+            *pose_changed = false;
             let bones = omsi_sim::human::slots_from_omsi(&anim.bones(&ty.omsi));
             if bones.iter().any(|b| !b.is_finite()) && !skins.is_empty() {
                 // keep the last good mesh (the rest pose would be the file's T-pose)
+                return;
+            }
+            // (the same bones as the mesh was made with: nothing to skin or upload)
+            if skins.len() == ty.meshes.len() && skin_bones.as_ref().is_some_and(|b| b.iter().zip(&bones).all(|(a, c)| a.abs_diff_eq(*c, 1e-6))) {
                 return;
             }
             skins.resize_with(ty.meshes.len(), Default::default);
@@ -4259,6 +4399,8 @@ impl Humans {
                 let (pos, nrm) = &mut skins[k];
                 skin(m, &bones, pos, nrm);
             }
+            *skin_bones = Some(bones);
+            *pose_changed = true;
         };
         // a handful is quicker on this thread than handed to the pool
         if n_due >= 8 {
@@ -4278,9 +4420,11 @@ impl Humans {
         let upload = std::time::Instant::now();
         for (p, &go) in self.people.iter_mut().zip(&due) {
             if go {
-                for (k, (id, _)) in p.meshes.iter().enumerate() {
-                    if let Some((pos, nrm)) = p.skins.get(k) {
-                        renderer.update_mesh(scene, *id, pos, nrm, &p.ty.meshes[k].data.uvs);
+                if p.pose_changed || !p.skinned {
+                    for (k, (id, _)) in p.meshes.iter().enumerate() {
+                        if let Some((pos, nrm)) = p.skins.get(k) {
+                            renderer.update_mesh(scene, *id, pos, nrm, &p.ty.meshes[k].data.uvs);
+                        }
                     }
                 }
                 p.skinned = true;
@@ -4875,7 +5019,7 @@ impl Humans {
     /// A client's bus takes these waiting people (host): those still waiting leave our
     /// world (they are the client's now); returns them. Somebody who has meanwhile walked
     /// up to another bus stays ours.
-    pub fn hand_over(&mut self, ids: &[u32]) -> Vec<u32> {
+    pub fn hand_over(&mut self, player: u32, ids: &[u32]) -> Vec<u32> {
         let mut out = Vec::new();
         for id in ids {
             let Some(i) = self.people.iter().position(|p| p.id == *id) else {
@@ -4883,6 +5027,11 @@ impl Humans {
             };
             if !matches!(&self.people[i].state, State::Pax(x) if x.task == Task::WaitingForBus) || self.people[i].remote {
                 continue;
+            }
+            // (still counted at their stop while that bus stands there, as the people
+            // boarding a bus of ours are: see `handed`)
+            if let Some(stop) = self.pax(i).and_then(|x| x.stop) {
+                self.handed.push((stop, remote_bus_id(player)));
             }
             self.release(i);
             let p = self.people.swap_remove(i);
@@ -5061,6 +5210,13 @@ impl Humans {
         let mut pax = Pax::new(walk);
         pax.task = Task::WaitingForBus;
         pax.stop = Some(stop);
+        // what a waiting person of ours has (sub_626044 and task 6): a destination drawn
+        // from the stop (both sides load the same map) and a distance to ride without one;
+        // with neither they would get off again at once (#813)
+        let (dest, line) = self.draw_dest(stop);
+        pax.dest = dest;
+        pax.line = line;
+        pax.ride_km = self.rand_f() as f32 * 19.0 + 1.0;
         pax.pos = self.people[i].position;
         pax.yaw = self.people[i].heading.to_radians();
         if let Some(sp) = sp {
@@ -5134,8 +5290,10 @@ mod tests {
         assert_eq!(picked.len(), 3);
         assert!(Arc::ptr_eq(&picked[0], &picked[1]));
         assert!(Arc::ptr_eq(&picked[1], &picked[2]));
-        // (case-blind: a case-insensitive disk keeps the list's own spelling)
-        let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+        // (case-blind: a case-insensitive disk keeps the list's own spelling; and
+        // separator-blind: on Windows `nested` keeps the slashes it was joined with, while
+        // the resolved path is built with backslashes)
+        let lower = |p: &Path| p.to_string_lossy().to_lowercase().replace('\\', "/");
         assert!(picked.iter().all(|t| lower(&t.def.path).starts_with(&lower(&nested))));
         assert!(map_human_types(&root, &["Humans/Missing/None.hum".into()]).is_empty());
         std::fs::remove_dir_all(root).unwrap();
@@ -5164,6 +5322,15 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn seats_counted_by_the_scripts_numbers() {
+        let seat = |omsi_seat: usize| Seat { pos: Vec3::ZERO, floor: Vec3::ZERO, rot: 0.0, seated: true, height: 0.45, omsi_seat };
+        // the driver's place is seat 0, a second section's numbers follow the first's
+        let seats = [seat(1), seat(2), seat(4), seat(6)];
+        assert_eq!(seat_numbers(&seats, [0, 2, 2, 3].into_iter()), [0, 1, 0, 0, 2, 0, 1]);
+        assert!(seat_numbers(&[], [0].into_iter()).is_empty());
     }
 
     #[test]

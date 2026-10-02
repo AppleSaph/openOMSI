@@ -176,8 +176,12 @@ fn vs_main(in: CoronaIn) -> CoronaOut {
         }
     }
     // coronas keep a minimum on-screen size in the distance like the original;
-    // precipitation particles (cone < -1.5) are thin vertical streaks
-    let size = select(max(in.size * grow, dist * 0.002), in.size, streak);
+    // precipitation particles (cone < -1.5) are thin vertical streaks.
+    // A sprite's radius, from the light's size (its diameter) and that distance floor. The
+    // 0.9 is measured against Omsi.exe: at the size the game files ask for, every glow reads
+    // a shade too wide beside the original, which draws the sprite a little inside the
+    // diameter its `size` names. (Streaks keep their size: they are rain, not a light.)
+    let size = select(max(in.size * grow, dist * 0.002) * 0.9, in.size, streak);
     let stretch = select(vec2<f32>(1.0, 1.0), vec2<f32>(0.06, 4.0), streak);
     let upv = select(up, vec3<f32>(0.0, 0.0, 1.0), streak);
     // the spot moved towards the viewer by its z offset, so that a lamp inside its housing
@@ -202,7 +206,15 @@ fn vs_main(in: CoronaIn) -> CoronaOut {
 // The sprite's light: the round texture (in its own colours), and for a star light four thin rays across it.
 fn corona_shape(in: CoronaOut) -> vec3<f32> {
     // (the sprite keeps the bitmap's own colours, modulated by the light's colour)
-    let t = textureSample(t_corona, s_corona, in.uv).rgb;
+    // Read the right way up. `in.uv` is built the way the HUD's is (overlay.wgsl), where
+    // v = 0 is the picture's *first*, topmost row; but a sprite's corners are placed by its
+    // own `up`, which runs up the screen, so v = 1 comes to rest at its top. Taken as it
+    // stands the picture is drawn upside down - invisible on a round glow or a star, plain
+    // on an asymmetric effect, such as the light streak some buses' `[light_enh_2]`
+    // `lights_abbl`/`lights_stand` bitmaps draw. The fan below keeps the unflipped `in.uv`:
+    // it maps light_cone.bmp from its own `fan_uv` and only takes `r` and `phi` from here,
+    // which its geometry needs as they stand.
+    let t = textureSample(t_corona, s_corona, vec2<f32>(in.uv.x, 1.0 - in.uv.y)).rgb;
     // the cone's fan: its apex has uv (0, 1) and a rim vertex (sin a, 1 - cos a)
     // (u = sin a, v = 1 - cos a), a being 0.05 inside
     // the inner cone and rising to 0.9 pi/2 + 0.05 at the outer edge: light_cone.bmp's
@@ -240,7 +252,8 @@ fn fs_enhanced(in: CoronaOut) -> @location(0) vec4<f32> {
 // Smoke ([smoke] particles): the smoke texture tinted with the particle's colour, lit by the
 // scene's ambient and sun light, blended with its alpha (the particle's times the texture's).
 fn smoke_color(in: CoronaOut) -> vec4<f32> {
-    let t = textureSample(t_corona, s_corona, in.uv);
+    // upside up, as the sprite's own picture above
+    let t = textureSample(t_corona, s_corona, vec2<f32>(in.uv.x, 1.0 - in.uv.y));
     let light = min(camera.ambient.rgb + camera.sun_color.rgb * 0.6, vec3<f32>(1.2));
     return vec4<f32>(in.color.rgb * t.rgb * light, clamp(t.a * in.color.a, 0.0, 1.0));
 }

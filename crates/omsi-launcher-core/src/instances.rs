@@ -435,6 +435,7 @@ pub fn log_tail(pid: u32, lines: usize) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::*;
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

@@ -510,7 +510,7 @@ impl App {
                     } else if da < -std::f32::consts::PI {
                         da += std::f32::consts::TAU;
                     }
-                    self.touch.steer = (self.touch.steer + da / WHEEL_LOCK_ANGLE).clamp(-1.0, 1.0);
+                    self.touch.steer = (self.touch.steer + da / touch_lock_angle(&self.settings)).clamp(-1.0, 1.0);
                 }
                 self.touch.fingers[k].role = Role::Wheel(a, d.length());
             }
@@ -545,7 +545,7 @@ impl App {
                 }
                 if self.touch.fingers[k].moved {
                     // (degrees for a point dragged: a full turn is a few swipes)
-                    let k = 0.28 / u;
+                    let k = 0.28 / u * self.settings.look_sens;
                     // (the view turns the way the finger moves: taken the other way round,
                     // as grabbing the world, every direction felt inverted)
                     self.look_by((p.x - last.x) * k, (p.y - last.y) * k);
@@ -853,6 +853,7 @@ impl App {
     /// Paint the controls into `painter` (physical pixels).
     fn touch_paint(&mut self) {
         let speed = self.player.as_ref().map(|p| p.vehicle.physics.velocity_kmh().abs());
+        let lock_angle = touch_lock_angle(&self.settings);
         // (the buttons' backgrounds follow the interface's opacity; their icons stay solid)
         let panel_bg = PANEL_BG.alpha(crate::ui::backdrop(self.settings.ui_opacity));
         let (w, h) = self.touch.size;
@@ -875,8 +876,8 @@ impl App {
                 let (rim_in, hub) = (r - 12.0 * u, 16.0 * u);
                 let part = Color::rgba(230, 230, 230, if t.steering { 0.95 } else { 0.8 });
                 pt.circle(c, rim_in, panel_bg);
-                // the spokes turn with the wheel (one and a half turns to the lock)
-                let a0 = t.steer * WHEEL_LOCK_ANGLE;
+                // the spokes turn with the wheel (to the settings' lock, see `touch_lock_angle`)
+                let a0 = t.steer * lock_angle;
                 let half = 3.5 * u;
                 for k in 0..3 {
                     let a = a0 + FRAC_PI_2 + k as f32 * TAU / 3.0 + PI;
@@ -1040,7 +1041,7 @@ impl Touch {
         enc.copy_texture_to_buffer(tex.as_image_copy(), wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: None } }, wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
         r.queue.submit([enc.finish()]);
         buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        r.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        omsi_render::wait_gpu(&r.device, None).ok();
         let data = buf.slice(..).get_mapped_range();
         let mut out = vec![0u8; (w * h * 4) as usize];
         for y in 0..h as usize {
@@ -1061,14 +1062,37 @@ pub(crate) fn composite(base: &mut [u8], over: &[u8]) {
     }
 }
 
-/// How far the wheel turns at the full lock (rad): one and a half turns, as a bus's wheel
-/// and the phone bus games have it - the finger goes round and round to the lock, and the
-/// wheel comes back by itself when let go. (120 degrees was a lock in a flick.)
-const WHEEL_LOCK_ANGLE: f32 = 3.0 * std::f32::consts::PI;
+/// How far the wheel on the screen turns from the middle to the full lock (rad): half the
+/// settings' wheel turn lock to lock - "Full lock at" where it is set, else the whole
+/// "Wheel rotation" (900 degrees unless changed: one and a quarter turns each way, as a bus's
+/// wheel and the phone bus games have it; the finger goes round and round to the lock, and
+/// the wheel comes back by itself when let go). The settings did nothing on a phone, so the
+/// drawn wheel could not be made to turn as the bus's own (#856). (120 degrees was a lock in
+/// a flick.)
+fn touch_lock_angle(s: &crate::settings::Settings) -> f32 {
+    let lock_to_lock = if s.wheel_lock >= 45.0 { s.wheel_lock } else { s.wheel_range };
+    (lock_to_lock.clamp(90.0, 2880.0) * 0.5).to_radians()
+}
 
 /// The wheel's turn as the bus gets it: one to one, the drawn wheel and the bus's wheel
 /// turn alike (a curve that was gentle round the middle made the bus turn faster and
 /// faster as the finger went on round).
 fn steer_curve(s: f32) -> f32 {
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::touch_lock_angle;
+    use crate::settings::Settings;
+
+    #[test]
+    fn the_screen_wheel_turns_as_the_wheel_settings_say() {
+        let deg = |s: &Settings| touch_lock_angle(s).to_degrees().round();
+        // "Full lock at: OMSI": the wheel's whole rotation is the lock, half of it each way
+        assert_eq!(deg(&Settings { wheel_range: 900.0, wheel_lock: 0.0, ..Default::default() }), 450.0);
+        assert_eq!(deg(&Settings { wheel_range: 1800.0, wheel_lock: 0.0, ..Default::default() }), 900.0);
+        // a lock set of its own wins
+        assert_eq!(deg(&Settings { wheel_range: 900.0, wheel_lock: 540.0, ..Default::default() }), 270.0);
+    }
 }

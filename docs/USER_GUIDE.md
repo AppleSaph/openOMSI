@@ -103,7 +103,8 @@ the keyboard, and Shift+right-drag zooms - this is OMSI's `[altView]` mode, the 
 (up: the outside camera backs away, the view inside widens up to the seat's own) and only the
 wheel button turns the view; each view keeps its own
 direction (turning the outside camera leaves the driver's head where it was), **Space** looks
-ahead again in every view (OMSI's `view_reset_all_directions`), Home recentres the view shown.
+ahead again in every view (OMSI's `view_reset_all_directions`), Home recentres the view shown
+where keyboard.cfg does not make it the ticket desk camera.
 The mouse wheel (and **=** / **-**, a pinch on a phone) zooms: outside the camera comes closer,
 inside the bus the view narrows, as in OMSI; **Ctrl**+wheel outside narrows the view instead
 (a telephoto, the camera stays where it is). F1-F4 driver / passenger / outside / map (free) camera, F5-F8 the destination
@@ -145,8 +146,14 @@ again only when something changes; drag on it to turn the bus, scroll to zoom. I
   *Graphics* (the quality preset first, the screen, distances and memory), *Driving* (keys,
   mouse, wheel and pedals, with the way to the Controls page), *Camera* (the seat, the views,
   head tracking, VR), *Sound*, *Gameplay* (passengers, traffic, collisions, the clock) and
-  *General* (language, the game's interface size, navigator, updates, and resetting every
-  setting).
+  *General* (language, the game's interface size, navigator, Discord Rich Presence,
+  updates, and resetting every setting).
+  **Discord Rich Presence** shows the launcher while preparing a drive, then the map and
+  line above the vehicle type and tour while playing. The full vehicle name is in the logo's
+  tooltip. The launcher status returns when the game ends.
+  It is enabled by default and can be turned off under Settings → General; the switch
+  affects the launcher immediately and the game on its next start. Discord must be running
+  on the same computer.
 * **Controls** - `Inputs/keyboard.cfg`: click a key, press the new one; clashes are red. The
   keys are the game's with *Driving keys: Custom controls* (Settings → Driving); with a ready-made
   layout (W A S D, arrows) those keys drive and win over the list - the page says so, and
@@ -197,11 +204,14 @@ lines, as in the game, whose default date is 1989-05-30.
 ## Settings, enhanced graphics, the navigator
 
 `~/.openomsi/settings.cfg` (written by the launcher's settings page, or by hand) holds
-`msaa` (1/2/4; a count the GPU cannot do falls back to the next lower one), `anisotropy`
-(1..16), `ssao`, `shadows`, `shadow_size`, `navigator`, `ui_opacity` (how much of the interface's backgrounds shows - the navigator's, the
+`msaa` (1/2/4/8; a count the GPU cannot do falls back to the next lower one), `anisotropy`
+(1..16), `ssao`, `shadows`, `shadow_size`, `shadow_blobs` (the models' `[isshadow]` shadow
+meshes, OMSI's flat blob under a vehicle, laid on the road its wheels stand on; off, only the
+sun shadow map shades under a vehicle), `navigator`, `ui_opacity` (how much of the interface's backgrounds shows - the navigator's, the
 menu's, the timetable's, the plates under the notes - 0.2 to 1, the texts staying solid; 0.85
 as designed; `navigator_opacity` in older files),
 `navigator_corner` (`bottom-left` default, `bottom-right`, `top-left`, `top-right`),
+`nav_ai` (the other AI vehicles as dots on the navigator and the city map; on by default),
 `boarding`, `detail_textures`, `exact_fare`, `enhanced`, `fullscreen`, `vsync`, `volume`
 and `drive_keys`, plus `render_scale` (`auto` or a fraction: the picture is drawn smaller
 and upscaled), `post_aa` (`fxaa`, the enhanced renderer's, or `off`), `view_distance` (m,

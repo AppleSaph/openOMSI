@@ -165,6 +165,35 @@ fn least_squares(px: &[[f32; 3]; 16], use_px: u16, idx: &[u8; 16], n: usize) -> 
     Some((e0, e1))
 }
 
+/// End points and index for one colour of a four-colour block: the 2:1 mix (palette index 2,
+/// c0 > c1) of two table end points, swapped ends making it index 3 - exact where a plain
+/// 565 colour is off by its quantisation step.
+fn flat_ends(c: [u8; 3]) -> (u16, u16, u8) {
+    let t = single_colour();
+    let (r0, r1) = t.five[c[0] as usize];
+    let (g0, g1) = t.six[c[1] as usize];
+    let (b0, b1) = t.five[c[2] as usize];
+    let mut c0 = ((r0 as u16) << 11) | ((g0 as u16) << 5) | b0 as u16;
+    let mut c1 = ((r1 as u16) << 11) | ((g1 as u16) << 5) | b1 as u16;
+    let mut k = 2;
+    if c0 < c1 {
+        std::mem::swap(&mut c0, &mut c1);
+        k = 3;
+    }
+    if c0 == c1 {
+        k = 0;
+    }
+    (c0, c1, k)
+}
+
+/// How much a shift of a block's mean colour counts against an end point pair, per pixel
+/// and squared channel level, besides the per-pixel error: a block that fits its own noise
+/// along a tinted axis (a smooth dark grey picks up green or blue - 565 steps by 8 in red
+/// and blue, and the luma weights make a blue error cheap) shows as a patch of another
+/// colour beside its neighbours, the grain of a dark dashboard (#845), where the pixel
+/// error alone hardly changes.
+const DC_PENALTY: f32 = 0.5;
+
 /// Encode the colour half of a block. `px` are the 16 pixels (RGBA), `mode` how the block
 /// will be read.
 fn encode_colour(px: &[[u8; 4]; 16], mode: ColourMode) -> ([u8; 8], f32) {
@@ -204,25 +233,7 @@ fn encode_colour(px: &[[u8; 4]; 16], mode: ColourMode) -> ([u8; 8], f32) {
         let c = px[first];
         let q = to565([c[0] as f32, c[1] as f32, c[2] as f32]);
         let exact = from565(q) == [c[0] as f32, c[1] as f32, c[2] as f32];
-        let (mut c0, mut c1, mut k) = (q, q, 0u8);
-        if !exact && !transparent {
-            // the 2:1 mix (palette index 2 of the four-colour mode, c0 > c1) of two table
-            // end points; swapped ends make it index 3
-            let t = single_colour();
-            let (r0, r1) = t.five[c[0] as usize];
-            let (g0, g1) = t.six[c[1] as usize];
-            let (b0, b1) = t.five[c[2] as usize];
-            c0 = ((r0 as u16) << 11) | ((g0 as u16) << 5) | b0 as u16;
-            c1 = ((r1 as u16) << 11) | ((g1 as u16) << 5) | b1 as u16;
-            k = 2;
-            if c0 < c1 {
-                std::mem::swap(&mut c0, &mut c1);
-                k = 3;
-            }
-            if c0 == c1 {
-                k = 0;
-            }
-        }
+        let (c0, c1, k) = if !exact && !transparent { flat_ends([c[0], c[1], c[2]]) } else { (q, q, 0u8) };
         // (with transparent pixels the block is in three-colour mode, c0 == c1 = q)
         let mut idx = [k; 16];
         for (i, v) in idx.iter_mut().enumerate() {
@@ -234,6 +245,24 @@ fn encode_colour(px: &[[u8; 4]; 16], mode: ColourMode) -> ([u8; 8], f32) {
         let err = (0..16).filter(|i| use_px & (1 << i) != 0).map(|i| werr(fpx[i], pal[idx[i] as usize])).sum();
         return (write(c0, c1, &idx), err);
     }
+    // the used pixels' mean colour, and what a pair costs for moving it (see DC_PENALTY)
+    let mut mean_u = [0.0f32; 3];
+    let used = (0..16).filter(|i| use_px & (1 << i) != 0).count() as f32;
+    for i in (0..16).filter(|i| use_px & (1 << i) != 0) {
+        for c in 0..3 {
+            mean_u[c] += fpx[i][c] / used;
+        }
+    }
+    let dc_cost = |c0: u16, c1: u16, four: bool, idx: &[u8; 16]| -> f32 {
+        let pal = palette(c0, c1, four);
+        let mut m = [0.0f32; 3];
+        for i in (0..16).filter(|i| use_px & (1 << i) != 0) {
+            for c in 0..3 {
+                m[c] += pal[idx[i] as usize][c] / used;
+            }
+        }
+        DC_PENALTY * used * (0..3).map(|c| (m[c] - mean_u[c]) * (m[c] - mean_u[c])).sum::<f32>()
+    };
     // principal axis of the used pixels (weighted space)
     let sw = [WEIGHTS[0].sqrt(), WEIGHTS[1].sqrt(), WEIGHTS[2].sqrt()];
     let mut mean = [0.0f32; 3];
@@ -330,8 +359,9 @@ fn encode_colour(px: &[[u8; 4]; 16], mode: ColourMode) -> ([u8; 8], f32) {
             let pal = palette(c0, c1, four);
             assign(&fpx, use_px, &pal, n_col, &mut idx)
         };
-        if best.as_ref().map(|b| err < b.0).unwrap_or(true) {
-            best = Some((err, c0, c1, idx));
+        let score = err + dc_cost(c0, c1, four, &idx);
+        if best.as_ref().map(|b| score < b.0).unwrap_or(true) {
+            best = Some((score, c0, c1, idx));
         }
         if err <= 0.0 || (four && c0 == c1) || round + 1 == ROUNDS {
             break;
@@ -345,7 +375,21 @@ fn encode_colour(px: &[[u8; 4]; 16], mode: ColourMode) -> ([u8; 8], f32) {
             None => break,
         }
     }
-    let (err, c0, c1, idx) = best.unwrap();
+    // a smooth block may keep its mean colour better with the flat fit of that mean
+    if !transparent {
+        let m = [0, 1, 2].map(|c| (mean_u[c] + 0.5).clamp(0.0, 255.0) as u8);
+        let (c0, c1, k) = flat_ends(m);
+        let idx = [k; 16];
+        let pal = palette(c0, c1, true);
+        let err: f32 = (0..16).map(|i| werr(fpx[i], pal[k as usize])).sum();
+        let score = err + dc_cost(c0, c1, true, &idx);
+        if best.as_ref().map(|b| score < b.0).unwrap_or(true) {
+            best = Some((score, c0, c1, idx));
+        }
+    }
+    let (_, c0, c1, idx) = best.unwrap();
+    let pal = palette(c0, c1, c0 > c1 || (n_col == 4 && c0 == c1));
+    let err = (0..16).filter(|i| use_px & (1 << i) != 0).map(|i| werr(fpx[i], pal[idx[i] as usize])).sum();
     (write(c0, c1, &idx), err)
 }
 
@@ -738,6 +782,43 @@ mod tests {
             }
         }
         v
+    }
+
+    /// A smooth dark grey with a little noise (a dashboard's plastic, #845) keeps each
+    /// block's mean colour: fitted along the noise, blocks went green or blue by up to five
+    /// levels and the panel looked grainy.
+    #[test]
+    fn smooth_dark_blocks_keep_their_colour() {
+        let (w, h) = (64u32, 64u32);
+        let mut s = 12345u32;
+        let mut rgba = Vec::new();
+        for _ in 0..w * h {
+            s = s.wrapping_mul(1664525).wrapping_add(1013904223);
+            let v = (31 + (s >> 24) % 7) as u8;
+            rgba.extend_from_slice(&[v, v, v + 1, 255]);
+        }
+        let (blk, _, _) = encode(&rgba, w, h, Bc::Bc1 { punch: false });
+        let back = decode(&blk, w, h, Bc::Bc1 { punch: false });
+        let mut shifted = 0;
+        for by in 0..(h / 4) as usize {
+            for bx in 0..(w / 4) as usize {
+                let (mut a, mut b) = ([0i32; 3], [0i32; 3]);
+                for y in 0..4 {
+                    for x in 0..4 {
+                        let o = ((by * 4 + y) * w as usize + bx * 4 + x) * 4;
+                        for c in 0..3 {
+                            a[c] += rgba[o + c] as i32;
+                            b[c] += back[o + c] as i32;
+                        }
+                    }
+                }
+                if (0..3).any(|c| (a[c] - b[c]).abs() > 16 * 5 / 2) {
+                    shifted += 1;
+                }
+            }
+        }
+        assert!(shifted <= 4, "{shifted} of 256 blocks changed colour");
+        assert!(psnr(&rgba, &back, &[0, 1, 2]) > 40.0);
     }
 
     #[test]

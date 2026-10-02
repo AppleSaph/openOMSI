@@ -53,6 +53,9 @@ pub struct Mesh {
     pub materials: Vec<Material>,
     /// Object transform. Identity when the file has none.
     pub transform: Mat4,
+    /// The file gave the transform (an `.o3d` matrix section); an `.x` file or an `.o3d`
+    /// without one has the identity, which says nothing about how it was exported.
+    pub has_transform: bool,
     pub bones: Vec<Bone>,
     pub version: u8,
 }
@@ -207,6 +210,7 @@ pub fn parse_o3d(bytes: &[u8]) -> Result<Mesh, O3dError> {
                 }
                 // File stores rows; row 3 is the translation (D3D convention, row vectors).
                 mesh.transform = Mat4::from_cols_array(&m);
+                mesh.has_transform = true;
             }
             0x54 => {
                 let n = c.u16()? as usize;
