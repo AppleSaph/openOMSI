@@ -1964,6 +1964,10 @@ impl ApplicationHandler for App {
                         }
                     }
                     self.service_msg = self.service_msg.take().filter(|(_, l)| *l > 0.0);
+                    for n in self.notices.iter_mut() {
+                        n.left -= dt;
+                    }
+                    self.notices.retain(|n| n.left > 0.0);
                     if let Some(lan) = self.lan.as_ref() {
                         lines.extend(lan::hud_lines(lan, &self.remotes, self.player.as_ref()));
                     }
@@ -2146,6 +2150,8 @@ impl ApplicationHandler for App {
                             tutorial: self.tutorial.as_ref().filter(|t| !t.hidden && self.game_menu.is_none()).and_then(|t| t.page().map(|p| (p.title.as_str(), p.text.as_str(), p.image.as_deref(), t.at, t.pages.len()))),
                             chat,
                             tags,
+                            notices: &self.notices,
+                            notice_anchor: self.navigator.as_ref().and_then(|n| n.screen_rect()),
                         };
                         ui.draw(r, scene, &frame, dt);
                     }

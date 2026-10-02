@@ -375,6 +375,19 @@ pub(crate) fn command(app: &mut App, from: u32, text: &str) {
                 l.command(1, &format!("auth {}", response(arg.trim(), &pw)));
             }
         }
+        // (host → us) a notification over the navigator for a few seconds: `notify <id>
+        // <seconds> <info|warn|alert> <text>`; the host hears that it was shown (`notify-seen
+        // <id>`): a game that does not know `notify` stays silent, and the host can say it in
+        // the chat instead
+        "notify" if from == 1 => {
+            if let Some((id, n)) = crate::ui::Notice::parse(arg) {
+                log::info!("LAN: the server's notice {id}: {}", n.text);
+                crate::ui::push_notice(&mut app.notices, n);
+                if let Some(l) = app.lan.as_mut() {
+                    l.command(1, &format!("notify-seen {id}"));
+                }
+            }
+        }
         "admin-locked" if from == 1 => app.service_msg = Some(("Too many wrong admin passwords: try again later".into(), 4.0)),
         "admin-ok" if from == 1 => {
             app.is_admin = true;
@@ -520,6 +533,19 @@ pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &
                         }
                     }
                 }
+                // a notification on one player's screen, or everybody's: `notify <id|all> <notice
+                // id> <seconds> <info|warn|alert> <text>` (a game that shows it answers
+                // `notify-seen <notice id>`)
+                "notify" => {
+                    if let Some((who, rest)) = a.trim().split_once(' ') {
+                        if crate::ui::Notice::parse(rest).is_some() {
+                            let ids: Vec<u32> = if who == "all" { lan.peers().map(|p| p.pose.id).filter(|id| *id != lan.my_id).collect() } else { who.parse::<u32>().ok().into_iter().collect() };
+                            for id in ids {
+                                lan.command(id, &format!("notify {}", rest.trim()));
+                            }
+                        }
+                    }
+                }
                 "bringall" => {
                     if let Some((pos, h)) = positions(from) {
                         let ids: Vec<u32> = lan.peers().map(|p| p.pose.id).filter(|id| *id != from && *id != lan.my_id).collect();
@@ -552,6 +578,8 @@ pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &
                 _ => {}
             }
         }
+        // a player's game showed a notification (`notify`): said for the tool that sent it
+        "notify-seen" => log::info!("server: player {from} saw notice {}", arg.trim()),
         _ => log::info!("server: command '{text}' from player {from} not taken"),
     }
 }
