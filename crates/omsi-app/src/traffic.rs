@@ -560,6 +560,8 @@ pub struct Traffic {
     pub weekday: i32,
     /// Street lights on → AI vehicles switch their lights on.
     pub night: bool,
+    /// The light of the day, for the cars' `Envir_Brightness` (see `sync`).
+    pub daylight: Option<omsi_sim::Daylight>,
     next_id: u64,
     /// The last car that started an overtake and when (for chase-camera debugging).
     pub last_overtaker: Option<(u64, f32)>,
@@ -1204,6 +1206,7 @@ impl Traffic {
             time_scale: 1.0,
             weekday: 0,
             night: false,
+            daylight: None,
             next_id: 1,
             last_overtaker: None,
             first_turner: None,
@@ -6698,6 +6701,15 @@ impl Traffic {
         // the GPU at most every half second, a slice of the cars per frame.
         let tick = (self.time as f64 * 2.0) as u64;
         let mut budget = SCRIPT_UPLOAD_BUDGET;
+        // `Envir_Brightness`, which Omsi.exe sets for every road vehicle as for the
+        // player's: the stock buses fade their windows by it at night (left at the engine's
+        // default of 1, an AI bus under the street lamps kept its daytime brown glass)
+        if let Some(d) = self.daylight {
+            for c in self.cars.iter_mut().filter(|c| c.vehicle.ai_visuals) {
+                let b = d.envir_brightness(world.light_map_light_at(c.vehicle.position));
+                c.vehicle.set_var("Envir_Brightness", b);
+            }
+        }
         for c in &mut self.cars {
             // out of sight (`tick` decided): hidden once, then left alone until it comes
             // into view again - its many per-mesh updates were a third of this stage

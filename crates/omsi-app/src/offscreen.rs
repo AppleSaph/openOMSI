@@ -197,7 +197,7 @@ pub(crate) fn run_offscreen(
     let mut service_seconds = 0.0f64;
     let daylight0 = omsi_sim::Daylight::compute(&start_clock(args), envir.as_ref());
     if let Some(p) = player.as_mut() {
-        p.vehicle.set_var("Envir_Brightness", daylight0.brightness);
+        p.vehicle.set_var("Envir_Brightness", daylight0.envir_brightness(world.light_map_light_at(p.vehicle.position)));
         let mut clock = p.vehicle.host.clock.clone();
         let was = clock.time;
         let at_station = at_petrol_station(&world, &p.vehicle);
@@ -278,14 +278,14 @@ pub(crate) fn run_offscreen(
     }
     if let Some(t) = traffic.as_mut() {
         t.day_time = parse_time(&args.time);
-        t.night = omsi_sim::Daylight::compute(
+        let daylight = omsi_sim::Daylight::compute(
             &start_clock(args),
             omsi_content::Envir::load(&args.root.join("envir.cfg"))
                 .ok()
                 .as_ref(),
-        )
-            .brightness
-            < 0.75;
+        );
+        t.night = daylight.brightness < 0.75;
+        t.daylight = Some(daylight);
         t.populate(&world, &renderer, &mut scene, center);
     }
     // OMSI_GROUND_SAMPLE=<csv>: what the wheels stand on every metre along the street lanes

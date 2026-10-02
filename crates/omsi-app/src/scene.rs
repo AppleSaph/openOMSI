@@ -8529,6 +8529,32 @@ impl World {
         }
     }
 
+    /// The colour the tile's night light map (its own part, see [`own_tile_of_light_map`])
+    /// has at `pos` (0..1, bilinear), or `None` where no light map is loaded: the light it
+    /// throws on a vehicle standing there (Omsi.exe samples it at the vehicle's place,
+    /// 0x61378c, for its ambient light and `Envir_Brightness`).
+    pub fn light_map_light_at(&self, pos: DVec3) -> Option<glam::Vec3> {
+        let ts = tile_size();
+        let key = ((pos.x / ts).floor() as i32, (pos.y / ts).floor() as i32);
+        let img = self.light_maps.lock().get(&key).cloned()?;
+        let (w, h) = (img.width as usize, img.height as usize);
+        if w == 0 || h == 0 || img.rgba.len() < w * h * 4 {
+            return None;
+        }
+        let u = ((pos.x / ts - key.0 as f64) * w as f64 - 0.5).clamp(0.0, (w - 1) as f64);
+        let v = ((1.0 - (pos.y / ts - key.1 as f64)) * h as f64 - 0.5).clamp(0.0, (h - 1) as f64);
+        let (x0, y0) = (u.floor() as usize, v.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+        let (fx, fy) = ((u - x0 as f64) as f32, (v - y0 as f64) as f32);
+        let px = |x: usize, y: usize| {
+            let i = (y * w + x) * 4;
+            glam::Vec3::new(img.rgba[i] as f32, img.rgba[i + 1] as f32, img.rgba[i + 2] as f32) / 255.0
+        };
+        let top = px(x0, y0).lerp(px(x1, y0), fx);
+        let bottom = px(x0, y1).lerp(px(x1, y1), fx);
+        Some(top.lerp(bottom, fy))
+    }
+
     /// Fill the light map atlas with the 5x5 tiles around `eye` (when it moved to another
     /// tile or tiles came or went): the splines and `[LightMapMapping]` objects are lit by it
     /// at night as the terrain is.

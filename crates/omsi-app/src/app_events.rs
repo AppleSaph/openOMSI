@@ -552,10 +552,9 @@ impl ApplicationHandler for App {
                     }).unwrap_or(false);
                     // Omsi switches the AI's lights on below a light value of 0.75, before
                     // the street lamps (0.6), and off after them in the morning
-                    t.night = omsi_sim::Daylight::compute(&self.clock, self.envir.as_ref())
-                        .brightness
-                        < 0.75
-                        || gloomy;
+                    let daylight = omsi_sim::Daylight::compute(&self.clock, self.envir.as_ref());
+                    t.night = daylight.brightness < 0.75 || gloomy;
+                    t.daylight = Some(daylight);
                     let __t2 = Instant::now();
                     t.others = lan_outlines(&self.remotes);
                     t.others.extend(own_outlines(self.player.as_ref(), &self.placed));
@@ -1596,7 +1595,8 @@ impl ApplicationHandler for App {
                     self.follow_date();
                 }
                 if let Some(p) = self.player.as_mut() {
-                    p.vehicle.set_var("Envir_Brightness", daylight.brightness);
+                    let lm = self.world.as_ref().and_then(|w| w.light_map_light_at(p.vehicle.position));
+                    p.vehicle.set_var("Envir_Brightness", daylight.envir_brightness(lm));
                     p.vehicle.host.sun_alt = daylight.altitude_deg;
                     if let Some(w) = &self.weather {
                         apply_weather(&mut p.vehicle, w, self.wetness);
