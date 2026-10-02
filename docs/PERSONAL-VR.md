@@ -33,6 +33,8 @@ focus finishes and saves the edit too. Multiplayer continues running, so positio
 the display while parked. The options also offer numeric adjustments and opacity.
 
 **Ctrl+Shift+N** toggles visibility and is editable under **Controls → Keyboard**.
+The VR navigator is off by default for buses without a saved profile. Opening
+placement mode enables it; existing per-bus visibility settings are retained.
 The existing **Shift+N** also works: map, map with stop list, off.
 Placement, size, rotation, opacity and visibility are saved per vehicle file in
 `%USERPROFILE%\.openomsi\vr-navigator.json` (beside the game's settings).

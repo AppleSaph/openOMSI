@@ -20,7 +20,7 @@ pub(crate) struct Placement {
 impl Default for Placement {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             offset: [0.28, 0.65, -0.35],
             width: 0.28,
             yaw: -23.0,
@@ -80,7 +80,7 @@ impl Placement {
             "roll" => self.roll += direction * 2.0,
             "opacity" => self.opacity += direction * 0.05,
             "enabled" => self.enabled = !self.enabled,
-            "reset" => *self = Self::default(),
+            "reset" => *self = Self { enabled: self.enabled, ..Self::default() },
             _ => return,
         }
         *self = self.sanitize();
@@ -418,6 +418,17 @@ impl crate::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigator_starts_hidden_and_reset_preserves_visibility() {
+        let mut p = Placement::default();
+        assert!(!p.enabled);
+        p.adjust("enabled", 1.0);
+        p.adjust("x", 1.0);
+        p.adjust("reset", 1.0);
+        assert!(p.enabled);
+        assert_eq!(p.offset, Placement::default().offset);
+    }
 
     #[test]
     fn standard_driver_camera_distance_is_respected() {
