@@ -391,31 +391,6 @@ fn ray_triangle(o: Vec3, d: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     (t > 0.0).then_some(t)
 }
 
-/// Where along the ray (origin, unit dir) the first solid scenery object is, up to `max`.
-#[allow(dead_code)]
-pub fn first_hit(world: &World, origin: DVec3, dir: DVec3, max: f64) -> Option<f64> {
-    let end = origin + dir * max;
-    let (lo, hi) = (origin.min(end), origin.max(end));
-    let mut free = max;
-    let mut found = false;
-    for (ot, b) in &world.camera_blockers(lo.truncate(), hi.truncate()) {
-        let Some(shape) = ot.camera_shape() else {
-            continue;
-        };
-        let (z0, z1) = (b.pos.z + shape.lo.z as f64 - 1.0, b.pos.z + shape.hi.z as f64 + 1.0);
-        if hi.z < z0 || lo.z > z1 {
-            continue;
-        }
-        if let Some(t) = ray_object(ot, shape, b.pos, &b.xf, origin, dir, free) {
-            if t < free {
-                free = t;
-                found = true;
-            }
-        }
-    }
-    found.then_some(free)
-}
-
 /// How far the camera may go from `pivot` along the unit vector `dir` (at most `want`):
 /// the nearest hit of the five rays with scenery, less the margin, and the point where the
 /// middle ray comes within [`GROUND_CLEARANCE`] of the ground. `right`/`up` span the plane
