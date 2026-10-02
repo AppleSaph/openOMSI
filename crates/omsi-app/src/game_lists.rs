@@ -1012,6 +1012,7 @@ fn toggle_now(app: &App, id: &str) -> Option<bool> {
         "coll_objects" => s.collision_objects,
         "coll_vehicles" => s.collision_vehicles,
         "mouse" => app.mouse_drive,
+        "mouse_right" => s.mouse_right_off,
         "fps" => s.show_fps,
         "get_up" => s.get_up,
         "time_sync" => s.time_sync,
@@ -1116,6 +1117,10 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
             app.mouse_steer = (app.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
             app.mouse_pedals = app.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
             None
+        }
+        "mouse_right" => {
+            app.settings.mouse_right_off = on;
+            Some(("mouse_right_off", bit))
         }
         "get_up" => {
             app.settings.get_up = on;
@@ -1775,6 +1780,7 @@ fn options_pages(app: &App) -> Vec<Page> {
     let controls: Vec<(String, String)> = vec![
         pick("drive_keys", "Driving keys", "Which keys drive the vehicle"),
         switch_row(app, "mouse", "Steering with the mouse", "Steer and control the pedals using the mouse"),
+        switch_row(app, "mouse_right", "A right click ends the mouse steering", "As in OMSI; off: the right button only looks round"),
         slider_row(app, "mouse_sens", "Mouse steering sensitivity", "Adjust how much the steering wheel turns based on mouse movement", &pct),
         switch_row(app, "steering_linear", "Steering linearity (keys at OMSI's steady pace)", "Keyboard steering at OMSI's steady pace"),
         switch_row(app, "old_steering", "Old Steering (the wheel stays, turn it back yourself)", "The wheel stays where the keys left it"),
