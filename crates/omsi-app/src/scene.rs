@@ -6721,18 +6721,8 @@ impl World {
                                         .and_then(|k| strings.get(k))
                                         .cloned()
                                         .unwrap_or_default();
-                                    let (w, h) = (tt.width.max(1) as u32, tt.height.max(1) as u32);
                                     let alpha = text_alpha(o3d_mats, slot, overrides);
-                                    let key = format!(
-                                        "{}|{}|{}x{}|{}|{:?}|{:?}",
-                                        tt.font.to_ascii_lowercase(),
-                                        text,
-                                        w,
-                                        h,
-                                        tt.full_color,
-                                        tt.color,
-                                        alpha
-                                    );
+                                    let key = scenery_text_key(tt, &text, alpha);
                                     if let Some(e) = gpu.text_textures.get_mut(&key) {
                                         e.2 += 1;
                                         let mat = e.1;
@@ -6748,31 +6738,8 @@ impl World {
                                     // drawn as they are: the street name signs that seemed to want
                                     // their text turned by 180° were `.x` meshes whose frames were
                                     // read transposed (upside down), the stop name plates are not
-                                    let rgba = match atlas {
-                                        Some(a) => a.render(
-                                            &text,
-                                            w,
-                                            h,
-                                            tt.full_color,
-                                            [
-                                                tt.color[0] as u8,
-                                                tt.color[1] as u8,
-                                                tt.color[2] as u8,
-                                            ],
-                                        ),
-                                        None => vec![0u8; (w * h * 4) as usize],
-                                    };
-                                    let tex = gpu.add_image(
-                                        renderer,
-                                        scene,
-                                        &Image {
-                                            width: w,
-                                            height: h,
-                                            rgba,
-                                            has_alpha: true,
-                                        },
-                                        false,
-                                    );
+                                    let image = scenery_text_image(tt, atlas, &text);
+                                    let tex = gpu.add_image(renderer, scene, &image, false);
                                     // (lit like the rest of the object: Omsi.exe only swaps
                                     // the slot's texture, a sign does not shine at night)
                                     let mat = renderer.add_material(
@@ -7396,9 +7363,8 @@ impl World {
                     continue;
                 };
                 let text = tt.variable.trim().parse::<usize>().ok().and_then(|k| strings.get(k)).cloned().unwrap_or_default();
-                let (w, h) = (tt.width.max(1) as u32, tt.height.max(1) as u32);
                 let alpha = text_alpha(o3d_mats, slot, overrides);
-                let key = format!("{}|{}|{}x{}|{}|{:?}|{:?}", tt.font.to_ascii_lowercase(), text, w, h, tt.full_color, tt.color, alpha);
+                let key = scenery_text_key(tt, &text, alpha);
                 if let Some(e) = gpu.text_textures.get_mut(&key) {
                     e.2 += 1;
                     let mat = e.1;
@@ -7407,11 +7373,8 @@ impl World {
                     continue;
                 }
                 let atlas = self.fonts.lock().get(&tt.font, &|p| omsi_texture::decode_file(p).ok().map(|i| (i.width, i.height, i.rgba)));
-                let rgba = match atlas {
-                    Some(a) => a.render(&text, w, h, tt.full_color, [tt.color[0] as u8, tt.color[1] as u8, tt.color[2] as u8]),
-                    None => vec![0u8; (w * h * 4) as usize],
-                };
-                let tex = gpu.add_image(renderer, scene, &Image { width: w, height: h, rgba, has_alpha: true }, false);
+                let image = scenery_text_image(tt, atlas, &text);
+                let tex = gpu.add_image(renderer, scene, &image, false);
                 let mat = renderer.add_material(scene, Some(tex), alpha, [1.0; 4], false);
                 let mat = gpu.material(renderer, scene, mat);
                 gpu.text_textures.insert(key.clone(), (tex, mat, 1));
@@ -9644,6 +9607,38 @@ fn text_alpha(materials: &[omsi_o3d::Material], slot: usize, overrides: &[Materi
     match material_alpha(materials, slot, overrides) {
         AlphaMode::Test => AlphaMode::Test,
         _ => AlphaMode::Blend,
+    }
+}
+
+/// Placement is part of the picture: otherwise a centred sign can lend its cached
+/// texture to a left-aligned one showing the same words.
+fn scenery_text_key(tt: &omsi_model::TextTexture, text: &str, alpha: AlphaMode) -> String {
+    format!(
+        "{}|{}|{}x{}|{}|{:?}|{:?}|{}|{}",
+        tt.font.to_ascii_lowercase(),
+        text,
+        tt.width.max(1),
+        tt.height.max(1),
+        tt.full_color,
+        tt.color,
+        alpha,
+        tt.orientation,
+        tt.grid,
+    )
+}
+
+fn scenery_text_image(
+    tt: &omsi_model::TextTexture,
+    atlas: Option<Arc<omsi_content::font::FontAtlas>>,
+    text: &str,
+) -> Image {
+    // Static and scripted text textures use the placement from their definition.
+    let state = omsi_sim::texttex::TextTextureState::new(tt.clone(), atlas);
+    Image {
+        width: tt.width.max(1) as u32,
+        height: tt.height.max(1) as u32,
+        rgba: state.image(text),
+        has_alpha: true,
     }
 }
 
