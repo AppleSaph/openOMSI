@@ -110,44 +110,84 @@ _version: 2
 
 "Force feedback direction":
   de: "Force-Feedback-Richtung"
+  pt: "Direção do force feedback"
+  pt-pt: "Direção do force feedback"
 "Invert force feedback by default":
   de: "Force Feedback standardmäßig invertieren"
+  pt: "Inverter o force feedback por padrão"
+  pt-pt: "Inverter o force feedback por predefinição"
 "Wheels with a saved direction use their own setting under Controls → Game controllers.":
   de: "Lenkräder mit gespeicherter Richtung verwenden ihre eigene Einstellung unter Steuerung → Gamecontroller."
+  pt: "Volantes com uma direção salva usam a própria configuração em Controles → Controles de jogo."
+  pt-pt: "Volantes com uma direção guardada usam a própria configuração em Controlos → Controladores de jogo."
 "INJURY RISK: TAKE YOUR HANDS OFF THE WHEEL. Keep hands and fingers clear before starting and throughout the test.":
   de: "VERLETZUNGSGEFAHR: HÄNDE WEG VOM LENKRAD. Halte Hände und Finger vor dem Start und während des gesamten Tests fern."
+  pt: "RISCO DE LESÃO: TIRE AS MÃOS DO VOLANTE. Mantenha as mãos e os dedos afastados antes de iniciar e durante todo o teste."
+  pt-pt: "RISCO DE LESÃO: RETIRE AS MÃOS DO VOLANTE. Mantenha as mãos e os dedos afastados antes de iniciar e durante todo o teste."
 "The test applies two short forces in opposite directions. Finish and press Save to keep the detected direction for this wheel.":
   de: "Der Test gibt zwei kurze Kraftimpulse in entgegengesetzte Richtungen aus. Schließe den Assistenten ab und drücke Speichern, um die erkannte Richtung für dieses Lenkrad zu übernehmen."
+  pt: "O teste aplica duas forças curtas em direções opostas. Conclua e pressione Salvar para manter a direção detectada para este volante."
+  pt-pt: "O teste aplica duas forças curtas em direções opostas. Conclua e prima Guardar para manter a direção detetada para este volante."
 "Start test":
   de: "Test starten"
+  pt: "Iniciar teste"
+  pt-pt: "Iniciar teste"
 "Test strength":
   de: "Teststärke"
+  pt: "Força do teste"
+  pt-pt: "Força do teste"
 "If the wheel barely moves, increase Test strength and retry. Keep your hands clear.":
   de: "Wenn sich das Lenkrad kaum bewegt, erhöhe die Teststärke und versuche es erneut. Halte deine Hände fern."
+  pt: "Se o volante quase não se mover, aumente a Força do teste e tente novamente. Mantenha as mãos afastadas."
+  pt-pt: "Se o volante quase não se mover, aumente a Força do teste e tente novamente. Mantenha as mãos afastadas."
 "The wheel did not move enough. Retry or choose the direction manually.":
   de: "Das Lenkrad hat sich nicht ausreichend bewegt. Wiederhole den Test oder wähle die Richtung manuell."
+  pt: "O volante não se moveu o suficiente. Tente novamente ou escolha a direção manualmente."
+  pt-pt: "O volante não se moveu o suficiente. Tente novamente ou escolha a direção manualmente."
 "Direction detected: normal":
   de: "Richtung erkannt: normal"
+  pt: "Direção detectada: normal"
+  pt-pt: "Direção detetada: normal"
 "Direction detected: inverted":
   de: "Richtung erkannt: invertiert"
+  pt: "Direção detectada: invertida"
+  pt-pt: "Direção detetada: invertida"
 "Testing: keep your hands off the wheel…":
   de: "Test läuft: Lenkrad nicht anfassen…"
+  pt: "Testando: mantenha as mãos longe do volante…"
+  pt-pt: "A testar: mantenha as mãos afastadas do volante…"
 "If detection is inconclusive, retry or choose the direction manually. You can change it later on this device's page.":
   de: "Wenn die Erkennung nicht eindeutig ist, wiederhole den Test oder wähle die Richtung manuell. Du kannst sie später auf der Seite dieses Geräts ändern."
+  pt: "Se a detecção for inconclusiva, tente novamente ou escolha a direção manualmente. Você pode alterá-la depois na página deste dispositivo."
+  pt-pt: "Se a deteção for inconclusiva, tente novamente ou escolha a direção manualmente. Pode alterá-la mais tarde na página deste dispositivo."
 "The test was interrupted. Please try again.":
   de: "Der Test wurde unterbrochen. Bitte versuche es erneut."
+  pt: "O teste foi interrompido. Tente novamente."
+  pt-pt: "O teste foi interrompido. Tente novamente."
 "The wheel is unavailable. Reconnect it and try again.":
   de: "Das Lenkrad ist nicht verfügbar. Verbinde es erneut und wiederhole den Test."
+  pt: "O volante não está disponível. Reconecte-o e tente novamente."
+  pt-pt: "O volante não está disponível. Volte a ligá-lo e tente novamente."
 "Move the wheel away from its end stops and try again.":
   de: "Drehe das Lenkrad von den Endanschlägen weg und wiederhole den Test."
+  pt: "Afaste o volante dos batentes de fim de curso e tente novamente."
+  pt-pt: "Afaste o volante dos batentes de fim de curso e tente novamente."
 "The wheel did not settle. Let go and try again.":
   de: "Das Lenkrad kam nicht zur Ruhe. Lass es los und wiederhole den Test."
+  pt: "O volante não ficou parado. Solte-o e tente novamente."
+  pt-pt: "O volante não ficou imóvel. Solte-o e tente novamente."
 "The wheel moved too far. Test stopped.":
   de: "Das Lenkrad hat sich zu weit bewegt. Test gestoppt."
+  pt: "O volante se moveu demais. Teste interrompido."
+  pt-pt: "O volante moveu-se demasiado. Teste interrompido."
 "The result is inconclusive. Retry or choose the direction manually.":
   de: "Das Ergebnis ist nicht eindeutig. Wiederhole den Test oder wähle die Richtung manuell."
+  pt: "O resultado é inconclusivo. Tente novamente ou escolha a direção manualmente."
+  pt-pt: "O resultado é inconclusivo. Tente novamente ou escolha a direção manualmente."
 "Force feedback is unavailable. Choose the direction manually.":
   de: "Force Feedback ist nicht verfügbar. Wähle die Richtung manuell."
+  pt: "O force feedback não está disponível. Escolha a direção manualmente."
+  pt-pt: "O force feedback não está disponível. Escolha a direção manualmente."
 
 "Mo":
   ru: "Пн"
@@ -6029,6 +6069,7 @@ _version: 2
   pt: "Mãos do motorista na vista da cabine"
   es: "Manos del conductor en la vista de cabina"
   fr: "Mains du conducteur dans la vue cabine"
+  pt-pt: "Mãos do condutor na vista da cabine"
 "Camera glides between viewpoints":
   ru: "Плавный переход между обзорами"
   de: "Weiche Übergänge in Fahrersicht"
@@ -6054,6 +6095,7 @@ _version: 2
   id: "Transisi halus antar sudut pandang"
   ms: "Peralihan lancar antara sudut pandangan"
   tl: "Maayos na paglipat sa pagitan ng mga tanaw"
+  pt-pt: "Transições suaves entre as vistas"
 "Throttle":
   ru: "Газ"
   de: "Gas"
@@ -9266,7 +9308,7 @@ _version: 2
   hu: "Gyorsmentés betöltése"
   es: "Cargar el guardado rápido"
   pt: "Carregar o salvamento rápido"
-  pt-pt: "Carregar o gravação rápida"
+  pt-pt: "Carregar a gravação rápida"
   it: "Carica il salvataggio rapido"
   nl: "Snel opgeslagen situatie laden"
   tr: "Hızlı kaydı yükle"
@@ -9519,16 +9561,22 @@ _version: 2
   fr: "Copier le code du serveur"
   ru: "Копировать код сервера"
   es: "Copiar código del servidor"
+  pt: "Copiar código do servidor"
+  pt-pt: "Copiar código do servidor"
 "Server code copied":
   de: "Servercode kopiert"
   fr: "Code du serveur copié"
   ru: "Код сервера скопирован"
   es: "Código del servidor copiado"
+  pt: "Código do servidor copiado"
+  pt-pt: "Código do servidor copiado"
 "Server code":
   de: "Servercode"
   fr: "Code du serveur"
   ru: "Код сервера"
   es: "Código del servidor"
+  pt: "Código do servidor"
+  pt-pt: "Código do servidor"
 "Object editor":
   ru: "Редактор объектов"
   de: "Objekteditor"
@@ -16567,7 +16615,7 @@ _version: 2
   hu: "Dőlésvezérlés be: told úgy a telefont, mint egy kormányt"
   es: "Dirección por inclinación activada: sujeta el teléfono como un volante"
   pt: "Direção por inclinação ligada: segure o celular como um volante"
-  pt-pt: "Direção por inclinação ligada: segure o celular como um volante"
+  pt-pt: "Direção por inclinação ligada: segure o telemóvel como um volante"
   it: "Sterzo a inclinazione attivo: tieni il telefono come un volante"
   nl: "Sturen door kantelen aan: houd de telefoon als een stuurwiel vast"
   tr: "Eğerek direksiyon açık: telefonu direksiyon gibi tutun"
@@ -19153,6 +19201,7 @@ _version: 2
   pt: "Direção"
   es: "Conducción"
   fr: "Conduite"
+  pt-pt: "Condução"
 "Camera":
   ru: "Камера"
   de: "Kamera"
@@ -19161,6 +19210,7 @@ _version: 2
   pt: "Câmera"
   es: "Cámara"
   fr: "Caméra"
+  pt-pt: "Câmara"
 "Sound":
   ru: "Звук"
   de: "Ton"
@@ -19169,6 +19219,7 @@ _version: 2
   pt: "Som"
   es: "Sonido"
   fr: "Son"
+  pt-pt: "Som"
 "Gameplay":
   ru: "Игровой процесс"
   de: "Spielablauf"
@@ -19177,6 +19228,7 @@ _version: 2
   pt: "Jogabilidade"
   es: "Jugabilidad"
   fr: "Jouabilité"
+  pt-pt: "Jogabilidade"
 "General":
   ru: "Общие"
   de: "Allgemein"
@@ -19185,6 +19237,7 @@ _version: 2
   pt: "Geral"
   es: "General"
   fr: "Général"
+  pt-pt: "Geral"
 "Display":
   ru: "Экран"
   de: "Anzeige"
@@ -19193,6 +19246,7 @@ _version: 2
   pt: "Tela"
   es: "Pantalla"
   fr: "Affichage"
+  pt-pt: "Ecrã"
 "Keyboard & mouse":
   ru: "Клавиатура и мышь"
   de: "Tastatur & Maus"
@@ -19201,6 +19255,7 @@ _version: 2
   pt: "Teclado e mouse"
   es: "Teclado y ratón"
   fr: "Clavier et souris"
+  pt-pt: "Teclado e rato"
 "Outside views":
   ru: "Внешние виды"
   de: "Außenansichten"
@@ -19209,6 +19264,7 @@ _version: 2
   pt: "Vistas externas"
   es: "Vistas exteriores"
   fr: "Vues extérieures"
+  pt-pt: "Vistas exteriores"
 "Change the keys":
   ru: "Изменить клавиши"
   de: "Tasten ändern"
@@ -19217,6 +19273,7 @@ _version: 2
   pt: "Alterar as teclas"
   es: "Cambiar las teclas"
   fr: "Modifier les touches"
+  pt-pt: "Alterar as teclas"
 "Set up a wheel or pedals":
   ru: "Настроить руль или педали"
   de: "Lenkrad oder Pedale einrichten"
@@ -19225,6 +19282,7 @@ _version: 2
   pt: "Configurar volante ou pedais"
   es: "Configurar volante o pedales"
   fr: "Configurer un volant ou un pédalier"
+  pt-pt: "Configurar volante ou pedais"
 "Change the VR keys":
   ru: "Изменить клавиши VR"
   de: "VR-Tasten ändern"
@@ -19233,6 +19291,7 @@ _version: 2
   pt: "Alterar as teclas de VR"
   es: "Cambiar las teclas de VR"
   fr: "Modifier les touches VR"
+  pt-pt: "Alterar as teclas de VR"
 "Interface size":
   ru: "Размер интерфейса"
   de: "Größe der Oberfläche"
@@ -19241,6 +19300,7 @@ _version: 2
   pt: "Tamanho da interface"
   es: "Tamaño de la interfaz"
   fr: "Taille de l'interface"
+  pt-pt: "Tamanho da interface"
 "Game interface size":
   ru: "Размер интерфейса в игре"
   de: "Größe der Spieloberfläche"
@@ -19249,6 +19309,7 @@ _version: 2
   pt: "Tamanho da interface do jogo"
   es: "Tamaño de la interfaz del juego"
   fr: "Taille de l'interface du jeu"
+  pt-pt: "Tamanho da interface do jogo"
 "Display & sound":
   ru: "Экран и звук"
   de: "Anzeige & Ton"
@@ -19257,6 +19318,7 @@ _version: 2
   pt: "Tela e som"
   es: "Pantalla y sonido"
   fr: "Affichage et son"
+  pt-pt: "Ecrã e som"
 "Page":
   ru: "Страница"
   de: "Seite"
@@ -19265,6 +19327,7 @@ _version: 2
   pt: "Página"
   es: "Página"
   fr: "Page"
+  pt-pt: "Página"
 "Enter next":
   ru: "Enter — далее"
   de: "Enter weiter"
@@ -19273,6 +19336,7 @@ _version: 2
   pt: "Enter avança"
   es: "Enter siguiente"
   fr: "Entrée suivante"
+  pt-pt: "Enter avança"
 "Page Up back":
   ru: "Page Up — назад"
   de: "Page Up zurück"
@@ -19281,6 +19345,7 @@ _version: 2
   pt: "Page Up volta"
   es: "Page Up atrás"
   fr: "Page Up retour"
+  pt-pt: "Page Up recua"
 "Ctrl+T hide":
   ru: "Ctrl+T — скрыть"
   de: "Strg+T ausblenden"
@@ -19289,6 +19354,7 @@ _version: 2
   pt: "Ctrl+T oculta"
   es: "Ctrl+T ocultar"
   fr: "Ctrl+T masquer"
+  pt-pt: "Ctrl+T oculta"
 "newer below":
   ru: "новых ниже"
   de: "neuere darunter"
@@ -19297,6 +19363,7 @@ _version: 2
   pt: "mais novas abaixo"
   es: "más nuevos abajo"
   fr: "plus récents en dessous"
+  pt-pt: "mais recentes abaixo"
 "Not sent":
   ru: "Не отправлено"
   de: "Nicht gesendet"
@@ -19305,6 +19372,7 @@ _version: 2
   pt: "Não enviada"
   es: "No enviado"
   fr: "Non envoyé"
+  pt-pt: "Não enviada"
 "Mouse steering sensitivity":
   ru: "Чувствительность руления мышью"
   de: "Empfindlichkeit der Maussteuerung"
@@ -19313,6 +19381,7 @@ _version: 2
   pt: "Sensibilidade da direção com o mouse"
   es: "Sensibilidad de la dirección con el ratón"
   fr: "Sensibilité de la direction à la souris"
+  pt-pt: "Sensibilidade da direção com o rato"
 "Mouse steering sensitivity (O)":
   ru: "Чувствительность руления мышью (O)"
   de: "Empfindlichkeit der Maussteuerung (O)"
@@ -19321,6 +19390,7 @@ _version: 2
   pt: "Sensibilidade da direção com o mouse (O)"
   es: "Sensibilidad de la dirección con el ratón (O)"
   fr: "Sensibilité de la direction à la souris (O)"
+  pt-pt: "Sensibilidade da direção com o rato (O)"
 "On":
   ru: "Вкл."
   de: "An"
@@ -19355,6 +19425,7 @@ _version: 2
   pt: "Opacidade da interface"
   es: "Opacidad de la interfaz"
   fr: "Opacité de l'interface"
+  pt-pt: "Opacidade da interface"
 "Interface grows with the window":
   ru: "Интерфейс растёт вместе с окном"
   de: "Oberfläche wächst mit dem Fenster"
@@ -19363,6 +19434,7 @@ _version: 2
   pt: "Interface cresce com a janela"
   es: "La interfaz crece con la ventana"
   fr: "L'interface grandit avec la fenêtre"
+  pt-pt: "A interface cresce com a janela"
 "Notes in the top-left corner":
   ru: "Заметки в левом верхнем углу"
   de: "Hinweise oben links"
@@ -19371,6 +19443,7 @@ _version: 2
   pt: "Avisos no canto superior esquerdo"
   es: "Avisos en la esquina superior izquierda"
   fr: "Messages en haut à gauche"
+  pt-pt: "Avisos no canto superior esquerdo"
 
 "Choose a bus":
   de: "Bus auswählen"
@@ -20552,14 +20625,24 @@ _version: 2
   tl: "+{} pa"
 "Teleport to a start point":
   de: "Zu einem Startpunkt teleportieren"
+  pt: "Teleportar para um ponto inicial"
+  pt-pt: "Teletransportar para um ponto inicial"
 "Teleport to a start point...":
   de: "Zu einem Startpunkt teleportieren..."
+  pt: "Teleportar para um ponto inicial..."
+  pt-pt: "Teletransportar para um ponto inicial..."
 "Teleport to a starting point on the map":
   de: "Teleportiere dich zu einem Startpunkt der Karte"
+  pt: "Teleportar para um ponto inicial do mapa"
+  pt-pt: "Teletransportar para um ponto inicial do mapa"
 "This map has no entry points":
   de: "Diese Karte hat keine Einstiegspunkte"
+  pt: "Este mapa não tem pontos de entrada"
+  pt-pt: "Este mapa não tem pontos de entrada"
 "entry":
   de: "Einstieg"
+  pt: "entrada"
+  pt-pt: "entrada"
 "Earlier":
   ru: "Раньше"
   de: "Früher"
@@ -20664,3 +20747,711 @@ _version: 2
   id: "Aktifkan/nonaktifkan pengontrol game"
   ms: "Hidup/matikan pengawal permainan"
   tl: "I-on/i-off ang mga game controller"
+
+"Continue":
+  pt: "Continuar"
+  pt-pt: "Continuar"
+
+"Join and drive":
+  pt: "Entrar e dirigir"
+  pt-pt: "Entrar e conduzir"
+
+"The game is running":
+  pt: "O jogo está em execução"
+  pt-pt: "O jogo está em execução"
+
+"Type the server's address (an IP, a name or a link)":
+  pt: "Digite o endereço do servidor (um IP, um nome ou um link)"
+  pt-pt: "Introduza o endereço do servidor (um IP, um nome ou uma ligação)"
+
+"Saved profile":
+  pt: "Perfil salvo"
+  pt-pt: "Perfil guardado"
+
+"Load":
+  pt: "Carregar"
+  pt-pt: "Carregar"
+
+"Profile name":
+  pt: "Nome do perfil"
+  pt-pt: "Nome do perfil"
+
+"Save current graphics as profile":
+  pt: "Salvar os gráficos atuais como perfil"
+  pt-pt: "Guardar os gráficos atuais como perfil"
+
+"OMSI's shadow meshes (under vehicles)":
+  pt: "Malhas de sombra do OMSI (sob os veículos)"
+  pt-pt: "Malhas de sombra do OMSI (sob os veículos)"
+
+"Dynamic steering (slower keys at speed, OMSI's redSteerSpd)":
+  pt: "Direção dinâmica (teclas mais lentas em velocidade, redSteerSpd do OMSI)"
+  pt-pt: "Direção dinâmica (teclas mais lentas em velocidade, redSteerSpd do OMSI)"
+
+"Driver's view turns with the steering":
+  pt: "A visão do motorista acompanha a direção"
+  pt-pt: "A vista do condutor acompanha a direção"
+
+"Right mouse button turns the view, Shift+right zooms (off: right zooms as in OMSI, the wheel button turns)":
+  pt: "O botão direito do mouse gira a visão; Shift+botão direito aplica zoom (desativado: o botão direito aplica zoom como no OMSI e o botão do meio gira a visão)"
+  pt-pt: "O botão direito do rato roda a vista; Shift+botão direito aplica zoom (desativado: o botão direito aplica zoom como no OMSI e o botão do meio roda a vista)"
+
+"Sync the clock with the real time (locks the time)":
+  pt: "Sincronizar o relógio com a hora real (bloqueia o horário)"
+  pt-pt: "Sincronizar o relógio com a hora real (bloqueia a hora)"
+
+"Sync the weather with METAR (locks the weather)":
+  pt: "Sincronizar o clima com o METAR (bloqueia o clima)"
+  pt-pt: "Sincronizar a meteorologia com o METAR (bloqueia a meteorologia)"
+
+"Time speed (not in multiplayer or with the real-time sync)":
+  pt: "Velocidade do tempo (indisponível no multiplayer ou com sincronização em tempo real)"
+  pt-pt: "Velocidade do tempo (indisponível no multijogador ou com sincronização em tempo real)"
+
+"On a server its clock and weather are the server's":
+  pt: "Em um servidor, o horário e o clima são definidos pelo servidor"
+  pt-pt: "Num servidor, a hora e a meteorologia são definidas pelo servidor"
+
+"Search…":
+  pt: "Pesquisar…"
+  pt-pt: "Pesquisar…"
+
+"The map has no lines to drive.":
+  pt: "O mapa não tem linhas disponíveis para dirigir."
+  pt-pt: "O mapa não tem linhas disponíveis para conduzir."
+
+"Lines of the timetable":
+  pt: "Linhas do horário"
+  pt-pt: "Linhas do horário"
+
+"Choose a line first.":
+  pt: "Escolha uma linha primeiro."
+  pt-pt: "Escolha primeiro uma linha."
+
+"Done":
+  pt: "Concluir"
+  pt-pt: "Concluir"
+
+"Leave":
+  pt: "Sair"
+  pt-pt: "Sair"
+
+"A friend's code or a server address":
+  pt: "Código de um amigo ou endereço de servidor"
+  pt-pt: "Código de um amigo ou endereço de servidor"
+
+"Type the code your friend's game shows (or a server's address)":
+  pt: "Digite o código exibido no jogo do seu amigo (ou o endereço de um servidor)"
+  pt-pt: "Introduza o código apresentado no jogo do seu amigo (ou o endereço de um servidor)"
+
+"Choose your bus and press Start to join your friend":
+  pt: "Escolha seu ônibus e pressione Iniciar para entrar com seu amigo"
+  pt-pt: "Escolha o seu autocarro e prima Iniciar para entrar com o seu amigo"
+
+"Host my next game":
+  pt: "Hospedar meu próximo jogo"
+  pt-pt: "Alojar o meu próximo jogo"
+
+"Your next game is hosted: its code shows in the game for your friends":
+  pt: "Seu próximo jogo será hospedado: o código aparecerá no jogo para seus amigos"
+  pt-pt: "O seu próximo jogo será alojado: o código aparecerá no jogo para os seus amigos"
+
+"More servers: add them by their address in the desktop launcher, or type one above.":
+  pt: "Mais servidores: adicione-os pelo endereço no launcher de desktop ou digite um acima."
+  pt-pt: "Mais servidores: adicione-os pelo endereço no launcher de ambiente de trabalho ou introduza um acima."
+
+"Weather cycle":
+  pt: "Ciclo de clima"
+  pt-pt: "Ciclo meteorológico"
+
+"Clear the AI traffic (a jam)":
+  pt: "Limpar o tráfego da IA (congestionamento)"
+  pt-pt: "Limpar o tráfego da IA (engarrafamento)"
+
+"The time speed is fixed while the real-time sync is on":
+  pt: "A velocidade do tempo fica fixa enquanto a sincronização em tempo real está ativa"
+  pt-pt: "A velocidade do tempo fica fixa enquanto a sincronização em tempo real está ativa"
+
+"Nothing to set here":
+  pt: "Nada para configurar aqui"
+  pt-pt: "Nada para configurar aqui"
+
+"This bus has no depot file (.hof) with destinations":
+  pt: "Este ônibus não tem arquivo de garagem (.hof) com destinos"
+  pt-pt: "Este autocarro não tem ficheiro de garagem (.hof) com destinos"
+
+"This bus has no depot files (.hof)":
+  pt: "Este ônibus não tem arquivos de garagem (.hof)"
+  pt-pt: "Este autocarro não tem ficheiros de garagem (.hof)"
+
+"Choose the stop to start from":
+  pt: "Escolha a parada de onde começar"
+  pt-pt: "Escolha a paragem de onde começar"
+
+"Start trip":
+  pt: "Iniciar viagem"
+  pt-pt: "Iniciar viagem"
+
+"Administration":
+  pt: "Administração"
+  pt-pt: "Administração"
+
+"The time cannot be changed while the real-time sync is on":
+  pt: "O horário não pode ser alterado enquanto a sincronização em tempo real estiver ativa"
+  pt-pt: "A hora não pode ser alterada enquanto a sincronização em tempo real estiver ativa"
+
+"The bus stands at the start point":
+  pt: "O ônibus está no ponto inicial"
+  pt-pt: "O autocarro está no ponto inicial"
+
+"That start point is not in the map":
+  pt: "Esse ponto inicial não está no mapa"
+  pt-pt: "Esse ponto inicial não está no mapa"
+
+"The weather cannot be changed while the METAR sync is on":
+  pt: "O clima não pode ser alterado enquanto a sincronização METAR estiver ativa"
+  pt-pt: "A meteorologia não pode ser alterada enquanto a sincronização METAR estiver ativa"
+
+"Automatic (nearest the map)":
+  pt: "Automático (mais próximo do mapa)"
+  pt-pt: "Automático (mais próximo do mapa)"
+
+"Reset all settings":
+  pt: "Redefinir todas as configurações"
+  pt-pt: "Repor todas as definições"
+
+"Enables/Disables the Minimap":
+  pt: "Ativa/desativa o minimapa"
+  pt-pt: "Ativa/desativa o minimapa"
+
+"Shows/hides the other (AI) vehicles on the Minimap and the city map":
+  pt: "Mostra/oculta os outros veículos (IA) no minimapa e no mapa da cidade"
+  pt-pt: "Mostra/oculta os outros veículos (IA) no minimapa e no mapa da cidade"
+
+"Shows OMSI 2's route arrows over the road":
+  pt: "Mostra as setas de rota do OMSI 2 sobre a via"
+  pt-pt: "Mostra as setas de rota do OMSI 2 sobre a via"
+
+"Allows you to get out of the car and explore the world":
+  pt: "Permite sair do veículo e explorar o mundo"
+  pt-pt: "Permite sair do veículo e explorar o mundo"
+
+"Enables/disables collisions with objects such as buildings, streetlights, etc.":
+  pt: "Ativa/desativa colisões com objetos como prédios, postes etc."
+  pt-pt: "Ativa/desativa colisões com objetos como edifícios, candeeiros etc."
+
+"Enables/Disables Collisions with Other Vehicles":
+  pt: "Ativa/desativa colisões com outros veículos"
+  pt-pt: "Ativa/desativa colisões com outros veículos"
+
+"Enables/disables knocking down people":
+  pt: "Ativa/desativa colisões com pedestres"
+  pt-pt: "Ativa/desativa colisões com peões"
+
+"Timetable window":
+  pt: "Janela do horário"
+  pt-pt: "Janela do horário"
+
+"Displays a list of all stops (only when a tour is active)":
+  pt: "Exibe uma lista de todas as paradas (somente com um serviço ativo)"
+  pt-pt: "Apresenta uma lista de todas as paragens (apenas com um serviço ativo)"
+
+"Displays information such as the time, speed, and other details at the top of the screen":
+  pt: "Exibe informações como horário, velocidade e outros detalhes no topo da tela"
+  pt-pt: "Apresenta informações como hora, velocidade e outros detalhes no topo do ecrã"
+
+"No change is given at the cash desk":
+  pt: "Não há troco na bilheteria"
+  pt-pt: "Não há troco na bilheteira"
+
+"Enables/Disabled shadows":
+  pt: "Ativa/desativa as sombras"
+  pt-pt: "Ativa/desativa as sombras"
+
+"The ground and large walls get fine grain when close":
+  pt: "O chão e paredes grandes ganham mais detalhes de perto"
+  pt-pt: "O chão e paredes grandes ganham mais detalhe de perto"
+
+"How strongly the dots of LED destination displays glow":
+  pt: "Intensidade do brilho dos pontos dos letreiros LED"
+  pt-pt: "Intensidade do brilho dos pontos dos destinos LED"
+
+"LED mask mipmaps":
+  pt: "Mipmaps das máscaras LED"
+  pt-pt: "Mipmaps das máscaras LED"
+
+"Keep the mip chain of the LED masks (smoother from a distance).":
+  pt: "Mantém a cadeia de mipmaps das máscaras LED (mais suave à distância)."
+  pt-pt: "Mantém a cadeia de mipmaps das máscaras LED (mais suave à distância)."
+
+"Switches the window between windowed and fullscreen":
+  pt: "Alterna a janela entre modo janela e tela cheia"
+  pt-pt: "Alterna a janela entre modo janela e ecrã inteiro"
+
+"Waits for the screen's refresh":
+  pt: "Aguarda a atualização da tela"
+  pt-pt: "Aguarda a atualização do ecrã"
+
+"Show the frames per second in the top right corner":
+  pt: "Mostra os quadros por segundo no canto superior direito"
+  pt-pt: "Mostra os fotogramas por segundo no canto superior direito"
+
+"Set how loud the game should be":
+  pt: "Define o volume geral do jogo"
+  pt-pt: "Define o volume geral do jogo"
+
+"How loud the other vehicles are":
+  pt: "Volume dos outros veículos"
+  pt-pt: "Volume dos outros veículos"
+
+"How loud the sounds of the scenery are":
+  pt: "Volume dos sons do cenário"
+  pt-pt: "Volume dos sons do cenário"
+
+"Approaching sounds higher, receding ones lower":
+  pt: "Sons que se aproximam ficam mais agudos e os que se afastam mais graves"
+  pt-pt: "Sons que se aproximam ficam mais agudos e os que se afastam mais graves"
+
+"The view moves with the vehicle's acceleration":
+  pt: "A visão se move com a aceleração do veículo"
+  pt-pt: "A vista move-se com a aceleração do veículo"
+
+"Smooth viewpoint changes":
+  pt: "Transições suaves entre pontos de vista"
+  pt-pt: "Transições suaves entre pontos de vista"
+
+"Enables a smooth transition between camera perspectives":
+  pt: "Ativa uma transição suave entre as perspectivas da câmera"
+  pt-pt: "Ativa uma transição suave entre as perspetivas da câmara"
+
+"The outside camera cannot pass through objects":
+  pt: "A câmera externa não atravessa objetos"
+  pt-pt: "A câmara exterior não atravessa objetos"
+
+"View turns with steering":
+  pt: "A visão acompanha a direção"
+  pt-pt: "A vista acompanha a direção"
+
+"Camera turns with the steering wheel (cockpit only)":
+  pt: "A câmera gira com o volante (somente na cabine)"
+  pt-pt: "A câmara roda com o volante (apenas na cabine)"
+
+"How far the view turns at full steering lock":
+  pt: "Quanto a visão gira com o volante no fim de curso"
+  pt-pt: "Quanto a vista roda com o volante no fim de curso"
+
+"How quickly the view follows the steering":
+  pt: "Velocidade com que a visão acompanha a direção"
+  pt-pt: "Velocidade com que a vista acompanha a direção"
+
+"Shows the driver's hand on the steering wheel (Cockpit only)":
+  pt: "Mostra a mão do motorista no volante (somente na cabine)"
+  pt-pt: "Mostra a mão do condutor no volante (apenas na cabine)"
+
+"Shows the driver in the outside views and in the mirrors":
+  pt: "Mostra o motorista nas vistas externas e nos retrovisores"
+  pt-pt: "Mostra o condutor nas vistas exteriores e nos retrovisores"
+
+"Right mouse button turns the view":
+  pt: "O botão direito do mouse gira a visão"
+  pt-pt: "O botão direito do rato roda a vista"
+
+"Shift+right zooms; off: right zooms as in OMSI, the wheel button turns":
+  pt: "Shift+botão direito aplica zoom; desativado: o botão direito aplica zoom como no OMSI e o botão do meio gira a visão"
+  pt-pt: "Shift+botão direito aplica zoom; desativado: o botão direito aplica zoom como no OMSI e o botão do meio roda a vista"
+
+"The view angle of the views from the vehicle":
+  pt: "Ângulo de visão das câmeras do veículo"
+  pt-pt: "Ângulo de visão das vistas do veículo"
+
+"Seat forward and back":
+  pt: "Banco para frente e para trás"
+  pt-pt: "Banco para a frente e para trás"
+
+"Adjust the driver's seat position forward or backward":
+  pt: "Ajusta a posição do banco do motorista para frente ou para trás"
+  pt-pt: "Ajusta a posição do banco do condutor para a frente ou para trás"
+
+"Seat height":
+  pt: "Altura do banco"
+  pt-pt: "Altura do banco"
+
+"Adjust the driver's seat height":
+  pt: "Ajusta a altura do banco do motorista"
+  pt-pt: "Ajusta a altura do banco do condutor"
+
+"Seat left and right":
+  pt: "Banco para a esquerda e direita"
+  pt-pt: "Banco para a esquerda e direita"
+
+"Adjust the driver's seat position from side to side":
+  pt: "Ajusta a posição lateral do banco do motorista"
+  pt-pt: "Ajusta a posição lateral do banco do condutor"
+
+"Put the seat back where the vehicle has it.":
+  pt: "Restaura o banco à posição definida pelo veículo."
+  pt-pt: "Repõe o banco na posição definida pelo veículo."
+
+"Steer and control the pedals using the mouse":
+  pt: "Esterce e controle os pedais usando o mouse"
+  pt-pt: "Vire e controle os pedais usando o rato"
+
+"Adjust how much the steering wheel turns based on mouse movement":
+  pt: "Ajusta quanto o volante gira com o movimento do mouse"
+  pt-pt: "Ajusta quanto o volante roda com o movimento do rato"
+
+"Keyboard steering at OMSI's steady pace":
+  pt: "Direção pelo teclado no ritmo constante do OMSI"
+  pt-pt: "Direção pelo teclado ao ritmo constante do OMSI"
+
+"The wheel stays where the keys left it":
+  pt: "O volante permanece onde as teclas o deixaram"
+  pt-pt: "O volante permanece onde as teclas o deixaram"
+
+"The steering keys act slower at speed":
+  pt: "As teclas de direção atuam mais lentamente em velocidade"
+  pt-pt: "As teclas de direção atuam mais lentamente em velocidade"
+
+"Enable force feedback for the steering wheel and vibration for controllers":
+  pt: "Ativa o force feedback do volante e a vibração dos controles"
+  pt-pt: "Ativa o force feedback do volante e a vibração dos controladores"
+
+"For wheels without a saved direction":
+  pt: "Para volantes sem uma direção salva"
+  pt-pt: "Para volantes sem uma direção guardada"
+
+"The steering wheel's own rotation, lock to lock":
+  pt: "Rotação própria do volante, de batente a batente"
+  pt-pt: "Rotação própria do volante, de batente a batente"
+
+"How far the wheel turns for the vehicle's full lock":
+  pt: "Quanto o volante gira até o esterçamento máximo do veículo"
+  pt-pt: "Quanto o volante roda até ao esterçamento máximo do veículo"
+
+"Adjust how strongly pedal input affects the throttle":
+  pt: "Ajusta quanto a entrada do pedal afeta o acelerador"
+  pt-pt: "Ajusta quanto a entrada do pedal afeta o acelerador"
+
+"Adjust how strongly pedal input affects the brake":
+  pt: "Ajusta quanto a entrada do pedal afeta o freio"
+  pt-pt: "Ajusta quanto a entrada do pedal afeta o travão"
+
+"Keyboard brake stays on":
+  pt: "O freio do teclado permanece acionado"
+  pt-pt: "O travão do teclado permanece acionado"
+
+"Keep the brake applied until the throttle is pressed":
+  pt: "Mantém o freio acionado até o acelerador ser pressionado"
+  pt-pt: "Mantém o travão acionado até o acelerador ser pressionado"
+
+"Automatically operate the clutch for you":
+  pt: "Opera a embreagem automaticamente"
+  pt-pt: "Opera a embraiagem automaticamente"
+
+"Translates texts nobody has translated, on this machine":
+  pt: "Traduz nesta máquina os textos que ninguém traduziu"
+  pt-pt: "Traduz nesta máquina os textos que ninguém traduziu"
+
+"The size of the texts, the menu, the timetable and the navigator":
+  pt: "Tamanho dos textos, do menu, do horário e do navegador"
+  pt-pt: "Tamanho dos textos, do menu, do horário e do navegador"
+
+"On a window taller than 1080p the interface grows with it":
+  pt: "Em uma janela maior que 1080p, a interface cresce junto"
+  pt-pt: "Numa janela maior que 1080p, a interface cresce com ela"
+
+"How much of the interface's backgrounds shows":
+  pt: "Quanto dos fundos da interface fica visível"
+  pt-pt: "Quanto dos fundos da interface fica visível"
+
+"Shows the name of what the cursor points at":
+  pt: "Mostra o nome do item apontado pelo cursor"
+  pt-pt: "Mostra o nome do item apontado pelo cursor"
+
+"Why the vehicle does not move, the change due, what a service did":
+  pt: "Mostra por que o veículo não se move, o troco devido e o que um serviço fez"
+  pt-pt: "Mostra porque o veículo não se move, o troco devido e o que um serviço fez"
+
+"Shows the chat of a LAN session":
+  pt: "Mostra o chat de uma sessão LAN"
+  pt-pt: "Mostra o chat de uma sessão LAN"
+
+"Shows the names of the other players":
+  pt: "Mostra os nomes dos outros jogadores"
+  pt-pt: "Mostra os nomes dos outros jogadores"
+
+"Switch":
+  pt: "Trocar"
+  pt-pt: "Trocar"
+
+"Take the wheel of another vehicle standing in the world":
+  pt: "Assumir o controle de outro veículo no mundo"
+  pt-pt: "Assumir o controlo de outro veículo no mundo"
+
+"Couple the vehicle to the one in front of or behind it":
+  pt: "Acopla o veículo ao que está à frente ou atrás"
+  pt-pt: "Acopla o veículo ao que está à frente ou atrás"
+
+"Separate the coupled vehicles":
+  pt: "Separa os veículos acoplados"
+  pt-pt: "Separa os veículos acoplados"
+
+"Get up and out":
+  pt: "Levantar e sair"
+  pt-pt: "Levantar e sair"
+
+"Get out":
+  pt: "Sair"
+  pt-pt: "Sair"
+
+"Step out of your car and explore the world":
+  pt: "Saia do veículo e explore o mundo"
+  pt-pt: "Saia do veículo e explore o mundo"
+
+"Remove this vehicle":
+  pt: "Remover este veículo"
+  pt-pt: "Remover este veículo"
+
+"Remove":
+  pt: "Remover"
+  pt-pt: "Remover"
+
+"Removes the current vehicle":
+  pt: "Remove o veículo atual"
+  pt-pt: "Remove o veículo atual"
+
+"Removes all vehicles you've placed from the world":
+  pt: "Remove do mundo todos os veículos que você colocou"
+  pt-pt: "Remove do mundo todos os veículos que colocou"
+
+"Fills the tank of the current vehicle":
+  pt: "Abastece o tanque do veículo atual"
+  pt-pt: "Abastece o depósito do veículo atual"
+
+"Cleans the current vehicle":
+  pt: "Limpa o veículo atual"
+  pt-pt: "Limpa o veículo atual"
+
+"Repairs the current vehicle":
+  pt: "Repara o veículo atual"
+  pt-pt: "Repara o veículo atual"
+
+"Put back on its wheels":
+  pt: "Colocar de volta sobre as rodas"
+  pt-pt: "Voltar a colocar sobre as rodas"
+
+"Return the vehicle to an upright position":
+  pt: "Coloca o veículo novamente na posição normal"
+  pt-pt: "Volta a colocar o veículo na posição normal"
+
+"Move on the map":
+  pt: "Mover no mapa"
+  pt-pt: "Mover no mapa"
+
+"Pick":
+  pt: "Escolher"
+  pt-pt: "Escolher"
+
+"Teleports you to any location on the map":
+  pt: "Teleporta você para qualquer local do mapa"
+  pt-pt: "Teletransporta-o para qualquer local do mapa"
+
+"Real-time sync":
+  pt: "Sincronização em tempo real"
+  pt-pt: "Sincronização em tempo real"
+
+"The game follows your device's date and time":
+  pt: "O jogo segue a data e a hora do seu dispositivo"
+  pt-pt: "O jogo segue a data e a hora do seu dispositivo"
+
+"Date and time":
+  pt: "Data e hora"
+  pt-pt: "Data e hora"
+
+"Synchronized with the real time":
+  pt: "Sincronizado com a hora real"
+  pt-pt: "Sincronizado com a hora real"
+
+"Exact time":
+  pt: "Hora exata"
+  pt-pt: "Hora exata"
+
+"Press Enter to change, Esc to cancel":
+  pt: "Pressione Enter para alterar e Esc para cancelar"
+  pt-pt: "Prima Enter para alterar e Esc para cancelar"
+
+"Change the current time (Press Enter to change)":
+  pt: "Alterar o horário atual (pressione Enter para alterar)"
+  pt-pt: "Alterar a hora atual (prima Enter para alterar)"
+
+"Hour":
+  pt: "Hora"
+  pt-pt: "Hora"
+
+"Set the hour of the day directly":
+  pt: "Define diretamente a hora do dia"
+  pt-pt: "Define diretamente a hora do dia"
+
+"Minute":
+  pt: "Minuto"
+  pt-pt: "Minuto"
+
+"Set the minute directly":
+  pt: "Define diretamente o minuto"
+  pt-pt: "Define diretamente o minuto"
+
+"Jump to this time of day.":
+  pt: "Avança diretamente para este horário."
+  pt-pt: "Avança diretamente para esta hora."
+
+"Move the clock so that the vehicle is on time":
+  pt: "Ajusta o relógio para que o veículo fique no horário"
+  pt-pt: "Ajusta o relógio para que o veículo fique a horas"
+
+"How fast the world's clock runs":
+  pt: "Velocidade do relógio do mundo"
+  pt-pt: "Velocidade do relógio do mundo"
+
+"METAR sync":
+  pt: "Sincronização METAR"
+  pt-pt: "Sincronização METAR"
+
+"The weather follows the real METAR report":
+  pt: "O clima segue o relatório METAR real"
+  pt-pt: "A meteorologia segue o relatório METAR real"
+
+"METAR source":
+  pt: "Fonte METAR"
+  pt-pt: "Fonte METAR"
+
+"The airport whose METAR report the weather follows.":
+  pt: "Aeroporto cujo relatório METAR define o clima."
+  pt-pt: "Aeroporto cujo relatório METAR define a meteorologia."
+
+"Preset":
+  pt: "Predefinição"
+  pt-pt: "Predefinição"
+
+"A ready-made weather":
+  pt: "Condição climática predefinida"
+  pt-pt: "Condição meteorológica predefinida"
+
+"The kind of clouds in the sky.":
+  pt: "Tipo de nuvens no céu."
+  pt-pt: "Tipo de nuvens no céu."
+
+"Visibility":
+  pt: "Visibilidade"
+  pt-pt: "Visibilidade"
+
+"How far one can see; less is fog.":
+  pt: "Distância de visibilidade; valores menores criam neblina."
+  pt-pt: "Distância de visibilidade; valores menores criam nevoeiro."
+
+"Precipitation":
+  pt: "Precipitação"
+  pt-pt: "Precipitação"
+
+"Rain or snow.":
+  pt: "Chuva ou neve."
+  pt-pt: "Chuva ou neve."
+
+"Precipitation strength":
+  pt: "Intensidade da precipitação"
+  pt-pt: "Intensidade da precipitação"
+
+"How hard it rains or snows.":
+  pt: "Intensidade da chuva ou neve."
+  pt-pt: "Intensidade da chuva ou neve."
+
+"Wet roads":
+  pt: "Ruas molhadas"
+  pt-pt: "Estradas molhadas"
+
+"How wet the roads are now (they dry in the sun, wet in the rain).":
+  pt: "Quanto as ruas estão molhadas agora (secam ao sol e molham com a chuva)."
+  pt-pt: "Quanto as estradas estão molhadas agora (secam ao sol e molham com a chuva)."
+
+"Temperature":
+  pt: "Temperatura"
+  pt-pt: "Temperatura"
+
+"The air temperature.":
+  pt: "Temperatura do ar."
+  pt-pt: "Temperatura do ar."
+
+"Wind speed":
+  pt: "Velocidade do vento"
+  pt-pt: "Velocidade do vento"
+
+"How fast the wind blows; it drives the clouds.":
+  pt: "Velocidade do vento; ele move as nuvens."
+  pt-pt: "Velocidade do vento; ele move as nuvens."
+
+"Wind direction":
+  pt: "Direção do vento"
+  pt-pt: "Direção do vento"
+
+"The direction of the wind in degrees (0 is north).":
+  pt: "Direção do vento em graus (0 é norte)."
+  pt-pt: "Direção do vento em graus (0 é norte)."
+
+"Open":
+  pt: "Abrir"
+  pt-pt: "Abrir"
+
+"Place and move objects in the world.":
+  pt: "Posicione e mova objetos no mundo."
+  pt-pt: "Coloque e mova objetos no mundo."
+
+"How many vehicles drive around the map.":
+  pt: "Quantidade de veículos circulando pelo mapa."
+  pt-pt: "Quantidade de veículos a circular pelo mapa."
+
+"How many passengers wait at the stops and ride.":
+  pt: "Quantidade de passageiros esperando nas paradas e viajando."
+  pt-pt: "Quantidade de passageiros à espera nas paragens e a viajar."
+
+"Vehicle settings":
+  pt: "Configurações do veículo"
+  pt-pt: "Definições do veículo"
+
+"Roadbook and IBIS":
+  pt: "Itinerário e IBIS"
+  pt-pt: "Itinerário e IBIS"
+
+"Start options":
+  pt: "Opções de início"
+  pt-pt: "Opções de início"
+
+"Saved servers":
+  pt: "Servidores salvos"
+  pt-pt: "Servidores guardados"
+
+"Season":
+  pt: "Estação"
+  pt-pt: "Estação"
+
+"Choose a line and a tour to see the roadbook and the IBIS codes.":
+  pt: "Escolha uma linha e um serviço para ver o itinerário e os códigos do IBIS."
+  pt-pt: "Escolha uma linha e um serviço para ver o itinerário e os códigos do IBIS."
+
+"No saved servers yet.":
+  pt: "Ainda não há servidores salvos."
+  pt-pt: "Ainda não há servidores guardados."
+
+"Manage saved servers":
+  pt: "Gerenciar servidores salvos"
+  pt-pt: "Gerir servidores guardados"
+
+"No saved servers yet. Add one with Manage saved servers above.":
+  pt: "Ainda não há servidores salvos. Adicione um em Gerenciar servidores salvos acima."
+  pt-pt: "Ainda não há servidores guardados. Adicione um em Gerir servidores guardados acima."
+
+"Type the server's address first":
+  pt: "Digite primeiro o endereço do servidor"
+  pt-pt: "Introduza primeiro o endereço do servidor"
+
+"Traffic, passengers and the world's clock are set by the server.":
+  pt: "O tráfego, os passageiros e o relógio do mundo são definidos pelo servidor."
+  pt-pt: "O tráfego, os passageiros e o relógio do mundo são definidos pelo servidor."
