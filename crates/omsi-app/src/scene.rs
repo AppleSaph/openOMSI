@@ -4221,21 +4221,10 @@ impl World {
         out
     }
 
-    /// The ground of tile `key` as the roads and crossings around it leave it.
-    ///
-    /// `[spline_terrain_align]` in a tile file says the mapper ran "align the terrain to this
-    /// spline"; OMSI redoes it on every load, so a road in a cutting or on a low embankment
-    /// meets the ground. Without it the untouched terrain stands over the carriageway -- on
-    /// Berlin-Spandau that buried a twelfth of the road network under a band of grass, which
-    /// is what "there is no road here" looks like from the cab.
-    ///
-    /// Then the crossings press the terrain into their `[crossing_heightdeformation]` mesh: a
-    /// junction plate is placed at an absolute height and is flat, the ground around it is
-    /// not, and OMSI deforms the terrain to the plate's base mesh so that the plate and the
-    /// roads that run into it meet (without it a strip of grass shows across the road).
-    ///
-    /// Both happen before any object stands on the ground: a sign placed on the ground as
-    /// the file has it stood up to 1.9 m in the ground (or in the air) next to such a road.
+    /// The ground of tile `key`: the tile's `.terrain` as Omsi.exe loads it, which the objects
+    /// stand on. The editor's "align the terrain to this spline" (`[spline_terrain_align]`)
+    /// and a crossing's `[crossing_heightdeformation]` were applied when the map was made;
+    /// `OMSI_TERRAIN_ALIGN=1` and `OMSI_CROSSING_DEFORM=1` apply them again (A/B runs).
     /// Returns the ground, the ground points aligned, the biggest move (with where it was)
     /// and whether a crossing deformed it.
     fn final_ground(
@@ -4339,8 +4328,15 @@ impl World {
                 t.heights = out;
             }
         }
+        // (Nor does it press the ground into a crossing's `[crossing_heightdeformation]` mesh:
+        // Omsi.exe reads that mesh only to warp the plate and to give its paths their heights
+        // (0x7ba818, "Path deform"); the editor's terrain tools left the ground as the
+        // `.terrain` has it. Pressed in here, the ground stood up to 2.3 m over a Spandau
+        // pavement in front of the houses beside a junction, and everything standing on the
+        // ground - every pole, sign and tree there - floated over the pavement with it (#860).
+        // `OMSI_CROSSING_DEFORM=1` still does it.)
         let mut deformed = false;
-        if omsi_cfg::env::var_os("OMSI_NO_CROSSING_DEFORM").is_none() {
+        if omsi_cfg::env::var_os("OMSI_CROSSING_DEFORM").is_some() {
             let mut ds = TileSurface::new(SURFACE_RASTER);
             let mut any = false;
             for q in &order {
