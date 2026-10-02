@@ -2458,6 +2458,10 @@ impl App {
         match id {
             "resume" => self.close_game_menu(),
             "options" => self.open_list(crate::game_lists::ListKind::Options(0)),
+            "camera" => {
+                let tab = crate::game_lists::options_tab(self, "Camera");
+                self.open_list(crate::game_lists::ListKind::Options(tab));
+            }
             "vehicle" => self.open_list(crate::game_lists::ListKind::Vehicle(0)),
             "world" => self.open_list(crate::game_lists::ListKind::World(0)),
             "copycode" => {
@@ -3773,9 +3777,10 @@ pub(crate) fn parse_input_script() -> Vec<(f32, String)> {
 
 /// The game menu on a server (`--lan-join https://…`): the world's clock and weather are the
 /// server's, and the way out leaves the server.
-pub(crate) const SERVER_GAME_MENU: [(&str, &str); 7] = [
+pub(crate) const SERVER_GAME_MENU: [(&str, &str); 8] = [
     ("resume", "Resume"),
     ("options", "Options..."),
+    ("camera", "Camera..."),
     ("vehicle", "Vehicle options..."),
     ("world", "World options..."),
     ("map", "City map"),
@@ -3892,9 +3897,12 @@ pub(crate) const SAVES: &str = "Saves";
 
 /// The lines of the game menu: (what, label). What can be set is on the pages behind
 /// "Options", "Vehicle options" and "World options" (see `game_lists`).
-pub(crate) const GAME_MENU: [(&str, &str); 12] = [
+pub(crate) const GAME_MENU: [(&str, &str); 13] = [
     ("resume", "Resume"),
     ("options", "Options..."),
+    // (the driver's view - seat, field of view, head movement - straight from the pause
+    // menu: it is what is changed most while driving, #908)
+    ("camera", "Camera..."),
     ("vehicle", "Vehicle options..."),
     ("world", "World options..."),
     ("map", "City map"),

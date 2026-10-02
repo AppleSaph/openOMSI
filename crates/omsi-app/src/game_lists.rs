@@ -2037,6 +2037,11 @@ fn pages_of(app: &App, kind: &ListKind) -> Option<(Vec<Page>, usize)> {
     Some((pages, tab))
 }
 
+/// Which tab of the Options window is the one titled `title` (the first if none is).
+pub(crate) fn options_tab(app: &App, title: &str) -> usize {
+    pages_of(app, &ListKind::Options(0)).and_then(|(pages, _)| pages.iter().position(|p| p.0 == title)).unwrap_or(0)
+}
+
 type TitlesCache = Option<(ListKind, bool, std::time::Instant, (Vec<String>, usize))>;
 
 thread_local! {
