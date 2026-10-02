@@ -1791,6 +1791,58 @@ pub fn save_settings(v: &Value) -> Result<()> {
     Ok(())
 }
 
+/// The settings a graphics profile holds: what the Graphics tab shows, except the machine's
+/// own (fullscreen, graphics API).
+pub const GRAPHICS_PROFILE_KEYS: [&str; 21] = [
+    "graphics", "msaa", "render_scale", "anisotropy", "shadow_size", "ssao", "shadows", "shadow_casters", "detail_textures", "led_glow", "led_mips", "reflections", "clouds",
+    "vsync", "max_fps", "view_distance", "max_obj_dist", "min_obj_size", "mirror_size", "texture_memory", "texture_compression",
+];
+
+fn graphics_profiles_path() -> PathBuf {
+    data_dir().join("graphics_profiles.json")
+}
+
+/// The saved graphics profiles by name (`~/.openomsi/graphics_profiles.json`).
+pub fn graphics_profiles() -> std::collections::BTreeMap<String, Value> {
+    std::fs::read_to_string(graphics_profiles_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+/// Keep the graphics of `settings` as profile `name` (an existing one of that name is
+/// replaced). Returns the name as kept.
+pub fn save_graphics_profile(name: &str, settings: &Value) -> Result<String> {
+    let name: String = name.chars().filter(|c| !c.is_control()).collect::<String>().trim().chars().take(40).collect();
+    if name.is_empty() {
+        return Err(anyhow!("Give the profile a name."));
+    }
+    let mut profile = serde_json::Map::new();
+    for k in GRAPHICS_PROFILE_KEYS {
+        if let Some(x) = settings.get(k) {
+            profile.insert(k.to_string(), x.clone());
+        }
+    }
+    let mut all = graphics_profiles();
+    all.insert(name.clone(), Value::Object(profile));
+    std::fs::write(graphics_profiles_path(), serde_json::to_string_pretty(&all)?)?;
+    Ok(name)
+}
+
+/// Remove profile `name`.
+pub fn delete_graphics_profile(name: &str) -> Result<()> {
+    let mut all = graphics_profiles();
+    all.remove(name);
+    std::fs::write(graphics_profiles_path(), serde_json::to_string_pretty(&all)?)?;
+    Ok(())
+}
+
+/// Put a profile's values into the page's `settings` (only the keys a profile may hold).
+pub fn apply_graphics_profile(profile: &Value, settings: &mut Value) {
+    for k in GRAPHICS_PROFILE_KEYS {
+        if let Some(x) = profile.get(k) {
+            settings[k] = x.clone();
+        }
+    }
+}
+
 /// The `settings.cfg` text for the page's values `v`; the lines of the `old` file that the
 /// page does not manage (keys of newer games, hand-written switches) are kept.
 pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {

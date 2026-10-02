@@ -432,6 +432,75 @@ fn settings_tab(ui: &mut Ui, tab: usize, s: &mut Value, dirty: &mut f32, out: &m
     }
 }
 
+/// The saved graphics profiles' part of the Graphics tab: the list, the name being typed.
+#[derive(Default)]
+struct GfxProfileUi {
+    name: String,
+    sel: usize,
+    list: Option<Vec<String>>,
+    msg: String,
+}
+
+thread_local! {
+    static GFX_PROFILES: std::cell::RefCell<GfxProfileUi> = std::cell::RefCell::new(GfxProfileUi::default());
+}
+
+/// Save, load and delete the graphics settings as named profiles.
+fn graphics_profiles_block(ui: &mut Ui, s: &mut Value, dirty: &mut f32, c: &mut Col) {
+    GFX_PROFILES.with(|g| {
+        let mut g = g.borrow_mut();
+        let g = &mut *g;
+        let names: Vec<String> = g.list.get_or_insert_with(|| core::graphics_profiles().into_keys().collect()).clone();
+        g.sel = g.sel.min(names.len().saturating_sub(1));
+        let labels: Vec<String> = if names.is_empty() { vec!["No saved profiles".to_string()] } else { names.clone() };
+        let r = c.row();
+        ui.label(Rect::new(r.x, r.y, r.w * 0.45, r.h), "Saved profile");
+        if ui.select("s-gp-sel", Rect::new(r.x + r.w * 0.45, r.y, r.w * 0.55, r.h), &mut g.sel, &labels) && !names.is_empty() {
+            g.name = names[g.sel].clone();
+        }
+        let r = c.row();
+        let half = (r.w - GAP) * 0.5;
+        if ui.button("s-gp-load", Rect::new(r.x, r.y, half, r.h), "Load", Some("download"), ButtonKind::Normal) && !names.is_empty() {
+            let name = names[g.sel].clone();
+            match core::graphics_profiles().get(&name) {
+                Some(p) => {
+                    core::apply_graphics_profile(p, s);
+                    *dirty = 0.3;
+                    g.msg = format!("Loaded \"{name}\".");
+                }
+                None => g.msg = format!("\"{name}\" is gone."),
+            }
+        }
+        if ui.button("s-gp-del", Rect::new(r.x + half + GAP, r.y, half, r.h), "Delete", Some("delete"), ButtonKind::Danger) && !names.is_empty() {
+            let name = names[g.sel].clone();
+            g.msg = match core::delete_graphics_profile(&name) {
+                Ok(()) => format!("Deleted \"{name}\"."),
+                Err(e) => format!("{e:#}"),
+            };
+            g.list = None;
+        }
+        let r = c.row();
+        ui.text_input("s-gp-name", r, &mut g.name, "Profile name", None);
+        let r = c.row();
+        if ui.button("s-gp-save", r, "Save current graphics as profile", Some("save"), ButtonKind::Primary) {
+            g.msg = match core::save_graphics_profile(&g.name, s) {
+                Ok(name) => {
+                    g.name = name.clone();
+                    g.list = None;
+                    if let Some(i) = core::graphics_profiles().keys().position(|k| *k == name) {
+                        g.sel = i;
+                    }
+                    format!("Saved \"{name}\".")
+                }
+                Err(e) => format!("{e:#}"),
+            };
+        }
+        if !g.msg.is_empty() {
+            c.y += ui.paragraph(&g.msg, Vec2::new(c.inner.x, c.y), c.inner.w, 12.5, Weight::Regular, TEXT_DIM) + 8.0;
+        }
+    });
+}
+
 /// How the game looks and how fast it runs.
 fn graphics_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, cols: [Rect; 2]) -> [f32; 2] {
     let mut c = Col::new(ui, cols[0], "Graphics");
@@ -522,6 +591,8 @@ fn graphics_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, cols: [Rect; 2]) ->
     let opts: Vec<(&str, &str)> = vec![("0", auto_label.as_str()), ("500", "500 MB"), ("1000", "1 GB"), ("1500", "1.5 GB"), ("2000", "2 GB"), ("3000", "3 GB"), ("4000", "4 GB"), ("6000", "6 GB")];
     sel_setting(ui, s, dirty, "s-texmem", c.row(), "Texture memory", "texture_memory", &opts);
     toggle_setting(ui, s, dirty, c.row(), "Compress textures on loading", "texture_compression");
+    c.section(ui, "Profiles");
+    graphics_profiles_block(ui, s, dirty, &mut c);
     [left, c.used()]
 }
 
@@ -2133,7 +2204,7 @@ mod settings_tests {
     fn by_tab() -> Vec<Vec<&'static str>> {
         let mut graphics = vec![
             "s-preset", "s-graphics", "s-msaa", "s-scale", "s-af", "s-shadow", "set-ssao", "set-shadows", "s-casters", "set-detail_textures", "s-led", "s-led-mip", "set-reflections", "set-clouds",
-            "set-fullscreen", "set-vsync", "s-fps", "s-view", "s-maxobj", "s-minobj", "s-mirror", "s-texmem", "set-texture_compression",
+            "set-fullscreen", "set-vsync", "s-fps", "s-view", "s-maxobj", "s-minobj", "s-mirror", "s-texmem", "set-texture_compression", "s-gp-sel", "s-gp-load", "s-gp-del", "s-gp-name", "s-gp-save",
         ];
         if !cfg!(target_os = "macos") {
             graphics.push("s-api");
