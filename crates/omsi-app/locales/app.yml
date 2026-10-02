@@ -19504,3 +19504,13 @@ _version: 2
   id: "+{} lagi"
   ms: "+{} lagi"
   tl: "+{} pa"
+"Teleport to a start point":
+  de: "Zu einem Startpunkt teleportieren"
+"Teleport to a start point...":
+  de: "Zu einem Startpunkt teleportieren..."
+"Teleport to a starting point on the map":
+  de: "Teleportiere dich zu einem Startpunkt der Karte"
+"This map has no entry points":
+  de: "Diese Karte hat keine Einstiegspunkte"
+"entry":
+  de: "Einstieg"

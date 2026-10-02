@@ -1959,7 +1959,6 @@ impl ApplicationHandler for App {
                             dropdown,
                             menu_kbd: self.menu_kbd,
                             menu_top: self.menu_top,
-                            vr_nav_editing: self.vr_nav_edit.is_some(),
                             // (not over the city map, which has the stops and their times: it
                             // covered the map's zoom and close buttons)
                             timetable: (self.timetable && !map_open).then(|| timetable_rows(self.duty.as_ref(), self.player.as_ref().map(|p| p.vehicle.host.tt_delay as f64))).flatten(),

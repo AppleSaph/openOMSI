@@ -29,6 +29,8 @@ pub(crate) enum ListKind {
     RouteNumbers,
     /// The depot files (.hof) of the bus driven.
     Hofs,
+    /// The map's entry points (the launcher's "Start at"), to put the bus at.
+    Spots,
     /// Placing a vehicle: its manufacturer, then its type (the manufacturer's key), its
     /// livery, then its depot file (bus file; bus file and livery).
     PlaceMaker,
@@ -240,6 +242,18 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
                 out.push((tr("This bus has no depot files (.hof)"), "back".into()));
             }
         }
+        ListKind::Spots => {
+            if let Some(w) = app.world.as_ref() {
+                // (the map's entry points, as the launcher's "Start at" lists them)
+                for (i, e) in w.global.entry_points.iter().enumerate() {
+                    let label = if e.name.trim().is_empty() { format!("{} {}", tr("entry"), e.index + 1) } else { e.name.trim().to_string() };
+                    out.push((label, format!("spot {i}")));
+                }
+            }
+            if out.is_empty() {
+                out.push((tr("This map has no entry points"), "back".into()));
+            }
+        }
         ListKind::PlaceMaker => {
             let all = place_vehicles(app, &tr("Unknown manufacturer"));
             let mut groups: Vec<(String, String, Vec<&(String, String, String, String)>)> = Vec::new();
@@ -415,6 +429,7 @@ pub(crate) fn menu_extras(
         ListKind::Destinations => (MenuKind::List, head("Destination display..."), None),
         ListKind::RouteNumbers => (MenuKind::List, Some((tr("Route number"), String::new())), None),
         ListKind::Hofs => (MenuKind::List, head("Depot file (HOF)..."), None),
+        ListKind::Spots => (MenuKind::List, head("Teleport to a start point..."), None),
         ListKind::PlaceMaker | ListKind::PlaceType(_) | ListKind::PlaceLivery(_) | ListKind::PlaceHof(..) => (MenuKind::List, head("Place a vehicle..."), None),
         ListKind::Admin => (MenuKind::List, Some((tr("Administration"), String::new())), None),
     }
@@ -546,6 +561,26 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
                     }
                     Err(e) => app.service_msg = Some((format!("Depot file: {e}"), 4.0)),
                 }
+            }
+            None
+        }
+        ListKind::Spots => {
+            if app.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
+                app.service_msg = Some(("In a LAN session only the host moves vehicles on the map".into(), 4.0));
+                return None;
+            }
+            let found = app.world.clone().and_then(|w| {
+                let ep = arg.trim().parse::<usize>().ok().and_then(|i| w.global.entry_points.get(i))?;
+                // (the entry points of tiles that are not loaded come from the map index)
+                w.index();
+                w.entry_point_place(ep).map(|(pos, rot)| (pos, rot[0]))
+            });
+            match found {
+                Some((pos, heading)) => {
+                    crate::admin::teleport(app, pos, heading);
+                    app.service_msg = Some(("The bus stands at the start point".into(), 3.0));
+                }
+                None => app.service_msg = Some(("That start point is not in the map".into(), 3.0)),
             }
             None
         }
@@ -1284,6 +1319,7 @@ fn vehicle_pages(app: &App) -> Vec<Page> {
         service.push(button("Put back on its wheels", "Reset", "Return the vehicle to an upright position", "reset"));
         if !server && app.navigator.is_some() {
             service.push(button("Move on the map", "Pick", "Teleports you to any location on the map", "teleport"));
+            service.push(opens("Teleport to a start point", "Teleport to a starting point on the map", "tplist"));
         }
     }
     vec![("Display and driver", display), ("Vehicles", fleet), ("Service", service)]
