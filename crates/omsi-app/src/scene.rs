@@ -3903,6 +3903,8 @@ impl World {
                     .unwrap_or(false)
         };
         // [object]
+        let debug_outside = omsi_cfg::env::var_os("OMSI_DEBUG_OBJECTS").is_some();
+        let mut outside = 0usize;
         for o in &tile.objects {
             if !wanted(&o.file) {
                 continue;
@@ -3913,6 +3915,21 @@ impl World {
             // Objects with traffic paths (crossings, switches, road pieces) are stored with
             // absolute heights like the splines themselves; so are [absheight] ones.
             let absolute = ot.sco.absolute_height();
+            // An object that stands on the terrain but lies outside its own tile is never
+            // seen in OMSI: Omsi.exe finds its height with a ray from 1000 m down onto that
+            // tile's terrain mesh only (0x79e43d -> 0x7ab594), and where the ray misses the
+            // mesh it answers 10000 m more, which puts the object 11 km under the ground.
+            // Maps copied from a `[worldcoordinates]` map keep such leftovers (Ahlheim's
+            // Bostoner Weg: 588 objects past the edge, redrawn by the author where they
+            // belong), and drawn they stood as houses and bushes in the road (#787).
+            let edge = tile_size() + 1e-3;
+            if !absolute && !((-1e-3..=edge).contains(&o.pos[0]) && (-1e-3..=edge).contains(&o.pos[1])) {
+                if outside == 0 || debug_outside {
+                    log::info!("object {} id {} at ({:.1}, {:.1}) lies outside tile ({tx}, {ty}): not shown, as in OMSI", o.file, o.id, o.pos[0], o.pos[1]);
+                }
+                outside += 1;
+                continue;
+            }
             let (x, y) = (origin2.x + o.pos[0], origin2.y + o.pos[1]);
             let place = if absolute {
                 // On a `[worldcoordinates]` map the tile's splines are stretched onto the
@@ -3946,6 +3963,9 @@ impl World {
                 instance: 0,
                 key: o.id,
             });
+        }
+        if outside > 1 {
+            log::info!("tile ({tx}, {ty}): {outside} objects lie outside the tile and are not shown, as in OMSI");
         }
         // [attachObj]
         for o in &tile.attach_objects {
