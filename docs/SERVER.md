@@ -52,7 +52,9 @@ heard from where they stand or sit, up to `voice_range` metres (20 by default), 
 the bodywork - quieter - when one of the two is in a bus and the other is not. Each player
 runs GreenTeaSpeak 2 with the openOMSI plugin (`tools/greenteaspeak-plugin`, its README says
 how to install it) and is connected to the voice server whose unique id is
-`voice_server_uid` (the id in GreenTeaSpeak's server info panel; empty: any server). A
+`voice_server_uid` (the id in GreenTeaSpeak's server info panel; it is needed: without it
+there is no voice chat, so that a server cannot move its players about on whatever voice
+server they happen to be on). A
 joining game asks the server for these settings (the command `voice?`), the plugin moves
 the player into the channel `voice_channel` (its id or its name, with
 `voice_channel_password`) and renames them `<name> #<player id>` - the name every other
@@ -60,6 +62,10 @@ game of the session gives them there - and the game tells it ten times a second 
 camera is and where everybody else is. A player who is speaking has "speaking" under their
 name tag. A player hosting by code names the voice server in `~/.openomsi/voice.cfg` with
 the same keys. Settings → General → *Voice chat through GreenTeaSpeak* switches it off.
+`voice_channel_password` is sent to every player who joins (their game needs it to enter
+the channel): it keeps strangers on the voice server out of the channel, not the server's
+own players. The three settings together must fit a chat command (160 characters after
+encoding), or the server says so in its log and has no voice chat.
 
 The same gateway and tunnel open for a player hosting by **code** (Connect by Code): its
 address goes to the rendezvous topic, and a joining game that gets no answer from the

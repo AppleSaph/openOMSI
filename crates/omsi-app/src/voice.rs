@@ -5,14 +5,19 @@
 //! (`tools/greenteaspeak-plugin`) listens on `127.0.0.1:38088`; the game connects to it and
 //! sends one JSON object a line:
 //!
+//! - `hello`: first, the key of `~/.openomsi/voice-plugin.key` (made by the game, read by the
+//!   plugin): anything else on that port - a web page posting to it, another program - is
+//!   not the game and is hung up on. The plugin answers `welcome`, or `refused` and hangs up
+//!   (another game is already linked to it).
 //! - `initiate`: the voice server the session uses (its unique id, the in-game channel and its
 //!   password, the voice range) and the nickname to take there. The plugin moves the user
 //!   into that channel, renames them and switches 3D voice on - only on the server whose
-//!   unique id the session names, never on another one the user happens to be on.
+//!   unique id the session names, never on another one the user happens to be on (and not
+//!   at all when the session names none).
 //! - `self`: where the listener (the camera) is and which way it looks, ten times a second.
 //! - `players`: every other player who can be heard: nickname, where their head is, their
 //!   range, and a volume when the sound is muffled (one of the two sits in a bus).
-//! - `reset`: the session is over: 3D voice off.
+//! - `reset`: the session is over: 3D voice off, the user's nickname and channel as before.
 //!
 //! The plugin answers with `state` (connected to the voice server, in the channel), `talk`
 //! (who speaks now: drawn by their name tags) and `mute`.
@@ -28,7 +33,8 @@ use glam::DVec3;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 
 /// The port of the plugin (SaltyChat's WebSocket port, for those who know it).
@@ -43,6 +49,16 @@ const MUFFLED: f32 = 0.35;
 const SEND_EVERY: f32 = 0.1;
 const ASK_EVERY: f32 = 4.0;
 const ASK_TRIES: u32 = 8;
+/// "Start GreenTeaSpeak ..." is on the HUD this long (s) while the plugin is not there.
+const HINT_SECS: f32 = 10.0;
+/// Lines waiting for the plugin: beyond this many (a plugin that stopped reading) the
+/// newest are dropped rather than piled up.
+const QUEUE: usize = 64;
+/// A plugin that takes this long to read a line has hung: the link is made again.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+/// The plugin answers `hello` within this long, or it is not one that knows the key (an
+/// older one, or something else on its port).
+const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(not(test))]
 const RECONNECT: Duration = Duration::from_secs(3);
 #[cfg(test)]
@@ -51,8 +67,8 @@ const RECONNECT: Duration = Duration::from_millis(20);
 /// The voice server a session uses, as its host names it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct VoiceServer {
-    /// The voice server's unique id (the one in its info panel; empty: whichever server
-    /// the player is on).
+    /// The voice server's unique id (the one in its info panel). Never empty: the plugin
+    /// moves nobody about on a voice server the session does not name.
     pub server_uid: String,
     /// The in-game channel: its id or its name.
     pub channel: String,
@@ -63,15 +79,28 @@ pub(crate) struct VoiceServer {
 
 impl VoiceServer {
     /// From `key = value` pairs (keys lower case): `voice_server_uid`, `voice_channel`,
-    /// `voice_channel_password`, `voice_range`. None without a channel.
+    /// `voice_channel_password`, `voice_range`. None without a channel, without the voice
+    /// server's unique id, or when the answer to `voice?` would not fit a command.
     pub(crate) fn from_kv(get: impl Fn(&str) -> Option<String>) -> Option<VoiceServer> {
         let channel = get("voice_channel").map(|c| c.trim().to_string()).filter(|c| !c.is_empty())?;
-        Some(VoiceServer {
+        let s = VoiceServer {
             server_uid: get("voice_server_uid").map(|v| v.trim().to_string()).unwrap_or_default(),
             channel,
             password: get("voice_channel_password").map(|v| v.trim().to_string()).unwrap_or_default(),
             range: get("voice_range").and_then(|v| v.trim().parse::<f32>().ok()).filter(|r| r.is_finite()).map(|r| r.clamp(2.0, 200.0)).unwrap_or(DEFAULT_RANGE),
-        })
+        };
+        if s.server_uid.is_empty() {
+            log::warn!("voice: voice_channel is set but voice_server_uid is not: no voice chat (the plugin moves players only on the voice server the session names)");
+            return None;
+        }
+        // (a command is cut at MAX_CHAT characters: a cut password or channel would be
+        // a wrong one)
+        let len = VoiceServer::command(Some(&s)).chars().count();
+        if len > omsi_net::MAX_CHAT {
+            log::warn!("voice: voice_server_uid, voice_channel and voice_channel_password are too long to tell the players ({len} of {} characters encoded): no voice chat", omsi_net::MAX_CHAT);
+            return None;
+        }
+        Some(s)
     }
 
     /// `~/.openomsi/voice.cfg` of a game that hosts (the same keys as `server.cfg`).
@@ -98,7 +127,7 @@ impl VoiceServer {
         let mut f = rest.split(' ');
         let range = f.next()?.parse::<f32>().ok().filter(|r| r.is_finite())?.clamp(2.0, 200.0);
         let (uid, channel, password) = (dec(f.next()?), dec(f.next()?), dec(f.next().unwrap_or("")));
-        if channel.is_empty() {
+        if channel.is_empty() || uid.is_empty() {
             return Some(None);
         }
         Some(Some(VoiceServer { server_uid: uid, channel, password, range }))
@@ -175,37 +204,113 @@ pub(crate) fn nickname(name: &str, id: u32) -> String {
     format!("{}{tail}", short.trim_end())
 }
 
+/// `~/.openomsi/voice-plugin.key`: the key the game says `hello` with and the plugin
+/// checks it against (no web page or other program on this machine can read it).
+pub(crate) fn key_path() -> Option<PathBuf> {
+    Some(crate::lan::data_dir()?.join("voice-plugin.key"))
+}
+
+/// The key in `path`, made the first time (32 random bytes as hex, readable by this user
+/// only).
+fn plugin_key(path: &Path) -> Option<String> {
+    if let Ok(k) = std::fs::read_to_string(path) {
+        let k = k.trim();
+        if k.len() >= 32 && k.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Some(k.to_string());
+        }
+    }
+    let key = random_hex(32);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    match o.open(path).and_then(|mut f| f.write_all(key.as_bytes())) {
+        Ok(()) => Some(key),
+        Err(e) => {
+            log::warn!("voice: cannot write the plugin's key {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// `bytes` random bytes as hex: std's `RandomState` keys come from the system's random
+/// source.
+fn random_hex(bytes: usize) -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut out = String::with_capacity(bytes * 2);
+    let mut n = 0u64;
+    while out.len() < bytes * 2 {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(n);
+        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        out.push_str(&format!("{:016x}", h.finish()));
+        n += 1;
+    }
+    out.truncate(bytes * 2);
+    out
+}
+
 /// What the plugin said.
 #[derive(Debug, Clone, PartialEq)]
 enum Event {
-    /// The link to the plugin was made (again): it needs the session told afresh.
+    /// The plugin welcomed us (again): it needs the session told afresh.
     Linked,
     Unlinked,
+    /// The plugin would not have us (another game is linked to it, it did not answer).
+    Refused(String),
     Line(Value),
 }
 
 /// The link to the plugin: a thread keeps a TCP connection to it, made again whenever it
 /// breaks (the plugin starts after the game, GreenTeaSpeak is restarted).
 struct Link {
-    tx: Sender<String>,
+    tx: SyncSender<String>,
     rx: Receiver<Event>,
 }
 
 impl Link {
-    fn start(addr: SocketAddr) -> Option<Link> {
-        let (tx, out_rx) = mpsc::channel::<String>();
+    fn start(addr: SocketAddr, key: Option<PathBuf>) -> Option<Link> {
+        let (tx, out_rx) = mpsc::sync_channel::<String>(QUEUE);
         let (ev_tx, rx) = mpsc::channel::<Event>();
         std::thread::Builder::new()
             .name("voice".into())
-            .spawn(move || link_thread(addr, out_rx, ev_tx))
+            .spawn(move || link_thread(addr, key, out_rx, ev_tx))
             .ok()?;
         Some(Link { tx, rx })
     }
 }
 
-fn link_thread(addr: SocketAddr, out: Receiver<String>, events: Sender<Event>) {
+/// Drop what the game sends for `wait` (nobody to send it to). False when the game is gone.
+fn idle(out: &Receiver<String>, wait: Duration) -> bool {
+    let until = Instant::now() + wait;
+    while Instant::now() < until {
+        match out.try_recv() {
+            Ok(_) => {}
+            Err(TryRecvError::Disconnected) => return false,
+            Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    true
+}
+
+fn link_thread(addr: SocketAddr, key_file: Option<PathBuf>, out: Receiver<String>, events: Sender<Event>) {
     let mut told_missing = false;
+    let mut told_refused = String::new();
     loop {
+        // (read each time: the file may have been made or replaced meanwhile)
+        let Some(key) = key_file.as_deref().and_then(plugin_key) else {
+            if !told_missing {
+                log::warn!("voice: no key for the GreenTeaSpeak plugin (no home directory?)");
+                told_missing = true;
+            }
+            if !idle(&out, RECONNECT) {
+                return;
+            }
+            continue;
+        };
         let stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
             Ok(s) => s,
             Err(e) => {
@@ -215,51 +320,75 @@ fn link_thread(addr: SocketAddr, out: Receiver<String>, events: Sender<Event>) {
                 }
                 // (lines for a plugin that is not there are dropped; the game stops the
                 // thread by dropping its sender)
-                let until = Instant::now() + RECONNECT;
-                while Instant::now() < until {
-                    match out.try_recv() {
-                        Ok(_) => {}
-                        Err(TryRecvError::Disconnected) => return,
-                        Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(20)),
-                    }
+                if !idle(&out, RECONNECT) {
+                    return;
                 }
                 continue;
             }
         };
         told_missing = false;
-        log::info!("voice: linked to the GreenTeaSpeak plugin at {addr}");
         let _ = stream.set_nodelay(true);
         let _ = stream.set_read_timeout(Some(Duration::from_millis(20)));
-        if events.send(Event::Linked).is_err() {
-            return;
-        }
+        // (a plugin that stopped reading would block the thread for good)
+        let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
         let mut writer = match stream.try_clone() {
             Ok(w) => w,
             Err(_) => continue,
         };
+        let hello = json!({ "type": "hello", "game": "openOMSI", "protocol": 2, "key": key }).to_string() + "\n";
+        if writer.write_all(hello.as_bytes()).is_err() {
+            if !idle(&out, RECONNECT) {
+                return;
+            }
+            continue;
+        }
+        let since = Instant::now();
+        let mut welcomed = false;
+        let mut refused: Option<String> = None;
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         let alive = 'link: loop {
-            // what the game sends
+            // what the game sends (dropped until the plugin has welcomed us)
             loop {
                 match out.try_recv() {
-                    Ok(mut l) => {
+                    Ok(mut l) if welcomed => {
                         l.push('\n');
                         if writer.write_all(l.as_bytes()).is_err() {
                             break 'link true;
                         }
                     }
+                    Ok(_) => {}
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => break 'link false,
                 }
+            }
+            if !welcomed && since.elapsed() > HELLO_TIMEOUT {
+                refused = Some("the openOMSI plugin in GreenTeaSpeak does not answer (an older version? install it again)".into());
+                break 'link true;
             }
             // what the plugin says
             match reader.read_line(&mut line) {
                 Ok(0) => break 'link true,
                 Ok(_) => {
                     if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
-                        if events.send(Event::Line(v)).is_err() {
-                            break 'link false;
+                        match v.get("type").and_then(|t| t.as_str()) {
+                            Some("welcome") if !welcomed => {
+                                welcomed = true;
+                                told_refused.clear();
+                                log::info!("voice: linked to the GreenTeaSpeak plugin at {addr}");
+                                if events.send(Event::Linked).is_err() {
+                                    break 'link false;
+                                }
+                            }
+                            Some("refused") => {
+                                refused = Some(v.get("error").and_then(|e| e.as_str()).unwrap_or("the plugin would not link").to_string());
+                            }
+                            _ if welcomed => {
+                                if events.send(Event::Line(v)).is_err() {
+                                    break 'link false;
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     line.clear();
@@ -268,12 +397,28 @@ fn link_thread(addr: SocketAddr, out: Receiver<String>, events: Sender<Event>) {
                 Err(_) => break 'link true,
             }
         };
-        let _ = events.send(Event::Unlinked);
+        if welcomed {
+            let _ = events.send(Event::Unlinked);
+        }
         if !alive {
             return;
         }
-        log::info!("voice: the GreenTeaSpeak plugin went away");
-        std::thread::sleep(RECONNECT);
+        match refused {
+            Some(r) => {
+                if r != told_refused {
+                    log::warn!("voice: {r}");
+                    told_refused = r.clone();
+                }
+                if events.send(Event::Refused(r)).is_err() {
+                    return;
+                }
+            }
+            None if welcomed => log::info!("voice: the GreenTeaSpeak plugin went away"),
+            None => {}
+        }
+        if !idle(&out, RECONNECT) {
+            return;
+        }
     }
 }
 
@@ -313,6 +458,13 @@ pub(crate) struct Listener {
 pub(crate) struct Voice {
     link: Option<Link>,
     addr: SocketAddr,
+    /// The file of the key the plugin knows the game by (`key_path`).
+    key: Option<PathBuf>,
+    /// Why the plugin would not have us, until it does.
+    refused: Option<String>,
+    /// How long the session has gone without the plugin (the HUD's hint is for the first
+    /// seconds of it only).
+    unlinked_t: f32,
     /// The host's voice server: None until it answered, Some(None) for none.
     server: Option<Option<VoiceServer>>,
     asked: u32,
@@ -336,6 +488,9 @@ impl Voice {
         Voice {
             link: None,
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            key: key_path(),
+            refused: None,
+            unlinked_t: 0.0,
             server: None,
             asked: 0,
             ask_t: 0.0,
@@ -358,6 +513,11 @@ impl Voice {
         self.server = Some(server);
     }
 
+    /// The host's answer is in (or we host): the voice server, or that there is none.
+    pub(crate) fn known(&self) -> bool {
+        self.server.is_some()
+    }
+
     /// The voice server, once known.
     pub(crate) fn server(&self) -> Option<&VoiceServer> {
         self.server.as_ref().and_then(|s| s.as_ref())
@@ -378,10 +538,9 @@ impl Voice {
         true
     }
 
-    fn send(&self, v: Value) {
-        if let Some(l) = &self.link {
-            let _ = l.tx.send(v.to_string());
-        }
+    /// Queue a line for the plugin; false when it could not be (the plugin is not reading).
+    fn send(&self, v: Value) -> bool {
+        self.link.as_ref().is_some_and(|l| l.tx.try_send(v.to_string()).is_ok())
     }
 
     /// Once a frame: take in what the plugin said, tell it the session, where we are and
@@ -389,7 +548,7 @@ impl Voice {
     pub(crate) fn tick(&mut self, dt: f32, me: (&str, u32), listener: Option<Listener>, others: &[Speaker]) {
         let Some(server) = self.server().cloned() else { return };
         if self.link.is_none() {
-            self.link = Link::start(self.addr);
+            self.link = Link::start(self.addr, self.key.clone());
         }
         let mut relink = false;
         let events: Vec<Event> = self.link.as_ref().map(|l| l.rx.try_iter().collect()).unwrap_or_default();
@@ -401,19 +560,22 @@ impl Voice {
                     self.status = Status::default();
                     self.talking.clear();
                 }
+                Event::Refused(r) => self.refused = Some(r),
                 Event::Line(v) => self.on_line(&v),
             }
         }
         if relink {
             self.status.linked = true;
+            self.refused = None;
             self.initiated = None;
         }
         if !self.status.linked {
+            self.unlinked_t += dt;
             return;
         }
         let nick = nickname(me.0, me.1);
         if self.initiated.as_ref() != Some(&(server.clone(), nick.clone())) {
-            self.send(json!({
+            let sent = self.send(json!({
                 "type": "initiate",
                 "game": "openOMSI",
                 "protocol": 1,
@@ -423,6 +585,10 @@ impl Voice {
                 "nickname": nick,
                 "range": server.range,
             }));
+            // (not taken in: told again next frame)
+            if !sent {
+                return;
+            }
             self.initiated = Some((server.clone(), nick));
         }
         self.send_t -= dt;
@@ -488,7 +654,12 @@ impl Voice {
     pub(crate) fn hud_line(&self) -> Option<String> {
         self.server()?;
         if !self.status.linked {
-            return Some("Voice: start GreenTeaSpeak with the openOMSI plugin to talk".into());
+            if let Some(r) = &self.refused {
+                return Some(format!("Voice: {r}"));
+            }
+            // (for the first seconds: a player who does not want to talk is not told so
+            // all session long)
+            return (self.unlinked_t < HINT_SECS).then(|| "Voice: start GreenTeaSpeak with the openOMSI plugin to talk".into());
         }
         if let Some(p) = &self.status.problem {
             return Some(format!("Voice: {p}"));
@@ -503,7 +674,7 @@ impl Voice {
 impl Drop for Voice {
     fn drop(&mut self) {
         // (the plugin switches 3D voice off; the thread ends when the sender goes)
-        self.send(json!({ "type": "reset" }));
+        let _ = self.send(json!({ "type": "reset" }));
     }
 }
 
@@ -563,8 +734,9 @@ mod tests {
         let c = VoiceServer::command(Some(&s));
         assert!(!c.contains('|') && c.len() < omsi_net::MAX_CHAT);
         assert_eq!(VoiceServer::parse_command(&c), Some(Some(s)));
+        // (an older host naming no voice server's unique id: no voice chat)
         let open = VoiceServer { server_uid: String::new(), channel: "12".into(), password: String::new(), range: 20.0 };
-        assert_eq!(VoiceServer::parse_command(&VoiceServer::command(Some(&open))), Some(Some(open)));
+        assert_eq!(VoiceServer::parse_command(&VoiceServer::command(Some(&open))), Some(None));
         assert_eq!(VoiceServer::parse_command(&VoiceServer::command(None)), Some(None));
         assert_eq!(VoiceServer::parse_command("trigger x"), None);
     }
@@ -575,6 +747,68 @@ mod tests {
         let s = VoiceServer::from_kv(|k| kv.get(k).cloned()).unwrap();
         assert_eq!((s.server_uid.as_str(), s.channel.as_str(), s.range), ("AbC=", "5", 200.0));
         assert!(VoiceServer::from_kv(|_| None).is_none());
+        // no unique id: the plugin would move players on whatever server they are on
+        let kv = parse_kv("voice_channel = 5\n");
+        assert!(VoiceServer::from_kv(|k| kv.get(k).cloned()).is_none());
+        // too long to tell the players whole
+        let kv = parse_kv(&format!("voice_server_uid = AbC=\nvoice_channel = 5\nvoice_channel_password = {}\n", "p-".repeat(40)));
+        assert!(VoiceServer::from_kv(|k| kv.get(k).cloned()).is_none());
+        let kv = parse_kv(&format!("voice_server_uid = AbC=\nvoice_channel = 5\nvoice_channel_password = {}\n", "p".repeat(100)));
+        assert!(VoiceServer::from_kv(|k| kv.get(k).cloned()).is_some());
+    }
+
+    fn scratch_key(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("omsi-voice-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("voice-plugin.key")
+    }
+
+    #[test]
+    fn the_key_is_made_once_and_kept() {
+        let path = scratch_key("key");
+        let k = plugin_key(&path).unwrap();
+        assert_eq!(k.len(), 64);
+        assert!(k.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(plugin_key(&path).as_deref(), Some(k.as_str()));
+        assert_ne!(random_hex(32), random_hex(32));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn the_hint_to_start_greenteaspeak_goes_after_a_while() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut v = Voice::new(port);
+        v.key = Some(scratch_key("hint"));
+        v.set_server(Some(VoiceServer { server_uid: "UID".into(), channel: "7".into(), password: String::new(), range: 20.0 }));
+        v.tick(1.0, ("Max", 1), None, &[]);
+        assert!(v.hud_line().is_some_and(|l| l.contains("start GreenTeaSpeak")));
+        for _ in 0..12 {
+            v.tick(1.0, ("Max", 1), None, &[]);
+        }
+        assert_eq!(v.hud_line(), None);
+    }
+
+    #[test]
+    fn a_plugin_that_refuses_is_said_so() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut v = Voice::new(port);
+        v.key = Some(scratch_key("refused"));
+        v.set_server(Some(VoiceServer { server_uid: "UID".into(), channel: "7".into(), password: String::new(), range: 20.0 }));
+        v.tick(0.1, ("Max", 1), None, &[]);
+        let (mut conn, _) = listener.accept().unwrap();
+        conn.write_all(b"{\"type\":\"refused\",\"error\":\"another openOMSI game is already linked\"}\n").unwrap();
+        drop(conn);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && v.refused.is_none() {
+            v.tick(0.01, ("Max", 1), None, &[]);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(v.hud_line().as_deref(), Some("Voice: another openOMSI game is already linked"));
+        assert!(!v.status.linked);
+        let _ = std::fs::remove_dir_all(v.key.as_ref().unwrap().parent().unwrap());
     }
 
     #[test]
@@ -608,6 +842,8 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let mut v = Voice::new(port);
+        let key_file = scratch_key("link");
+        v.key = Some(key_file.clone());
         v.set_server(Some(VoiceServer { server_uid: "UID".into(), channel: "7".into(), password: String::new(), range: 20.0 }));
         let me = Listener { at: DVec3::new(1_234_567.0, -2_000_000.0, 50.0), yaw: 90.0, inside: None };
         let others = [Speaker { id: 2, name: "Anna".into(), at: DVec3::new(1_234_570.0, -2_000_000.0, 51.6), inside: None }];
@@ -622,7 +858,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let mut conn = conn.expect("the game links to the plugin");
-        conn.write_all(b"{\"type\":\"state\",\"inChannel\":true}\n{\"type\":\"talk\",\"nickname\":\"Anna #2\",\"talking\":true}\n").unwrap();
+        conn.set_nonblocking(false).unwrap();
+        // the first line is hello with the key of the file
+        let mut first = String::new();
+        BufReader::new(conn.try_clone().unwrap()).read_line(&mut first).unwrap();
+        let hello: Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(hello["type"], "hello");
+        assert_eq!(hello["key"].as_str(), std::fs::read_to_string(&key_file).ok().as_deref());
+        conn.write_all(b"{\"type\":\"welcome\"}\n{\"type\":\"state\",\"inChannel\":true}\n{\"type\":\"talk\",\"nickname\":\"Anna #2\",\"talking\":true}\n").unwrap();
         conn.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
         let mut got = String::new();
         while Instant::now() < deadline && !got.contains("\"players\"") {
@@ -650,5 +893,6 @@ mod tests {
         assert!(v.status.in_channel);
         assert!(v.speaks("Anna", 2));
         assert_eq!(v.hud_line(), None);
+        let _ = std::fs::remove_dir_all(key_file.parent().unwrap());
     }
 }
