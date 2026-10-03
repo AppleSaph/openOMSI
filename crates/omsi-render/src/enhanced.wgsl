@@ -297,6 +297,16 @@ fn fs_enhanced(in: FsIn) -> EnhancedOut {
     return out;
 }
 
+// A self-lit picture (a display, a light-mapped surface lit fully) at its own colour after
+// the tone curve: PBR Neutral leaves colours below 0.76 as they are, less a black offset of
+// 0.04, and bleaches what is brighter - a display's yellow-green text came out olive. So
+// the colour is kept under the knee and the offset added back.
+fn display_level(t: vec3<f32>) -> vec3<f32> {
+    let peak = max(t.r, max(t.g, t.b));
+    let tk = t * min(1.0, 0.76 / max(peak, 1e-3));
+    return tk + 0.04 * smoothstep(vec3<f32>(0.0), vec3<f32>(0.08), tk);
+}
+
 fn shade_enhanced(in: FsIn, puddle_weight: ptr<function, vec2<f32>>, capture: bool, eye: vec3<f32>) -> vec4<f32> {
     if (material.emissive.w > 1.5) {
         // a pane's film of water: drops, not the sliding texture (see `rain_glass`), each a
@@ -389,20 +399,15 @@ fn shade_enhanced(in: FsIn, puddle_weight: ptr<function, vec2<f32>>, capture: bo
     // (no fog inside the cab: only the part of the way outside the bus is misty)
     let aer = air(-v, fog_distance(in.world), h_cam, h_pt);
     if (material.params.y > 0.5) {
-        // unlit (mirror glass, script and text textures): shown at their own brightness
-        // The tone curve (PBR Neutral) leaves colours below 0.76 as they are, less a black
-        // offset of 0.04, and bleaches what is brighter: a display's yellow-green text came
-        // out olive. So the colour is kept under the knee and the offset added back, and
-        // `exposure.y` undoes the metering (see ExposureLog in lib.rs).
+        // unlit (mirror glass, script and text textures): shown at their own brightness,
+        // under the tone curve's knee (`display_level`), and `exposure.y` undoes the
+        // metering (see ExposureLog in lib.rs)
         let t = tex.rgb * material.color.rgb;
-        let peak = max(t.r, max(t.g, t.b));
-        let k = min(1.0, 0.76 / max(peak, 1e-3));
-        let tk = t * k;
         // A mirror (params.y 0.9) is no display: its picture is the street drawn a moment
         // ago, dark at night. Brightened like a display by the metering (up to 1.6 in the
         // dark) it showed a street far brighter than the one through the windscreen.
         let lift = select(enh.exposure.y, min(enh.exposure.y, 1.0), material.params.y < 0.95);
-        let c = (tk + 0.04 * smoothstep(vec3<f32>(0.0), vec3<f32>(0.08), tk)) * lift;
+        let c = display_level(t) * lift;
         return vec4<f32>(c * aer.a + aer.rgb * pre, alpha);
     }
     let outside = weather_outside_n(in.world, safe_normal(in.normal), terrain, in.params2.w);
@@ -803,7 +808,18 @@ fn shade_enhanced(in: FsIn, puddle_weight: ptr<function, vec2<f32>>, capture: bo
         let lm = textureSample(t_light, s_diffuse, buv).rgb;
         let night = clamp(camera.sun_color.w, 0.0, 1.0);
         let left = (vec3<f32>(1.0) - clamp(cabin_light, vec3<f32>(0.0), vec3<f32>(1.0))) * (0.12 + 0.88 * night);
-        emit = emit + tex.rgb * lm * left * clamp(in.params2.x, 0.0, 1.0) * max(enh.exposure.z * 2.0, 0.6);
+        let w = lm * left * clamp(in.params2.x, 0.0, 1.0);
+        if (material.emissive.w < -1.5) {
+            emit = emit + tex.rgb * w * max(enh.exposure.z * 2.0, 0.6);
+        } else {
+            // ... and as there it lifts the surface to its texture's own colour at the
+            // most, shown as a display is (see the unlit path): taken as a light of the
+            // night's level on top, a white light map (`weiss.bmp`, laid on a display so
+            // it shows at night) went past the tone curve's knee and bleached its colours -
+            // the Procity's red and blue gauges pink and lavender (#827). (An LED panel's
+            // light map stays as it was: its dots are meant to burn above their colour.)
+            emit = emit + max(display_level(tex.rgb) * enh.exposure.y - rgb, vec3<f32>(0.0)) * w;
+        }
     }
     if (material.emissive.w < -1.5) {
         // an LED panel (see MaterialExtra::led): the lit dots - the alpha the `\S:n` script
