@@ -1586,6 +1586,19 @@ impl App {
     /// for the other players).
     pub(crate) fn open_game_menu(&mut self) {
         self.menu_prev_pause = self.paused;
+        // the menu takes the keys, their key-ups too: what is held now is let go here, or a
+        // steering key let go in the menu went on turning the wheel to full lock once the
+        // menu closed (a throttle key went on accelerating, a door button stayed pressed)
+        if let Some(p) = self.player.as_mut() {
+            let held: Vec<_> = p.held_keys.keys().copied().collect();
+            for scan in held {
+                p.key(scan, 0, false);
+            }
+            p.axes.release_all();
+            for fired in self.door_key_triggers.drain().map(|(_, g)| g).collect::<Vec<_>>() {
+                p.door_key_off(&fired);
+            }
+        }
         if self.lan.is_none() {
             self.paused = true;
         }
