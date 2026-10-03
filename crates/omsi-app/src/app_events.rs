@@ -1963,6 +1963,7 @@ impl ApplicationHandler for App {
                     self.service_msg = self.service_msg.take().filter(|(_, l)| *l > 0.0);
                     if let Some(lan) = self.lan.as_ref() {
                         lines.extend(lan::hud_lines(lan, &self.remotes, self.player.as_ref()));
+                        lines.extend(self.voice.as_ref().and_then(|v| v.hud_line()));
                     }
                     if let Some(h) = self.humans.as_ref() {
                         if let Some(hint) = h.hint() {
@@ -2072,7 +2073,11 @@ impl ApplicationHandler for App {
                         });
                         ui.chat.hidden = self.remotes.chat.hidden;
                         let tags = if self.settings.name_tags {
-                            self.camera.as_ref().map(|c| lan::name_tags(&self.remotes, c, w, h)).unwrap_or_default()
+                            {
+                            let voice = self.voice.as_ref();
+                            let speaks = |name: &str, id: u32| voice.is_some_and(|v| v.speaks(name, id));
+                            self.camera.as_ref().map(|c| lan::name_tags(&self.remotes, c, w, h, &speaks)).unwrap_or_default()
+                        }
                         } else {
                             Vec::new()
                         };

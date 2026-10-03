@@ -154,6 +154,10 @@ again only when something changes; drag on it to turn the bus, scroll to zoom. I
   It is enabled by default and can be turned off under Settings → General; the switch
   affects the launcher immediately and the game on its next start. Discord must be running
   on the same computer.
+  **Voice chat through GreenTeaSpeak** (on by default): in multiplayer, the other players
+  are heard from where they are, when GreenTeaSpeak 2 runs with the openOMSI plugin and the
+  server names a voice channel (see [SERVER.md](SERVER.md) and
+  `tools/greenteaspeak-plugin/README.md`).
 * **Controls** - `Inputs/keyboard.cfg`: click a key, press the new one; clashes are red. The
   keys are the game's with *Driving keys: Custom controls* (Settings → Driving); with a ready-made
   layout (W A S D, arrows) those keys drive and win over the list - the page says so, and
