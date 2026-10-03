@@ -40,10 +40,11 @@ const PANEL: Color = Color::rgba(10, 10, 10, 0.70);
 // (the bars under the texts darken whatever the opacity setting leaves of the panel: at a
 // third the cab showed through behind the next stop)
 const BAR: Color = Color::rgba(0, 0, 0, 0.55);
-const ROAD_CASING: Color = Color::rgba(30, 30, 30, 0.9);
-const ROAD: Color = Color::rgba(92, 92, 92, 1.0);
-const ROAD_MAIN: Color = Color::rgba(112, 112, 112, 1.0);
-const ROUTE: Color = Color::rgba(214, 48, 40, 1.0);
+// (the launcher's map picture draws with these too, so the two maps cannot look apart)
+pub(crate) const ROAD_CASING: Color = Color::rgba(30, 30, 30, 0.9);
+pub(crate) const ROAD: Color = Color::rgba(92, 92, 92, 1.0);
+pub(crate) const ROAD_MAIN: Color = Color::rgba(112, 112, 112, 1.0);
+pub(crate) const ROUTE: Color = Color::rgba(214, 48, 40, 1.0);
 const DOT: Color = Color::rgba(70, 140, 255, 1.0);
 /// The public transport's dots: trolleybuses, buses, trams, and the text on their line tags.
 const TROLLEY: Color = Color::rgba(46, 184, 92, 1.0);
@@ -1362,10 +1363,25 @@ fn visible_road_lanes(net: &Network) -> Vec<(usize, &omsi_sim::traffic::Lane)> {
         .collect()
 }
 
-struct MapRoad {
-    points: Vec<DVec3>,
-    width: f32,
-    main: bool,
+/// The roads a city map draws, from a whole map's lanes as they were read off the tiles:
+/// every path linked to its neighbours, the editor-only ones confirmed by the map's own
+/// asphalt, then grouped into carriageways with their real widths. The navigator's city map
+/// and the launcher's map picture draw the same roads this way, so the two cannot drift
+/// apart; the second value is the linked network the caller may walk (a trip's own lanes).
+pub(crate) fn city_roads(lanes: Vec<omsi_sim::traffic::Lane>, surfaces: &[(Vec<DVec3>, f32)]) -> (Vec<MapRoad>, Network) {
+    let mut net = Network { lanes, ..Default::default() };
+    net.link(1.5);
+    confirm_road_surfaces(&mut net, surfaces);
+    let roads = road_geometry(&net);
+    (roads, net)
+}
+
+/// A road of the city map: the centre line of a carriageway, as wide as the map makes it.
+pub(crate) struct MapRoad {
+    pub points: Vec<DVec3>,
+    pub width: f32,
+    /// A road cars drive far along (the map's own speed limits say so): drawn brighter.
+    pub main: bool,
 }
 
 /// Some maps separate the asphalt mesh from their editor-only traffic splines. Use the
@@ -1539,8 +1555,8 @@ fn build_roads(p: &mut Painter, net: &Network, anchor: DVec2) {
 
 /// `pts` with the points dropped that lie within `tol` metres of the line through their
 /// neighbours kept (Douglas-Peucker): a lane is sampled every metre or two, a ribbon needs
-/// only its bends.
-fn simplify(pts: &[Vec3], tol: f32) -> Vec<Vec3> {
+/// only its bends. The launcher's map picture draws its roads with this too.
+pub(crate) fn simplify(pts: &[Vec3], tol: f32) -> Vec<Vec3> {
     if pts.len() < 3 {
         return pts.to_vec();
     }
