@@ -600,6 +600,22 @@ impl RigidBody {
         // body covers the whole frame the clock, the odometer and the scripts count (it was
         // cut to 50 ms: at 10 fps the bus went half as far as the time went on)
         let dt = if dt.is_finite() { dt.clamp(0.0, 0.25) } else { 0.0 };
+        // A script's value that is no number - a bus's `M_Wheel` or a brake force of 0/0 or
+        // 1/0 - put the whole body at NaN within a step: the bus vanished and the steering's
+        // clamp stopped the game a frame later ("min > max, or either was NaN", #1045).
+        // Such an input counts as none; and should the body still come out of the step at NaN
+        // (a value of the file's), it stays where it stood before, at rest.
+        let finite = |x: f32| if x.is_finite() { x } else { 0.0 };
+        let (drive_torque, steer) = (finite(drive_torque), finite(steer));
+        let sane: Vec<f32>;
+        let brake = if brake.iter().all(|b| b.is_finite()) {
+            brake
+        } else {
+            sane = brake.iter().map(|&b| finite(b)).collect();
+            &sane
+        };
+        let before = (self.position, self.orientation, self.steer_deg);
+        let wheels_before: Vec<(f32, Option<f32>)> = self.wheels.iter().map(|w| (w.compression, w.touch)).collect();
         let slices = (dt / 0.05).ceil().max(1.0) as usize;
         let mut impacts = Vec::new();
         for _ in 0..slices {
@@ -623,6 +639,20 @@ impl RigidBody {
             }
         }
         self.wheel_impacts = impacts;
+        if !(self.position.is_finite() && self.orientation.is_finite() && self.velocity.is_finite() && self.omega.is_finite()) {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| log::warn!("vehicle physics: the body's state became no number; it stays where it was, at rest"));
+            (self.position, self.orientation, self.steer_deg) = before;
+            self.velocity = Vec3::ZERO;
+            self.omega = Vec3::ZERO;
+            self.accel_body = Vec3::ZERO;
+            for (w, (c, t)) in self.wheels.iter_mut().zip(wheels_before) {
+                (w.compression, w.touch) = (c, t);
+                w.compression_rate = 0.0;
+                w.spin = 0.0;
+            }
+            self.wheel_impacts.clear();
+        }
     }
 
     fn step_slice(&mut self, dt: f32, drive_torque: f32, brake: &[f32], steer: f32, probe: &dyn Fn(f64, f64, f64) -> GroundProbe) {
@@ -2300,5 +2330,34 @@ mod tests {
         }
         assert!(broke);
         assert!(rb.forward_speed() > 25.0 / 3.6, "{}", rb.forward_speed() * 3.6);
+    }
+
+
+    /// A drive torque, steering or brake force that is no number (a script's 0/0) is taken
+    /// as none: the body keeps its place and speed instead of turning to NaN (#1045).
+    #[test]
+    fn inputs_that_are_no_number_leave_the_body_whole() {
+        for (torque, brake, steer) in [(f32::NAN, 0.0, 0.0), (3000.0, f32::INFINITY, 0.0), (3000.0, f32::NAN, 0.0), (3000.0, 0.0, f32::NAN), (f32::NEG_INFINITY, 0.0, 0.0)] {
+            let mut rb = RigidBody::from_definition(&bus(), &[]);
+            rb.place(DVec3::ZERO, 0.0);
+            let g = road(1e9, 0.0);
+            run(&mut rb, 1.0, 3000.0, 0.0, &g);
+            for _ in 0..60 {
+                rb.step(1.0 / 60.0, torque, &[brake; 4], steer, &g);
+            }
+            assert!(rb.position.is_finite() && rb.velocity.is_finite(), "{torque} {brake} {steer}: {:?} {:?}", rb.position, rb.velocity);
+            assert!(rb.forward_speed() > 0.1, "{torque} {brake} {steer}: {}", rb.forward_speed());
+            assert!(rb.wheels.iter().all(|w| w.compression.is_finite() && w.spin.is_finite()));
+        }
+        // a body whose own values are no number stays put
+        let mut rb = RigidBody::from_definition(&bus(), &[]);
+        rb.place(DVec3::ZERO, 0.0);
+        let g = road(1e9, 0.0);
+        run(&mut rb, 0.5, 0.0, 0.0, &g);
+        let at = rb.position;
+        rb.mass = f32::NAN;
+        rb.step(1.0 / 60.0, 3000.0, &[0.0; 4], 0.0, &g);
+        assert!(rb.position.is_finite() && (rb.position - at).length() < 1e-9, "{:?}", rb.position);
+        assert_eq!(rb.velocity, Vec3::ZERO);
     }
 }
