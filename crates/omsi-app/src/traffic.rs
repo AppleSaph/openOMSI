@@ -1027,11 +1027,8 @@ impl Traffic {
                     let path = omsi_cfg::resolve_path(root, &v.file);
                     match VehicleType::load_ai(root, &path) {
                         Ok(t) => {
-                            // `[type]` 2 = rail (only as scheduled trains), 3 = aircraft on flight paths
-                            let rail =
-                                matches!(t.def.kind, omsi_vehicle::vehicle::VehicleKind::Other(2))
-                                    || t.def.rail_body_osc.is_some()
-                                    || !t.def.contact_shoes.is_empty();
+                            // rail (only as scheduled trains), 3 = aircraft on flight paths
+                            let rail = t.def.is_rail();
                             let air =
                                 matches!(t.def.kind, omsi_vehicle::vehicle::VehicleKind::Other(3));
                             if rail {
@@ -6207,29 +6204,40 @@ impl Traffic {
             pos,
             heading,
         ))];
-        let h = heading.to_radians();
-        let fwd = DVec3::new(h.sin(), h.cos(), 0.0);
-        let (mut origin, mut lead) = (pos, ty.clone());
-        for (t, _) in self.trailer_chain(ty) {
-            let back = lead
-                .def
-                .coupling_back
-                .as_ref()
-                .map(|c| c.pos[1])
-                .unwrap_or(-4.0);
-            let front = t
-                .def
-                .coupling_front
-                .as_ref()
-                .map(|c| c.pos[1])
-                .unwrap_or(4.0);
-            origin += fwd * (back - front) as f64;
-            bodies.push(grown(omsi_sim::collision::Obb::from_box(
-                t.def.bounding_box.unwrap_or(DEFAULT_BOX),
+        let (mut origin, mut lead, mut lead_rev) = (pos, ty.clone(), false);
+        for (t, rev) in self.trailer_chain(ty) {
+            let (back, front) = match omsi_sim::vehicle::coupling_offsets(&lead, lead_rev, &t, rev) {
+                Some((back, front)) => (back, front),
+                None => {
+                    // the declared joint, each end the one the part's own way names (as
+                    // `TrailerPart::new_ex` takes it): a part turned round couples by its
+                    // `[coupling_front]`, not by its `[coupling_back]`
+                    let cb = if lead_rev { lead.def.coupling_front.as_ref() } else { lead.def.coupling_back.as_ref() };
+                    let cf = if rev { t.def.coupling_back.as_ref() } else { t.def.coupling_front.as_ref() };
+                    (
+                        cb.map(|c| c.pos[1]).unwrap_or(if lead_rev { 4.0 } else { -4.0 }),
+                        cf.map(|c| c.pos[1]).unwrap_or(if rev { -4.0 } else { 4.0 }),
+                    )
+                }
+            };
+            // each car stands along the consist's heading, turned round by its own
+            // (absolute) orientation - never by the car in front of it
+            let (center, car_heading) = omsi_sim::vehicle::coupling_placement(
                 origin,
                 heading,
+                lead_rev,
+                back,
+                rev,
+                front,
+            );
+            bodies.push(grown(omsi_sim::collision::Obb::from_box(
+                t.def.bounding_box.unwrap_or(DEFAULT_BOX),
+                center,
+                car_heading,
             )));
+            origin = center;
             lead = t;
+            lead_rev = rev;
         }
         let reach = bodies
             .iter()

@@ -3128,6 +3128,76 @@ fn scripts_acceleration(accel_body: Vec3, orientation: Quat) -> Vec3 {
     accel_body - orientation.inverse().mul_vec3(Vec3::new(0.0, 0.0, 9.81))
 }
 
+/// Where the two parts of a consist meet, in the frame of the part in front and in the
+/// frame of the part behind: `(lead's rear, car's front)` along the longitudinal axis, or
+/// `None` when the declared coupling points are the right ones.
+///
+/// The two coupled parts of an articulated bus share one joint: the front section's
+/// `[coupling_back]` and the rear section's `[coupling_front]` name the same point of the
+/// world, and the bellows hang between the two bodies (the rear section's body ends short
+/// of the joint). A train is built the other way about: every car is a vehicle with scripts
+/// of its own and stands end to end with the next - and there the declared coupling points
+/// need not be the cars' ends at all. The CR200J's head car names a rear coupling 2.6 m
+/// inside its body (hand-tuned in Omsi.exe, where the cars are put together by their
+/// bodies, so the value costs nothing); taken as the car's end, the second car was pulled
+/// 2.6 m into the first, its nose pressed through the head car's tail.
+///
+/// So a rail car butts its model to the leading car's model; any other part - a trailer,
+/// an articulated-bus rear section - keeps the declared joint. The values are in the body
+/// frame, so that a caller that turns a reversed part around (`TrailerPart::body_rotation`)
+/// needs no more than this; a caller that does not (`Traffic::blocked`, which lays the cars
+/// straight along the heading) must turn them itself - see [`coupling_placement`].
+pub fn coupling_offsets(
+    lead: &VehicleType,
+    lead_reversed: bool,
+    car: &VehicleType,
+    car_reversed: bool,
+) -> Option<(f32, f32)> {
+    if !car.def.is_rail() {
+        return None;
+    }
+    // the leading car's rear end (its front end when it runs turned round), the car's own
+    // front end (its rear end when the car runs turned round)
+    let lead_rear = lead.model_box().map(|(lo, hi)| if lead_reversed { hi.y } else { lo.y })?;
+    let car_front = car.model_box().map(|(lo, hi)| if car_reversed { lo.y } else { hi.y })?;
+    Some((lead_rear, car_front))
+}
+
+/// Where a car of a consist stands, for a caller that lays the cars along one heading with
+/// no turn of its own (`Traffic::blocked`): the world position and heading of the car whose
+/// body front sits at the joint [`coupling_offsets`] named.
+///
+/// Both `lead_reversed` and `reversed` are absolute orientations (a car's own, as
+/// `Traffic::trailer_chain` carries them - `next_coupled` already folds the flag of each
+/// coupling into the value it returns), and `heading` is the consist's own - the head car's.
+/// A car's body sits along the consist's heading turned round when it is itself turned
+/// round, so its heading is derived from `reversed` alone and never from the car in front
+/// of it: two cars turned round in a row would otherwise come out turned twice and lie on
+/// top of each other.
+///
+/// `back` is the leading car's body end in the leading car's frame and `front` this car's
+/// body front in its own, so the joint lies `back` along the lead's heading (turned round
+/// when the *lead* is) and the car's origin steps back from it by `front` along the car's
+/// own heading. A caller that turns the part around itself (`TrailerPart::body_rotation`)
+/// needs none of this.
+pub fn coupling_placement(
+    lead_origin: DVec3,
+    heading: f64,
+    lead_reversed: bool,
+    back: f32,
+    reversed: bool,
+    front: f32,
+) -> (DVec3, f64) {
+    let turned = |base: f64, rev: bool| if rev { base + 180.0 } else { base };
+    let lead_h = turned(heading, lead_reversed);
+    let lh = lead_h.to_radians();
+    let joint = lead_origin + DVec3::new(lh.sin(), lh.cos(), 0.0) * back as f64;
+    let car_h = turned(heading, reversed);
+    let ch = car_h.to_radians();
+    let origin = joint - DVec3::new(ch.sin(), ch.cos(), 0.0) * front as f64;
+    (origin, car_h)
+}
+
 impl TrailerPart {
     /// Pitch (degrees, nose up), eased axle height and the track point it stands on (for
     /// the `OMSI_DEBUG_TRAILERS` trace).
@@ -3168,12 +3238,13 @@ impl TrailerPart {
         );
         // Couplings stay in the body frame: `body_rotation` already turns a reversed part
         // around, so its rear coupling faces the leading vehicle and its front axle trails.
+        // See [`coupling_offsets`] for where the two parts of a consist meet.
         let own_front = if reversed {
             ty.def.coupling_back.as_ref().map(|c| Vec3::from(c.pos))
         } else {
             ty.def.coupling_front.as_ref().map(|c| Vec3::from(c.pos))
         };
-        let coupling_front = own_front.unwrap_or(if reversed {
+        let mut coupling_front = own_front.unwrap_or(if reversed {
             Vec3::new(0.0, -4.0, 0.3)
         } else {
             Vec3::new(0.0, 4.0, 0.3)
@@ -3183,11 +3254,17 @@ impl TrailerPart {
         } else {
             main.def.coupling_back.as_ref().map(|c| Vec3::from(c.pos))
         };
-        let coupling_back = lead_back.unwrap_or(if main_reversed {
+        let mut coupling_back = lead_back.unwrap_or(if main_reversed {
             Vec3::new(0.0, 4.0, 0.3)
         } else {
             Vec3::new(0.0, -4.0, 0.3)
         });
+        // A train stands its cars end to end by their bodies; the heights stay the declared
+        // couplings', which the pitch of the part hangs on.
+        if let Some((lead_rear, car_front)) = coupling_offsets(main, main_reversed, &ty, reversed) {
+            coupling_back.y = lead_rear;
+            coupling_front.y = car_front;
+        }
         // the line the part turns about: its own `[rot_pnt_long]` where a road part names
         // one (Omsi.exe runs every section as a body of its own on the same wheel physics,
         // each axle steered towards the turning centre on that line), else the axle
