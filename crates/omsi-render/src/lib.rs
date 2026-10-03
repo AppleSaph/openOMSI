@@ -4329,6 +4329,8 @@ impl Renderer {
         img: &omsi_texture::Image,
         mipmaps: bool,
     ) -> TextureId {
+        let fitted = fit_image(img, self.device.limits().max_texture_dimension_2d);
+        let img = fitted.as_ref().unwrap_or(img);
         let t = if mipmaps && img.width > 1 && img.height > 1 {
             self.upload_texture_gpu_mips(img)
         } else {
@@ -4339,7 +4341,7 @@ impl Renderer {
     }
 
     pub fn add_blank_texture(&self, scene: &mut Scene, width: u32, height: u32) -> TextureId {
-        let (width, height) = (width.max(1), height.max(1));
+        let (width, height) = fit_size(width.max(1), height.max(1), self.device.limits().max_texture_dimension_2d);
         // A newly allocated GPU texture has undefined contents. Script displays may be
         // sampled before their first `STUnlock`, so initialise them as transparent rather
         // than briefly showing arbitrary solid pixels on new or AI vehicles.
@@ -4618,6 +4620,7 @@ impl Renderer {
 
     /// A texture the scene can be rendered into (`render_to_texture`), e.g. a rear-view mirror.
     pub fn add_render_texture(&self, scene: &mut Scene, width: u32, height: u32) -> TextureId {
+        let (width, height) = fit_size(width.max(1), height.max(1), self.device.limits().max_texture_dimension_2d);
         let size = wgpu::Extent3d {
             width,
             height,
@@ -4669,7 +4672,15 @@ impl Renderer {
 
     /// Replace the pixels of a texture (same size as when created, no mipmaps regenerated).
     pub fn update_texture(&self, scene: &Scene, id: TextureId, img: &omsi_texture::Image) {
-        let t = &scene.textures[id].texture;
+        let Some(gt) = scene.textures.get(id) else { return };
+        // (a picture larger than the chip takes went up halved, see `fit_image`; one larger
+        // than its texture is not written - a device error each frame)
+        let fitted = fit_image(img, self.device.limits().max_texture_dimension_2d);
+        let img = fitted.as_ref().unwrap_or(img);
+        if img.width > gt.size.0 || img.height > gt.size.1 || img.rgba.len() < (img.width * img.height * 4) as usize {
+            return;
+        }
+        let t = &gt.texture;
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: t,
@@ -4703,6 +4714,8 @@ impl Renderer {
         let Some(old) = scene.textures.get(id) else {
             return false;
         };
+        let fitted = fit_image(img, self.device.limits().max_texture_dimension_2d);
+        let img = fitted.as_ref().unwrap_or(img);
         let levels = (32 - img.width.max(img.height).leading_zeros()).max(1);
         if old.size != (img.width, img.height) || old.texture.mip_level_count() != levels {
             scene.textures[id] = self.upload_texture_gpu_mips(img);
@@ -12279,6 +12292,34 @@ pub fn fit_texture(data: &omsi_texture::TextureData, max: u32) -> Option<omsi_te
     Some(omsi_texture::TextureData { width: cw, height: ch, format: PixelFormat::Rgba8, levels: vec![rgba], has_alpha: data.has_alpha, gpu_mips: true })
 }
 
+/// A size halved (both sides, as `fit_texture` halves a picture) until neither passes `max`.
+fn fit_size(w: u32, h: u32, max: u32) -> (u32, u32) {
+    let (mut w, mut h) = (w, h);
+    while w > max || h > max {
+        (w, h) = ((w / 2).max(1), (h / 2).max(1));
+    }
+    (w, h)
+}
+
+/// An RGBA picture of the game's own (a script's or a sign's text, an HTML display) larger
+/// than the graphics chip takes, halved until it fits (None when it fits as it is). Made at
+/// its full size, the texture was a device error, and so was every frame's write into it.
+fn fit_image(img: &omsi_texture::Image, max: u32) -> Option<omsi_texture::Image> {
+    if img.width <= max && img.height <= max {
+        return None;
+    }
+    let data = omsi_texture::TextureData {
+        width: img.width,
+        height: img.height,
+        format: omsi_texture::PixelFormat::Rgba8,
+        levels: vec![img.rgba.clone()],
+        has_alpha: img.has_alpha,
+        gpu_mips: true,
+    };
+    let small = fit_texture(&data, max)?;
+    Some(omsi_texture::Image { width: small.width, height: small.height, rgba: small.levels.into_iter().next().unwrap_or_default(), has_alpha: img.has_alpha })
+}
+
 #[cfg(test)]
 mod fit_tests {
     #[test]
@@ -12288,6 +12329,14 @@ mod fit_tests {
         assert_eq!((small.width, small.height), (2, 1));
         assert_eq!(small.levels[0].len(), 2 * 4);
         assert!(super::fit_texture(&data, 8).is_none());
+        // a picture of the game's own, and a size, the same way
+        let img = omsi_texture::Image { width: 5000, height: 300, rgba: vec![9; 5000 * 300 * 4], has_alpha: true };
+        let small = super::fit_image(&img, 2048).unwrap();
+        assert_eq!((small.width, small.height), (1250, 75));
+        assert_eq!(small.rgba.len(), 1250 * 75 * 4);
+        assert_eq!(super::fit_size(5000, 300, 2048), (1250, 75));
+        assert_eq!(super::fit_size(2048, 16, 2048), (2048, 16));
+        assert!(super::fit_image(&small, 2048).is_none());
     }
 }
 
