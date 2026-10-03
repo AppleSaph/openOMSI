@@ -129,9 +129,9 @@ impl GroundGap {
         for (k, &(i, c, r)) in wheels.iter().enumerate() {
             let centre = position + xf(i).transform_point3(c).as_dvec3();
             let tyre = centre.z - r as f64;
-            // what is drawn under the tyre (from its hub: a face over the hub is a roof or a
-            // deck, not this wheel's ground)
-            let drawn = crate::scene::drawn_ground(&world.terrains, &world.surfaces, centre.x, centre.y, centre.z);
+            // what is drawn under the tyre, from 2 m over its hub: a tyre sunk into the road
+            // is under the road, and asked from the hub that found the ground below it
+            let drawn = crate::scene::drawn_ground(&world.terrains, &world.surfaces, centre.x, centre.y, centre.z + 2.0);
             let wheel = crate::scene::drive_probe(&world.terrains, &world.surfaces, centre.x, centre.y, centre.z).below;
             let stats = if ai { &mut self.ai } else { &mut self.player };
             match drawn {
