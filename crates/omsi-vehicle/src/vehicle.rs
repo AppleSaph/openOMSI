@@ -340,7 +340,15 @@ impl Vehicle {
                 "set_camera_outside_center" => v.camera_outside_center = r.f32s::<3>(),
                 "mass" => v.mass = r.f32(),
                 "momentofintertia" => v.moment_of_inertia = r.f32s::<3>(),
-                "boundingbox" => v.bounding_box = Some(r.f32s::<6>()),
+                "boundingbox" => {
+                    // (the sizes as magnitudes: a mod's box given -2.62 m wide crossed the
+                    // bounds of the walkers' clamp about it and the game stopped, #986)
+                    let mut bb = r.f32s::<6>();
+                    for x in &mut bb[..3] {
+                        *x = x.abs();
+                    }
+                    v.bounding_box = Some(bb);
+                }
                 "cog" => v.cog = Some(r.f32s::<3>()),
                 "schwerpunkt" => v.cog_height = r.f32(),
                 "rollwiderstand" => v.rolling_resistance = r.f32(),
@@ -578,6 +586,12 @@ mod tests {
         assert_eq!((b.long, b.max_width, b.min_width, b.wheel_diameter, b.spring, b.max_force, b.damper, b.driven, b.inertia_inv), (-2.577, 2.4, 1.4, 1.023, 280.0, 116.0, 20.0, true, 0.015));
         assert_eq!(v.mass, 10.9);
         assert_eq!(v.cog, Some([0.0, 0.2, 0.8]));
+    }
+
+    #[test]
+    fn a_bounding_box_given_negative_is_its_size() {
+        let v = Vehicle::parse(&CfgFile::from_str("x.bus", "[boundingbox]\n-2.62\n12.2\n-3.4\n0\n-0.3\n1.7\n"));
+        assert_eq!(v.bounding_box, Some([2.62, 12.2, 3.4, 0.0, -0.3, 1.7]));
     }
 
     #[test]
