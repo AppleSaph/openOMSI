@@ -3165,26 +3165,37 @@ pub fn coupling_offsets(
 
 /// Where a car of a consist stands, for a caller that lays the cars along one heading with
 /// no turn of its own (`Traffic::blocked`): the world position and heading of the car whose
-/// front coupling sits at the joint [`coupling_offsets`] named.
+/// body front sits at the joint [`coupling_offsets`] named.
 ///
-/// `back` and `front` are the two body-frame ends that function returned - the lead's rear,
-/// the car's front - and each is already the right end for the car's own direction. The
-/// joint lies `back` along the lead's own heading, and the car's origin steps back from it
-/// by `front` along the car's own heading (turned round when `reversed`); a caller that
-/// turns the part around itself (`TrailerPart::body_rotation`) needs none of this.
+/// Both `lead_reversed` and `reversed` are absolute orientations (a car's own, as
+/// `Traffic::trailer_chain` carries them - `next_coupled` already folds the flag of each
+/// coupling into the value it returns), and `heading` is the consist's own - the head car's.
+/// A car's body sits along the consist's heading turned round when it is itself turned
+/// round, so its heading is derived from `reversed` alone and never from the car in front
+/// of it: two cars turned round in a row would otherwise come out turned twice and lie on
+/// top of each other.
+///
+/// `back` is the leading car's body end in the leading car's frame and `front` this car's
+/// body front in its own, so the joint lies `back` along the lead's heading (turned round
+/// when the *lead* is) and the car's origin steps back from it by `front` along the car's
+/// own heading. A caller that turns the part around itself (`TrailerPart::body_rotation`)
+/// needs none of this.
 pub fn coupling_placement(
     lead_origin: DVec3,
-    lead_heading: f64,
+    heading: f64,
+    lead_reversed: bool,
     back: f32,
-    front: f32,
     reversed: bool,
+    front: f32,
 ) -> (DVec3, f64) {
-    let lh = lead_heading.to_radians();
+    let turned = |base: f64, rev: bool| if rev { base + 180.0 } else { base };
+    let lead_h = turned(heading, lead_reversed);
+    let lh = lead_h.to_radians();
     let joint = lead_origin + DVec3::new(lh.sin(), lh.cos(), 0.0) * back as f64;
-    let heading = if reversed { lead_heading + 180.0 } else { lead_heading };
-    let ch = heading.to_radians();
+    let car_h = turned(heading, reversed);
+    let ch = car_h.to_radians();
     let origin = joint - DVec3::new(ch.sin(), ch.cos(), 0.0) * front as f64;
-    (origin, heading)
+    (origin, car_h)
 }
 
 impl TrailerPart {

@@ -6204,20 +6204,32 @@ impl Traffic {
             pos,
             heading,
         ))];
-        let (mut origin, mut lead, mut lead_rev, mut lead_heading) =
-            (pos, ty.clone(), false, heading);
+        let (mut origin, mut lead, mut lead_rev) = (pos, ty.clone(), false);
         for (t, rev) in self.trailer_chain(ty) {
             let (back, front) = match omsi_sim::vehicle::coupling_offsets(&lead, lead_rev, &t, rev) {
                 Some((back, front)) => (back, front),
-                None => (
-                    lead.def.coupling_back.as_ref().map(|c| c.pos[1]).unwrap_or(-4.0),
-                    t.def.coupling_front.as_ref().map(|c| c.pos[1]).unwrap_or(4.0),
-                ),
+                None => {
+                    // the declared joint, each end the one the part's own way names (as
+                    // `TrailerPart::new_ex` takes it): a part turned round couples by its
+                    // `[coupling_front]`, not by its `[coupling_back]`
+                    let cb = if lead_rev { lead.def.coupling_front.as_ref() } else { lead.def.coupling_back.as_ref() };
+                    let cf = if rev { t.def.coupling_back.as_ref() } else { t.def.coupling_front.as_ref() };
+                    (
+                        cb.map(|c| c.pos[1]).unwrap_or(if lead_rev { 4.0 } else { -4.0 }),
+                        cf.map(|c| c.pos[1]).unwrap_or(if rev { -4.0 } else { 4.0 }),
+                    )
+                }
             };
-            // each car stands along its own heading: a reversed one faces the other way, so
-            // its body is not the lead's - `coupling_offsets` returns body-frame ends.
-            let (center, car_heading) =
-                omsi_sim::vehicle::coupling_placement(origin, lead_heading, back, front, rev);
+            // each car stands along the consist's heading, turned round by its own
+            // (absolute) orientation - never by the car in front of it
+            let (center, car_heading) = omsi_sim::vehicle::coupling_placement(
+                origin,
+                heading,
+                lead_rev,
+                back,
+                rev,
+                front,
+            );
             bodies.push(grown(omsi_sim::collision::Obb::from_box(
                 t.def.bounding_box.unwrap_or(DEFAULT_BOX),
                 center,
@@ -6226,7 +6238,6 @@ impl Traffic {
             origin = center;
             lead = t;
             lead_rev = rev;
-            lead_heading = car_heading;
         }
         let reach = bodies
             .iter()
