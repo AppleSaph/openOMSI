@@ -274,6 +274,8 @@ pub(crate) struct App {
     pub(crate) fps_t: Instant,
     /// Last workshop / fuel pump / wash message, and how long it still shows.
     pub(crate) service_msg: Option<(String, f32)>,
+    /// The server's notifications on the screen (`notify`), oldest first.
+    pub(crate) notices: Vec<crate::ui::Notice>,
     /// What the log has said (see applog.rs).
     pub(crate) log_state: crate::applog::LogState,
     /// The driver's personnel file and this session's statistics.

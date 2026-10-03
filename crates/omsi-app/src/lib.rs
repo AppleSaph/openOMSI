@@ -554,6 +554,7 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         frames: 0,
         fps_t: Instant::now(),
         service_msg: clock_note.map(|m| (m, 10.0)),
+        notices: Vec::new(),
         log_state: Default::default(),
         plugins: None,
         career: Default::default(),

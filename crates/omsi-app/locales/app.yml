@@ -21746,3 +21746,21 @@ _version: 2
   ru: "Наряды этой линии в выбранный день"
   de: "Umläufe dieser Linie am gewählten Tag"
   uk: "Наряди цієї лінії в обраний день"
+"Server":
+  fr: "Serveur"
+  ru: "Сервер"
+  de: "Server"
+  uk: "Сервер"
+  pl: "Serwer"
+"Warning":
+  fr: "Avertissement"
+  ru: "Предупреждение"
+  de: "Warnung"
+  uk: "Попередження"
+  pl: "Ostrzeżenie"
+"Alert":
+  fr: "Alerte"
+  ru: "Тревога"
+  de: "Alarm"
+  uk: "Тривога"
+  pl: "Alarm"
