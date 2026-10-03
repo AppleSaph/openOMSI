@@ -79,6 +79,9 @@ fn write_favourites(f: &std::collections::BTreeSet<String>) {
 const TABS: [&str; 2] = ["Vehicle & environment", "Map & duty"];
 /// Between a panel and what is beside it.
 const GAP: f32 = 16.0;
+/// How far a tab's name stands from its cell's left, so it lines up with the panel's own
+/// content (the fields below start at the same inset).
+const TAB_PAD: f32 = 18.0;
 /// The foot's button.
 const GO_H: f32 = 46.0;
 
@@ -100,6 +103,9 @@ pub fn draw(l: &mut Launcher, area: Rect) {
     // the background
     if l.drive.tab == 0 {
         l.preview_full(full, (panel.right() + GAP) / size.x);
+        // the bus stands behind the whole page: one sheet over the left column, tabs and
+        // panel alike, keeps what is written there readable without hiding the bus
+        l.ui.panel_soft(Rect::new(area.x, area.y, panel_w, (panel.bottom() - area.y).max(120.0)));
     } else {
         l.mapview.want(map_look(l));
         l.map_background(full);
@@ -149,7 +155,8 @@ fn tabs(l: &mut Launcher, r: Rect) {
         }
         let on = l.drive.tab == k;
         let c = if on { TEXT } else if h { TEXT_SOFT } else { TEXT_DIM };
-        l.ui.text_in(name, cell, 13.0, if on { Weight::Medium } else { Weight::Regular }, c, Align::Left);
+        let text = Rect::new(cell.x + TAB_PAD, cell.y, (cell.w - TAB_PAD).max(24.0), cell.h);
+        l.ui.text_in(name, text, 13.0, if on { Weight::Medium } else { Weight::Regular }, c, Align::Left);
     }
 }
 

@@ -450,6 +450,15 @@ impl Ui {
         p.rounded_border(r, RADIUS, 1.0, EDGE);
     }
 
+    /// A panel a picture lies behind (the bus on the Drive page's first tab): the same sheet,
+    /// letting what is behind it show through a little. Square and without an outline, because
+    /// it reaches the page's own edges - the tab row above it and the column's left - where a
+    /// rounded corner would read as the tabs' and a line would be drawn over the picture.
+    pub fn panel_soft(&mut self, r: Rect) {
+        self.solid(r);
+        self.p().rect(r, PANEL.alpha(0.86));
+    }
+
     /// A section heading inside a panel: an accent tick and the title in capitals.
     pub fn heading(&mut self, r: Rect, title: &str, icon: Option<&str>) -> Rect {
         let _ = icon;
