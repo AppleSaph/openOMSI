@@ -568,6 +568,13 @@ impl App {
                     if let Some(a) = fallback_action(code, wasd) {
                         p.axes.set(a, pressed);
                     }
+                } else if !pressed {
+                    // a driving key let go always lets go: released while Shift was held (or
+                    // in the free view) it stayed "pressed", and the wheel went on turning to
+                    // full lock until that key was pressed again (#1040, #1050, #1053)
+                    if let Some(a) = fallback_action(code, wasd) {
+                        p.axes.set(a, false);
+                    }
                 }
             }
             // A driving key held with shift is the vehicle key it covers: Shift+W is
