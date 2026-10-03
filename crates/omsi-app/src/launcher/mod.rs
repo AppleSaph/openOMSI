@@ -1161,7 +1161,7 @@ impl Launcher {
         self.mapview.think(r, window, self.ui.scale, p);
         if let Some(i) = self.mapview.take_clicked() {
             if self.state.choice.entry != i as i32 {
-                log::info!("launcher map: entry point {} taken from the map", i + 1);
+                log::info!("launcher map: entry point {} of the map's list taken from the map", i + 1);
                 self.state.choice.entry = i as i32;
                 self.state.touched();
             }

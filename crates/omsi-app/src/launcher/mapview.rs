@@ -81,6 +81,20 @@ pub struct Pointer {
     pub blocked: bool,
 }
 
+/// An entry point as the map draws it: where its marker stands, its name, and its own place
+/// in `global.cfg`'s list. That place - not its place among the drawn markers - is what the
+/// choice and the game count (`--entry` is the position in that list), so an entry point
+/// whose position cannot be resolved leaves a gap that does not shift every marker after it
+/// onto the wrong spawn.
+struct Entry {
+    /// Where the marker stands, in world metres.
+    at: DVec2,
+    /// Its name, as `global.cfg` writes it.
+    name: String,
+    /// Its position in `global.entry_points`.
+    index: usize,
+}
+
 /// A map as the map needs it: the roads the game's own city map draws, the lanes they were
 /// grouped from (the chosen trip's route runs on those), where its entry points stand and
 /// where its objects do - all in world metres.
@@ -101,8 +115,9 @@ struct Roads {
     /// The world rectangle the roads cover (the 1 - 99 % box: see `read_map`).
     lo: DVec2,
     hi: DVec2,
-    /// The entry points (world place, name), in `global.cfg`'s order.
-    entries: Vec<(DVec2, String)>,
+    /// The entry points that could be placed, in `global.cfg`'s order - each carrying its own
+    /// place in that list (see `Entry`).
+    entries: Vec<Entry>,
     /// Every placed object's world place: the trip's stops are found here.
     objects: HashMap<i64, DVec2>,
 }
@@ -158,7 +173,8 @@ pub struct MapView {
     travelled: f32,
     panning: bool,
     last: Option<Vec2>,
-    /// The entry point under the mouse, and the one a click took this frame.
+    /// The drawn marker under the mouse, and the one a click took this frame - both a number
+    /// among the drawn markers; `take_clicked` turns the second into the choice's own number.
     hover: Option<usize>,
     clicked: Option<usize>,
 
@@ -260,24 +276,34 @@ impl MapView {
         self.shown.as_ref().map(|s| s.entry).unwrap_or(-1)
     }
 
-    /// The entry point under the mouse.
+    /// The drawn entry point under the mouse (a marker's own number among the drawn ones,
+    /// which `entry_name` and `entry_at` take - not the choice's number).
     pub fn hovered(&self) -> Option<usize> {
         self.hover
     }
 
-    /// The name of an entry point, as `global.cfg` writes it.
+    /// The name of a drawn entry point, as `global.cfg` writes it.
     pub fn entry_name(&self, i: usize) -> Option<&str> {
-        self.roads.as_deref()?.entries.get(i).map(|e| e.1.as_str())
+        self.roads.as_deref()?.entries.get(i).map(|e| e.name.as_str())
     }
 
-    /// Where an entry point stands, in the picture's own pixels.
+    /// Where a drawn entry point stands, in the picture's own pixels.
     pub fn entry_at(&self, i: usize) -> Option<Vec2> {
-        Some(self.project(self.roads.as_deref()?.entries.get(i)?.0))
+        Some(self.project(self.roads.as_deref()?.entries.get(i)?.at))
     }
 
-    /// The entry point a click took this frame (the page applies it to the choice).
+    /// Which drawn entry point the choice means (`-1`: automatic, or one that could not be
+    /// placed - there is no marker to ring).
+    pub fn shown_of(&self, choice: i32) -> Option<usize> {
+        let choice = usize::try_from(choice).ok()?;
+        self.roads.as_deref()?.entries.iter().position(|e| e.index == choice)
+    }
+
+    /// The entry point a click took this frame, as its own place in `global.cfg`'s list (the
+    /// page applies it to the choice, and the game counts that list, not the drawn markers).
     pub fn take_clicked(&mut self) -> Option<usize> {
-        self.clicked.take()
+        let drawn = self.clicked.take()?;
+        Some(self.roads.as_deref()?.entries.get(drawn)?.index)
     }
 
     /// Where a world point lies in the picture (interface pixels, `rect`'s own coordinates).
@@ -364,8 +390,8 @@ impl MapView {
     fn hit(&self, at: Vec2) -> Option<usize> {
         let roads = self.roads.as_deref()?;
         let mut best: Option<(f32, usize)> = None;
-        for (i, (q, _)) in roads.entries.iter().enumerate() {
-            let d = (self.project(*q) - at).length();
+        for (i, e) in roads.entries.iter().enumerate() {
+            let d = (self.project(e.at) - at).length();
             if d <= 14.0 && best.map(|(bd, _)| d < bd).unwrap_or(true) {
                 best = Some((d, i));
             }
@@ -638,13 +664,14 @@ impl MapView {
             p.world_disc(at(*q), 0.0, STOP_PX * k, STOP);
         }
         let chosen = self.chosen();
-        for (i, (q, _)) in roads.entries.iter().enumerate() {
-            p.world_disc(at(*q), 0.0, ENTRY_PX * k, ENTRY);
+        for (i, e) in roads.entries.iter().enumerate() {
+            p.world_disc(at(e.at), 0.0, ENTRY_PX * k, ENTRY);
             if self.hover == Some(i) {
-                ring(&mut p, at(*q), (ENTRY_PX + 3.0) * k, 2.0 * k, ENTRY_HOVER, mpp);
+                ring(&mut p, at(e.at), (ENTRY_PX + 3.0) * k, 2.0 * k, ENTRY_HOVER, mpp);
             }
-            if chosen == i as i32 {
-                ring(&mut p, at(*q), (ENTRY_PX + 6.5) * k, 2.0 * k, ENTRY_HERE, mpp);
+            // (the choice counts `global.cfg`'s list, which the marker's own place names)
+            if chosen == e.index as i32 {
+                ring(&mut p, at(e.at), (ENTRY_PX + 6.5) * k, 2.0 * k, ENTRY_HERE, mpp);
             }
         }
         p.verts
@@ -757,14 +784,16 @@ fn read_map(look: &Look) -> Roads {
     // the entry points: on the tile the record names, else at their object (`World::
     // entry_point_place` reads them the same way)
     let mut entries = Vec::new();
-    for ep in &global.entry_points {
+    for (index, ep) in global.entry_points.iter().enumerate() {
         let p = usize::try_from(ep.group)
             .ok()
             .and_then(|i| global.raw_tiles.get(i))
             .map(|t| DVec2::new(t.0 as f64 * size + ep.pos[0], t.1 as f64 * size + ep.pos[1]))
             .or_else(|| places.get(&ep.object_id).map(|q| q.truncate()));
+        // the marker carries where it stands in `global.cfg`'s list, so one left out here
+        // (no tile, no object) does not shift the ones after it
         if let Some(p) = p {
-            entries.push((p, ep.name.clone()));
+            entries.push(Entry { at: p, name: ep.name.clone(), index });
         }
     }
     let objects: HashMap<i64, DVec2> = places.iter().map(|(k, v)| (*k, v.truncate())).collect();
@@ -807,4 +836,47 @@ fn read_map(look: &Look) -> Roads {
         lo.x, lo.y, hi.x, hi.y
     );
     Roads { roads, net: Arc::new(net), lanes: by_path, splines: by_spline, origin, lo, hi, entries, objects }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Three entry points are in the file, the second of which has no place on this map: the
+    /// drawn markers are the file's first and third, and must answer with those places.
+    fn map() -> MapView {
+        let mut m = MapView::new();
+        m.roads = Some(Arc::new(Roads {
+            entries: vec![
+                Entry { at: DVec2::new(0.0, 0.0), name: "Depot".into(), index: 0 },
+                Entry { at: DVec2::new(100.0, 0.0), name: "Station".into(), index: 2 },
+            ],
+            ..Default::default()
+        }));
+        m
+    }
+
+    #[test]
+    fn a_marker_answers_with_its_own_place_in_the_file() {
+        let mut m = map();
+        // the second drawn marker is the file's third entry point, not its second
+        m.clicked = Some(1);
+        assert_eq!(m.take_clicked(), Some(2));
+        m.clicked = Some(0);
+        assert_eq!(m.take_clicked(), Some(0));
+        // a click is taken once
+        assert_eq!(m.take_clicked(), None);
+    }
+
+    #[test]
+    fn the_choice_finds_its_marker_by_the_files_own_place() {
+        let m = map();
+        assert_eq!(m.shown_of(0), Some(0));
+        assert_eq!(m.shown_of(2), Some(1));
+        // the entry point that could not be placed has no marker to ring
+        assert_eq!(m.shown_of(1), None);
+        // automatic, and anything out of the list
+        assert_eq!(m.shown_of(-1), None);
+        assert_eq!(m.shown_of(9), None);
+    }
 }

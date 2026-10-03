@@ -589,7 +589,9 @@ fn map_labels(l: &mut Launcher, free: Rect, avoid: &Rect) {
             taken.push(rr);
         }
     }
-    if let Some(i) = l.mapview.hovered().or_else(|| (l.state.choice.entry >= 0).then_some(l.state.choice.entry as usize)) {
+    // (the hovered one, else the chosen one - named where its marker stands, not where the
+    // choice's own number would sit among the drawn ones)
+    if let Some(i) = l.mapview.hovered().or_else(|| l.mapview.shown_of(l.state.choice.entry)) {
         let (Some(name), Some(at)) = (l.mapview.entry_name(i).map(str::to_string), l.mapview.entry_at(i)) else { return };
         if !free.contains(at) {
             return;
