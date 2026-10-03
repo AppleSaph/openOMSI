@@ -32,6 +32,12 @@ impl Default for TripleScreen {
     }
 }
 
+/// One panel's width in pixels. All three are drawn at this same size, so they share the
+/// renderer's size-keyed targets (depth, AO, rain glass) instead of rebuilding them per panel.
+pub fn panel_width(width: u32) -> u32 {
+    width.div_ceil(3)
+}
+
 pub struct ScreenView {
     pub camera: Camera,
     pub projection: Mat4,
@@ -44,7 +50,7 @@ impl TripleScreen {
     pub fn zoomed(&self, width: u32, height: u32, zoom: f32) -> Self {
         let mut rig = *self;
         if zoom.is_finite() && (zoom - 1.0).abs() > 1e-6 {
-            let panel_height = self.width_mm * height as f32 / (width as f32 / 3.0).max(1.0);
+            let panel_height = self.width_mm * height as f32 / panel_width(width).max(1) as f32;
             let base = if self.fov_deg > 0.0 {
                 self.fov_deg
             } else {
@@ -55,12 +61,13 @@ impl TripleScreen {
         rig
     }
 
-    /// Pixel-exact partition, including widths not divisible by three.
+    /// The three panels, all of the same pixel size (`panel_width`): the right one is
+    /// cropped at the window's edge when the width is not divisible by three.
     pub fn views(&self, camera: &Camera, width: u32, height: u32) -> [ScreenView; 3] {
-        let edges = [0, width / 3, (width as u64 * 2 / 3) as u32, width];
+        let pw = panel_width(width);
         // One common physical height: rounding a viewport by a pixel must not
         // move the horizon at the joins.
-        let panel_height = self.width_mm * height as f32 / (width as f32 / 3.0).max(1.0);
+        let panel_height = self.width_mm * height as f32 / pw.max(1) as f32;
         // FOV zoom moves the common virtual eye, keeping all panel joins aligned.
         let eye_distance = if self.fov_deg > 0.0 {
             panel_height * 0.5 / (self.fov_deg.to_radians() * 0.5).tan()
@@ -115,7 +122,7 @@ impl TripleScreen {
             ScreenView {
                 camera: panel,
                 projection,
-                viewport: [edges[i], 0, edges[i + 1] - edges[i], height],
+                viewport: [i as u32 * pw, 0, pw, height],
             }
         })
     }
@@ -227,7 +234,14 @@ mod tests {
         let cam = camera();
         let rig = TripleScreen::default();
         let views = rig.views(&cam, 5761, 1080);
-        assert_eq!(views.iter().map(|v| v.viewport[2]).sum::<u32>(), 5761);
+        // equal panels side by side, the last one cropped by the window's edge
+        assert!(views.iter().all(|v| v.viewport[2] == 1921));
+        assert_eq!(views[0].viewport[0], 0);
+        for i in 0..2 {
+            assert_eq!(views[i + 1].viewport[0], views[i].viewport[0] + views[i].viewport[2]);
+        }
+        let end = views[2].viewport[0] + views[2].viewport[2];
+        assert!(end >= 5761 && end < 5761 + 3);
         for v in &views {
             assert!(
                 (v.projection

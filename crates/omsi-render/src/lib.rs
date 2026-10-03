@@ -4,7 +4,7 @@ pub mod atmosphere;
 pub mod clouds;
 mod puddles;
 mod triple;
-pub use triple::{ScreenView, TripleScreen};
+pub use triple::{panel_width, ScreenView, TripleScreen};
 
 #[derive(Default)]
 struct ViewCulling {
@@ -1538,6 +1538,8 @@ pub struct Renderer {
     /// parameters, and the smaller targets per size (with their bind groups).
     upscale_pipeline: wgpu::RenderPipeline,
     copy_pipeline: wgpu::RenderPipeline,
+    /// Triple screen: a panel's picture copied 1:1 to its place in the window.
+    panel_pipeline: wgpu::RenderPipeline,
     upscale_layout: wgpu::BindGroupLayout,
     upscale_buf: wgpu::Buffer,
     scale_targets: HashMap<(u32, u32), (wgpu::TextureView, wgpu::BindGroup)>,
@@ -3986,6 +3988,7 @@ impl Renderer {
         });
         let upscale_pipeline = upscale_pipeline_for("fs_main");
         let copy_pipeline = upscale_pipeline_for("fs_copy");
+        let panel_pipeline = upscale_pipeline_for("fs_panel");
         let upscale_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("upscale params"),
             size: 16,
@@ -4001,6 +4004,7 @@ impl Renderer {
             _device_poller: DevicePoller::start(&device),
             upscale_pipeline,
             copy_pipeline,
+            panel_pipeline,
             upscale_layout,
             upscale_buf,
             scale_targets: HashMap::new(),
@@ -7316,11 +7320,13 @@ impl Renderer {
             return;
         }
         let views = rig.views(camera, width, height);
+        // all three panels have the same size: they share the size-keyed targets
+        let pw = panel_width(width);
         if self.triple_targets.as_ref().map(|t| t.0) != Some((width, height)) {
             let targets = views
                 .iter()
                 .map(|v| {
-                    let w = v.viewport[2];
+                    let w = pw;
                     let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                         label: Some("triple screen panel"),
                         size: wgpu::Extent3d {
@@ -7337,7 +7343,8 @@ impl Renderer {
                         view_formats: &[],
                     });
                     let view = texture.create_view(&Default::default());
-                    let params = [w as f32, height as f32, 0.0, 0.0];
+                    // (z: where the panel starts in the window, for `fs_panel`)
+                    let params = [w as f32, height as f32, v.viewport[0] as f32, 0.0];
                     let buf = buffer_init(
                         &self.device,
                         &self.queue,
@@ -7378,7 +7385,7 @@ impl Renderer {
             self.render_inner(
                 scene,
                 &view,
-                views[i].viewport[2],
+                pw,
                 height,
                 &views[i].camera,
                 lighting,
@@ -7414,15 +7421,14 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.upscale_pipeline);
+            pass.set_pipeline(&self.panel_pipeline);
             for (i, v) in views.iter().enumerate() {
+                // (the right panel loses its last pixel or two at the window's edge)
                 let [x, y, w, h] = v.viewport;
-                pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
-                pass.set_scissor_rect(x, y, w, h);
+                pass.set_scissor_rect(x, y, w.min(width - x), h);
                 pass.set_bind_group(0, &self.triple_targets.as_ref().unwrap().1[i].1, &[]);
                 pass.draw(0..3, 0..1);
             }
-            pass.set_viewport(0.0, 0.0, width as f32, height as f32, 0.0, 1.0);
             pass.set_scissor_rect(0, 0, width, height);
             pass.set_pipeline(&self.overlay_pipeline_1x);
             for (_, _, group, _) in &scene.overlay_res {

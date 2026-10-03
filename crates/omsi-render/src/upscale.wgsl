@@ -162,6 +162,13 @@ fn fs_copy(in: VsOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
+fn fs_panel(in: VsOut) -> @location(0) vec4<f32> {
+    // Triple screen: one panel's picture 1:1 at its place in the window (src.z: its left
+    // edge in window pixels).
+    return textureLoad(t_src, vec2<i32>(in.clip.xy) - vec2<i32>(i32(p.src.z), 0), 0);
+}
+
+@fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let size = p.src.xy;
     if (p.src.w > 0.5) {

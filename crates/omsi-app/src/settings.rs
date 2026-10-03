@@ -312,9 +312,9 @@ impl Settings {
     /// keeps the full window's physical coordinates.
     pub fn hud_viewport(&self, size: (u32, u32)) -> [f32; 4] {
         if self.triple.enabled && self.triple_hud_center && !self.vr_requested() && size.0 >= 3 {
-            let left = size.0 / 3;
-            let right = (size.0 as u64 * 2 / 3) as u32;
-            [left as f32, 0.0, (right - left) as f32, size.1 as f32]
+            // (the centre panel, as the renderer draws it)
+            let w = omsi_render::panel_width(size.0);
+            [w as f32, 0.0, w as f32, size.1 as f32]
         } else {
             [0.0, 0.0, size.0 as f32, size.1 as f32]
         }
@@ -679,7 +679,8 @@ mod tests {
     #[test]
     fn triple_hud_defaults_to_the_centre_panel_and_can_span() {
         let mut s = super::Settings::from_text("triple_screen=1\n");
-        assert_eq!(s.hud_viewport((5761, 1080)), [1920.0, 0.0, 1920.0, 1080.0]);
+        assert_eq!(s.hud_viewport((5760, 1080)), [1920.0, 0.0, 1920.0, 1080.0]);
+        assert_eq!(s.hud_viewport((5761, 1080)), [1921.0, 0.0, 1921.0, 1080.0]);
         s.triple_hud_center = false;
         assert_eq!(s.hud_viewport((5761, 1080)), [0.0, 0.0, 5761.0, 1080.0]);
         let s = super::Settings::from_text("triple_screen=0\n");
