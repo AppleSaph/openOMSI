@@ -364,6 +364,10 @@ pub(crate) fn run_offscreen(
             l.clock_speed = *speed;
         }
     }
+    let mut ground_gap = crate::ground_gap::GroundGap::from_env();
+    if let Some(t) = traffic.as_ref() {
+        crate::ground_gap::check_lanes(&world, t);
+    }
     for i in 0..total_frames {
         let t_s = i as f32 * dt;
         if server {
@@ -633,7 +637,14 @@ pub(crate) fn run_offscreen(
                         // (a gate of a manual gearbox comes with the automatic clutch, as
                         // from the keys)
                         player.clutch_for_gate(name);
-                        player.vehicle.trigger(name);
+                        // (the game's door actions, `door_<n>` / `doors_all`, as a button
+                        // pressed and let go)
+                        if crate::player::door_action(name).is_some() {
+                            player.action(name, true);
+                            player.action(name, false);
+                        } else {
+                            player.vehicle.trigger(name);
+                        }
                     }
                 }
                 player.axes.clutch = (player.axes.clutch - 0.7 * dt).max(0.0);
@@ -888,6 +899,9 @@ pub(crate) fn run_offscreen(
                 }
             }
         }
+        if let Some(g) = ground_gap.as_mut() {
+            g.frame(&world, t_s, player.as_ref().map(|p| &p.vehicle), traffic.as_ref());
+        }
         if let Some(h) = humans_off.as_mut() {
             // keep density and time_of_day up to date every tick, as app_events.rs does
             // (stop_target = enter_mean * density; without this it stays at the startup
@@ -963,8 +977,8 @@ pub(crate) fn run_offscreen(
             if let Some(t) = traffic.as_mut() {
                 let (alighting, waiting) = h.stop_wishes();
                 t.set_stop_wishes(alighting, waiting);
-                for (id, secs) in h.take_holds() {
-                    t.hold_boarding(id, secs);
+                for (id, stop, secs) in h.take_holds() {
+                    t.hold_boarding(id, stop, secs);
                 }
                 for (id, entry, exit) in h.take_ai_requests() {
                     t.set_pax_requests(id, &entry, &exit);
@@ -1203,6 +1217,9 @@ pub(crate) fn run_offscreen(
             }
             None => log::warn!("--follow: car {id} not found"),
         }
+    }
+    if let Some(g) = ground_gap.take() {
+        g.report();
     }
     if let Some(t) = traffic.as_mut() {
         t.sync(&world, &renderer, &mut scene);
@@ -2274,6 +2291,31 @@ pub(crate) fn run_offscreen(
             }
         }
     }
+    // OMSI_PROBE_GRID=x,y,half,step: the wheels' ground on a square grid around (x, y), as
+    // rows of centimetres relative to the middle ('.' where it is the same, '#' where the
+    // ground there is more than 5 cm lower: a gap in the road the wheels fall through)
+    if let Ok(spec) = omsi_cfg::env::var("OMSI_PROBE_GRID") {
+        let v: Vec<f64> = spec.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+        if v.len() >= 4 {
+            let (cx, cy, half, step) = (v[0], v[1], v[2], v[3].max(0.001));
+            let mid = scene::drive_probe(&world.terrains, &world.surfaces, cx, cy, 1e6).below.unwrap_or(0.0);
+            let n = (half / step).round() as i64;
+            for j in (-n..=n).rev() {
+                let row: String = (-n..=n)
+                    .map(|i| {
+                        let (x, y) = (cx + i as f64 * step, cy + j as f64 * step);
+                        match scene::drive_probe(&world.terrains, &world.surfaces, x, y, mid + 1.0).below {
+                            Some(z) if z < mid - 0.05 => '#',
+                            Some(z) if (z - mid).abs() <= 0.02 => '.',
+                            Some(_) => '+',
+                            None => ' ',
+                        }
+                    })
+                    .collect();
+                log::info!("grid {:.3}: {row}", cy + j as f64 * step);
+            }
+        }
+    }
     // OMSI_PROBE=x0,y0,x1,y1[,n]: print the terrain height and the road surface height
     // along a line, to see where the ground comes through a road
     if let Ok(spec) = omsi_cfg::env::var("OMSI_PROBE") {
@@ -2793,6 +2835,20 @@ pub(crate) fn run_offscreen(
     let t0 = Instant::now();
     if let Some(p) = player_ref.as_ref() {
         render_mirrors(&mut renderer, &mut scene, &world, p, &lighting, None, None);
+    }
+    if let Some(p) = player_ref.as_ref() {
+        let mode = omsi_cfg::env::var("OMSI_MIRROR_HUD").ok().and_then(|v| v.parse::<u8>().ok()).unwrap_or(settings.mirror_hud);
+        let mut panels = crate::mirror_hud::MirrorHud::default();
+        panels.set_aspects(world.mirror_aspect.lock().clone());
+        panels.sync(p, mode);
+        if mode != 0 {
+            panels.enabled = true;
+            if panels.panels.is_empty() {
+                panels.toggle_edit(p);
+                panels.toggle_edit(p);
+            }
+        }
+        panels.push(&mut scene, &world, w as f32, h as f32, (0.0, 0.0));
     }
     let pixels = renderer.render_to_image(&mut scene, w, h, &camera, &lighting)?;
     log::info!(

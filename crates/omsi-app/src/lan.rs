@@ -3300,6 +3300,15 @@ pub fn chat_send(lan: &mut LanSession, game: &mut LanGame, text: &str) {
         game.chat.push("* asked the server for its administration".into());
         return;
     }
+    // `/reconnect`: join the host again after a lost connection (no restart of the game)
+    if text.trim().eq_ignore_ascii_case("/reconnect") {
+        if lan.reconnect() {
+            game.chat.push("* reconnecting ...".into());
+        } else {
+            game.chat.push("* only a joined game can reconnect".into());
+        }
+        return;
+    }
     let text = crate::ui::filter_chat(text.trim());
     match lan.say(&text) {
         Ok(()) => game.chat.error = None,
@@ -3338,7 +3347,7 @@ pub fn hud_lines(lan: &LanSession, _game: &LanGame, _player: Option<&Player>) ->
         }
         Role::Client => {
             if let Some(why) = lan.rejected.as_ref() {
-                lines.push(format!("Online: not connected: {why}"));
+                lines.push(format!("Online: not connected: {why} (chat /reconnect)"));
             } else if lan.connected {
                 let name = lan.welcome.as_ref().map(|w| w.host_name.clone()).unwrap_or_default();
                 lines.push(format!("Online: in {name}'s game, {others}"));

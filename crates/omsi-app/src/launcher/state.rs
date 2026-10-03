@@ -1049,7 +1049,21 @@ impl State {
         });
         let want = on_date.or_else(|| self.map().map(|m| m.hof.clone())).unwrap_or_default();
         let Some(v) = self.bus() else { return want };
-        v.hofs.iter().find(|h| h.eq_ignore_ascii_case(&want)).cloned().or(Some(want).filter(|w| !w.is_empty())).or_else(|| v.hofs.first().cloned()).unwrap_or_default()
+        // (the bus's own depot of the same place before the map's borrowed from another
+        // bus, and one named like the map before its first, #896)
+        let names: Vec<&str> = v.hofs.iter().map(|h| h.as_str()).collect();
+        let like = |hints: &[&str]| omsi_vehicle::hof::closest_name(&names, hints).map(|i| v.hofs[i].clone());
+        let map_hints: Vec<String> = self.map().map(|m| vec![m.name.clone(), m.friendly.clone(), m.file.trim_end_matches("/global.cfg").rsplit('/').next().unwrap_or("").to_string()]).unwrap_or_default();
+        let map_hints: Vec<&str> = map_hints.iter().map(|h| h.as_str()).collect();
+        v.hofs
+            .iter()
+            .find(|h| h.eq_ignore_ascii_case(&want))
+            .cloned()
+            .or_else(|| like(&[want.as_str()]))
+            .or(Some(want.clone()).filter(|w| !w.is_empty()))
+            .or_else(|| like(&map_hints))
+            .or_else(|| v.hofs.first().cloned())
+            .unwrap_or_default()
     }
 
     pub fn select_bus(&mut self, file: &str) {

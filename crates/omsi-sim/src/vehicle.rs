@@ -867,6 +867,11 @@ pub struct VehicleInstance {
     /// Faces the wheels cannot climb stop the vehicle (see `RigidBody::wheel_walls`); the
     /// player's bus follows the setting for collisions with objects.
     pub wheel_walls: bool,
+    /// What the radio plays, cut to what a text display shows (see `show_radio_text`):
+    /// `None` leaves the scripts' own texts alone, an empty text is a radio that is off.
+    pub radio_text: Option<String>,
+    /// The frequency the station is on where the bus is (`94.6 MHz`), where it is known.
+    pub radio_frequency: Option<String>,
     /// Crashes so far and the energy of the latest (J), kept for logs and the HUD.
     pub crashes: u32,
     pub last_impact: f32,
@@ -1161,6 +1166,8 @@ impl VehicleInstance {
             collided: false,
             last_crash: 0.0,
             wheel_walls: true,
+            radio_text: None,
+            radio_frequency: None,
             crashes: 0,
             last_impact: 0.0,
             dirt: 0.0,
@@ -2030,8 +2037,47 @@ impl VehicleInstance {
         self.update_engine_vars(dt);
         let p = self.ty.program.clone();
         self.vm.run_frame(&p, &mut self.state, &mut self.host);
+        self.show_radio_text();
         self.clear_pax_requests();
         self.update_visuals(dt);
+    }
+
+    /// The station and the song on a radio whose display is a text of its script. OMSI has
+    /// no radio of its own: these radios show names from a list in the script, and a radio
+    /// plugin writes what it really plays into a string of theirs. Two kinds are known:
+    ///
+    /// - a script that reads `Snd_Radio_Text` (the plugin's variable) and puts it behind
+    ///   its frequency: the text goes there;
+    /// - Dmitrij's "Magnitola" (the radio of P3ta's SOR buses and others): the playlist
+    ///   writes `frequency@station` into `mp3_display_track_name` every frame and the
+    ///   display `magnitola_1` shows it - `@` is the line break, ten characters a line.
+    ///   While the display shows that, its second line is replaced.
+    ///
+    /// The frequency in front is the script's too, one of its list. Where the station's
+    /// own is known (`radio_frequency`: a map says which frequency its stations are on,
+    /// and where) that one stands there instead.
+    fn show_radio_text(&mut self) {
+        let Some(text) = self.radio_text.as_ref() else { return };
+        let frequency = self.radio_frequency.as_deref();
+        let p = &self.ty.program;
+        if let Some(i) = p.str_var("Snd_Radio_Text") {
+            if self.state.str_vars[i as usize] != *text {
+                self.state.str_vars[i as usize] = text.clone();
+            }
+            // (this kind keeps its frequency apart, `90.9 MHz@` in `mp3_freq`, and the
+            // display begins with it)
+            if let (Some(frequency), Some(display), Some(own)) = (frequency, p.str_var("magnitola_1"), p.str_var("mp3_freq")) {
+                let own = &self.state.str_vars[own as usize];
+                if let Some(shown) = own_frequency(own, &self.state.str_vars[display as usize], frequency) {
+                    self.state.str_vars[display as usize] = shown;
+                }
+            }
+            return;
+        }
+        let (Some(display), Some(track)) = (p.str_var("magnitola_1"), p.str_var("mp3_display_track_name")) else { return };
+        if let Some(shown) = magnitola_line(&self.state.str_vars[track as usize], &self.state.str_vars[display as usize], text, frequency) {
+            self.state.str_vars[display as usize] = shown;
+        }
     }
 
     /// The passengers' door requests are pulses: Omsi.exe clears all eight of each kind
@@ -2903,7 +2949,7 @@ pub const SHADOW_LIFT: f32 = 0.02;
 
 /// How far over the wheel's own plane the face it stands on may lie for a `[isshadow]`
 /// blob's plane (m): a kerb or a ramp, the step the AI's wheels climb
-/// (`ai_motion::AI_STEP_UP`).
+/// (as much as an AI car's wheels used to climb).
 const SHADOW_STEP_UP: f64 = 0.6;
 /// How far under it (m). Loose: the model's origin plane is the contact plane of the
 /// *unloaded* springs, so a body at rest stands its ground 10-16 cm below its own plane,
@@ -3523,6 +3569,15 @@ impl TrailerPart {
         // the trailer origin: coupling_front sits at c
         let rot = self.body_rotation();
         self.position = c - rot.transform_point3(self.coupling_front).as_dvec3();
+        // The wheels stand on the road under them, wherever the body above swings: the
+        // travel of each wheel is the gap between its hub on the body and the ground under
+        // it (Omsi.exe runs the section as a body on its own springs, each wheel's travel
+        // its own). Held at the static sag, the rear axle of an articulated bus was a rigid
+        // one - its wheels bounced and leant with the body over every bump and in every
+        // bend (#901).
+        if !ai && on_track.is_none() && dt > 0.0 && shows {
+            self.spring_wheels(main, rot);
+        }
         // The joint's angles (degrees) for its plates and bellows and for the scripts: alpha
         // about the vertical axis - the stock articulation.osc's jackknife protection brakes
         // at |alpha| > 47° - and beta about the transverse axis. (The horizontal angle went
@@ -3599,6 +3654,48 @@ impl TrailerPart {
         self.props_plan
             .apply(&main.state.vars, &mut self.mesh_props);
         let _ = self.axle_long;
+    }
+}
+
+impl TrailerPart {
+    /// `Axle_Suspension_*` of the part's sprung axles from the ground under each wheel, the
+    /// body standing at `self.position` turned by `rot` (see `update`).
+    fn spring_wheels(&self, main: &mut VehicleInstance, rot: Mat4) {
+        let probe = |x: f64, y: f64, top: f64| -> Option<f64> {
+            match (&main.contact, &main.ground) {
+                (Some(g), _) => g.probe(x, y, top).below,
+                (None, Some(g)) => g(x, y),
+                _ => None,
+            }
+        };
+        let mut travel: Vec<(usize, [Option<f32>; 2])> = Vec::new();
+        for (a, (offset, _, _)) in self.rest.iter().enumerate() {
+            let axle = self.first_axle + a;
+            if !self.ty.suspension_axles.contains(&axle) {
+                continue;
+            }
+            let Some(def) = self.ty.def.axles.get(a) else { continue };
+            let r = (def.wheel_diameter / 2.0).max(0.15);
+            let hub = r - offset;
+            let outer = (def.max_width / 2.0).max(0.3);
+            let across = if def.min_width > 0.0 && def.min_width < def.max_width { (def.max_width + def.min_width) / 4.0 } else { outer * 0.85 };
+            let mut sides = [None, None];
+            for (si, x) in [-across, across].into_iter().enumerate() {
+                let p = self.position + rot.transform_point3(Vec3::new(x, def.long, hub)).as_dvec3();
+                let Some(g) = probe(p.x, p.y, p.z + 1.0) else { continue };
+                // how far the wheel is pushed up into its arch (never below where it hangs
+                // unloaded, never past the bump stop)
+                sides[si] = Some(((g + r as f64 - p.z) as f32).clamp(0.0, crate::rigid::BUMP));
+            }
+            travel.push((axle, sides));
+        }
+        for (axle, sides) in travel {
+            for (side, c) in ["L", "R"].into_iter().zip(sides) {
+                if let (Some(c), Some(id)) = (c, main.ty.program.var(&format!("Axle_Suspension_{axle}_{side}"))) {
+                    main.state.vars[id as usize] = -c;
+                }
+            }
+        }
     }
 }
 
@@ -4248,6 +4345,37 @@ mod tests {
         assert!(v.trailers[0].position.z > 9.0, "stayed under the deck at {}", v.trailers[0].position.z);
     }
 
+    /// #901: the rear section's wheels take the road under them - a kerb-high step under
+    /// its left wheel pushes that wheel up into its arch and leaves the right one.
+    #[test]
+    fn rear_section_wheels_spring_on_their_own() {
+        let root = omsi_cfg::env::var_os("OMSI_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("../../../OMSI 2 Original"));
+        let bus = root.join("Vehicles/MAN_NL_NG/MAN_GN92_main.bus");
+        let trail = root.join("Vehicles/MAN_NL_NG/MAN_GN92_trail.bus");
+        if !bus.exists() || !trail.exists() {
+            eprintln!("skipped: no {}", bus.display());
+            return;
+        }
+        let ty = Arc::new(VehicleType::load(&root, &bus).expect("GN92"));
+        let mut v = VehicleInstance::new(ty, VehicleHost::new(crate::SimClock::default()));
+        v.attach_trailer_ex(Arc::new(VehicleType::load(&root, &trail).expect("GN92 trail")), false);
+        let t = &v.trailers[0];
+        let axle = t.first_axle;
+        assert!(t.ty.suspension_axles.contains(&axle), "the GN92's rear axle is drawn sprung");
+        // a step 6 cm high under the left wheels behind the joint
+        let ground = move |x: f64, y: f64, _top: f64| crate::rigid::GroundProbe { below: Some(if x < 0.0 && y < -4.0 { 0.06 } else { 0.0 }), above: None };
+        v.contact = Some(Arc::new(ground));
+        v.position = DVec3::new(0.0, 0.0, 0.0);
+        for _ in 0..50 {
+            v.update_visuals(0.02);
+        }
+        let l = -v.var(&format!("Axle_Suspension_{axle}_L")).unwrap();
+        let r = -v.var(&format!("Axle_Suspension_{axle}_R")).unwrap();
+        assert!(l - r > 0.04, "left wheel up {l:.3}, right {r:.3}");
+    }
+
     /// A timetable duty and a random traffic car load their bus with `VehicleType::load_ai`,
     /// which lets the vertices of every mesh go to save memory - except a `[smoothskin]`
     /// mesh (the bellows) has to keep its own, or there is nothing left to bend it from and
@@ -4420,6 +4548,57 @@ pub fn relative_humidity(t: f32, abs_hum: f32) -> f32 {
         (abs_hum / sat).max(0.0)
     } else {
         0.0
+    }
+}
+
+/// The "Magnitola" radio's display with `text` as its second line: `track` is what the
+/// playlist wrote (`90.9 MHz@R-ZURNAL`), `shown` what the display holds. None while the
+/// display shows something else (its welcome, the volume), while the radio is stopped (no
+/// station behind the `@`) or off (`text` empty). `own` is the frequency the station is
+/// really on, where that is known: it stands for the script's.
+fn magnitola_line(track: &str, shown: &str, text: &str, own: Option<&str>) -> Option<String> {
+    if text.is_empty() || shown != track {
+        return None;
+    }
+    let (frequency, station) = track.split_once('@')?;
+    (!station.trim().is_empty()).then(|| format!("{}@{text}", own.unwrap_or(frequency)))
+}
+
+/// A display that begins with the script's frequency (`script`: `90.9 MHz@`), with the
+/// station's own in its place. None while it shows something else, and for the script's
+/// `STOPPED@`, which is no frequency.
+fn own_frequency(script: &str, shown: &str, own: &str) -> Option<String> {
+    if !script.ends_with('@') || !script.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let rest = shown.strip_prefix(script)?;
+    Some(format!("{own}@{rest}"))
+}
+
+#[cfg(test)]
+mod radio_text_tests {
+    use super::{magnitola_line, own_frequency};
+
+    #[test]
+    fn the_station_line_is_replaced_while_the_display_shows_it() {
+        assert_eq!(magnitola_line("90.9 MHz@R-ZURNAL", "90.9 MHz@R-ZURNAL", "Radio 1   ", None).as_deref(), Some("90.9 MHz@Radio 1   "));
+        // its welcome and the volume are the display's own
+        assert_eq!(magnitola_line("90.9 MHz@R-ZURNAL", " WELCOME  ", "Radio 1", None), None);
+        assert_eq!(magnitola_line("90.9 MHz@R-ZURNAL", "VOLUME@ 15", "Radio 1", None), None);
+        // stopped, and a radio that plays nothing
+        assert_eq!(magnitola_line("STOPPED@", "STOPPED@", "Radio 1", None), None);
+        assert_eq!(magnitola_line("90.9 MHz@R-ZURNAL", "90.9 MHz@R-ZURNAL", "", None), None);
+    }
+
+    #[test]
+    fn the_stations_own_frequency_stands_for_the_scripts() {
+        assert_eq!(magnitola_line("90.9 MHz@R-ZURNAL", "90.9 MHz@R-ZURNAL", "Radio 1   ", Some("94.6 MHz")).as_deref(), Some("94.6 MHz@Radio 1   "));
+        assert_eq!(magnitola_line("STOPPED@", "STOPPED@", "Radio 1", Some("94.6 MHz")), None);
+        // the kind that keeps its frequency apart
+        assert_eq!(own_frequency("90.9 MHz@", "90.9 MHz@Radio 1   ", "94.6 MHz").as_deref(), Some("94.6 MHz@Radio 1   "));
+        assert_eq!(own_frequency("90.9 MHz@", "94.6 MHz@Radio 1   ", "94.6 MHz"), None);
+        assert_eq!(own_frequency("90.9 MHz@", " WELCOME  ", "94.6 MHz"), None);
+        assert_eq!(own_frequency("STOPPED@", "STOPPED@", "94.6 MHz"), None);
     }
 }
 

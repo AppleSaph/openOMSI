@@ -220,7 +220,7 @@ impl MapIndex {
                         Some((master_tile, first)) => rows.1.push(((master_tile, a.id), s.id, first)),
                     }
                 }
-                let terrain = omsi_map::Terrain::load(&crate::scene::tile_companion(path, ".terrain")).ok();
+                let terrain = omsi_map::Terrain::load(&terrain_file(&tile, path)).ok();
                 let origin = DVec2::new(*tx as f64 * tile_size(), *ty as f64 * tile_size());
                 part.covers.insert((*tx, *ty), spline_cover(&tile, origin));
                 let mut name = |f: &str| {
@@ -400,6 +400,18 @@ pub fn read_tile(path: &Path, chrono_dirs: &[PathBuf]) -> Option<Tile> {
             }
             match Tile::load(&p) {
                 Ok(patch) => {
+                    // (a chrono event that reshapes the ground - a cutting, a tunnel's
+                    // portal, a lake let down for a new road - saves the tile's terrain and
+                    // water with its patch: read from the map's own files, the old ground
+                    // filled the new tunnel and the old water stood over the new road,
+                    // #923, #925)
+                    if patch.has_terrain && omsi_cfg::vfs::is_file(&crate::scene::tile_companion(&p, ".terrain")) {
+                        tile.terrain_from = Some(p.clone());
+                    }
+                    if patch.has_water && omsi_cfg::vfs::is_file(&crate::scene::tile_companion(&p, ".water")) {
+                        tile.water_from = Some(p.clone());
+                        tile.has_water = true;
+                    }
                     let unmatched = tile.apply_chrono(&patch);
                     if unmatched > 0 {
                         log::debug!("chrono {}: {unmatched} selections name nothing in the tile", p.display());
@@ -414,6 +426,17 @@ pub fn read_tile(path: &Path, chrono_dirs: &[PathBuf]) -> Option<Tile> {
         }
     }
     Some(tile)
+}
+
+/// The `.terrain` file of a tile read by [`read_tile`] from `path`: an active chrono
+/// patch's own where it brings one (see `Tile::terrain_from`).
+pub fn terrain_file(tile: &Tile, path: &Path) -> PathBuf {
+    crate::scene::tile_companion(tile.terrain_from.as_deref().unwrap_or(path), ".terrain")
+}
+
+/// The `.water` file of a tile read by [`read_tile`] from `path` (see `Tile::water_from`).
+pub fn water_file(tile: &Tile, path: &Path) -> PathBuf {
+    crate::scene::tile_companion(tile.water_from.as_deref().unwrap_or(path), ".water")
 }
 
 /// The transform of `[new_attachment]` point `a` in its parent's frame (x right, y forward,
@@ -1051,6 +1074,34 @@ impl Streamer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An active chrono patch with `[terrain]`/`[water]` and their files beside it gives the
+    /// tile its ground and water (#923, #925); one without them leaves the map's own.
+    #[test]
+    fn a_chrono_patch_with_its_own_terrain_and_water_replaces_the_tiles() {
+        let dir = std::env::temp_dir().join(format!("omsi-chrono-terrain-{}", std::process::id()));
+        let (base, c1, c2) = (dir.join("map"), dir.join("map/Chrono/a"), dir.join("map/Chrono/b"));
+        for d in [&base, &c1, &c2] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let name = "tile_0_0.map";
+        std::fs::write(base.join(name), "[version]\n14\n\n[terrain]\n0\n\n[water]\n0\n").unwrap();
+        std::fs::write(base.join(format!("{name}.terrain")), b"x").unwrap();
+        std::fs::write(base.join(format!("{name}.water")), b"x").unwrap();
+        // a: reshapes the ground and the water; b (later): only objects
+        std::fs::write(c1.join(name), "[version]\n14\n\n[terrain]\n0\n\n[water]\n0\n").unwrap();
+        std::fs::write(c1.join(format!("{name}.terrain")), b"x").unwrap();
+        std::fs::write(c1.join(format!("{name}.water")), b"x").unwrap();
+        std::fs::write(c2.join(name), "[version]\n14\n").unwrap();
+        let path = base.join(name);
+        let t = read_tile(&path, &[c1.clone(), c2.clone()]).unwrap();
+        assert_eq!(terrain_file(&t, &path), c1.join(format!("{name}.terrain")));
+        assert_eq!(water_file(&t, &path), c1.join(format!("{name}.water")));
+        let t = read_tile(&path, &[c2.clone()]).unwrap();
+        assert_eq!(terrain_file(&t, &path), base.join(format!("{name}.terrain")));
+        assert_eq!(water_file(&t, &path), base.join(format!("{name}.water")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn traffic_light_parents_follow_placed_signals_not_other_children() {

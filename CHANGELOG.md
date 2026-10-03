@@ -4,6 +4,82 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.1.1166 - 2026-10-02
+
+### Graphics
+- A vehicle's blended layers write depth unless `[matl_noZwrite]`, exactly as Omsi.exe sets its
+  states (0x7fd6c4), and are drawn in model order with no reordering: stacked panes (door glass
+  with dirt, decals on glass) no longer see through each other. The vehicle the camera is in is
+  drawn after the whole scene and its own lamp flares after it, as in Omsi.exe. [#211](https://github.com/openOMSI-Project/openOMSI/issues/211) [#596](https://github.com/openOMSI-Project/openOMSI/issues/596)
+- A 16-bit TGA keeps its alpha bit (A1R5G5B5, as D3DX reads it).
+
+### Sound
+- Sounds are mixed as in Omsi.exe's sound update (0x750340): the volume is checked against
+  0 dB after the distance factor (DirectSound keeps the last volume when asked for more), a loop's
+  pitch outside 100-200,000 Hz is refused and the last rate kept (the LiAZ and trolleybus
+  "whine" played 30x too fast), AI vehicles use viewpoint 4, sounds of other vehicles heard from
+  the cab are x(0.2 + Snd_OutsideVol) with no invented filter, only `[3d]` sounds are panned
+  (5 dB at most), Doppler only on loop sounds, conditions compared exactly.
+
+### Passengers and cash desk
+- Coins lie flat on the change tray at random spots and turns, as Omsi.exe places them, instead
+  of a tower that grew 3 mm a coin.
+- People come from one pool, as in Omsi.exe: `ai_max_humans` (OMSI's `[AIMaxCountRandom]`,
+  200 by default), walkers at most half of it. A waiting place another stop's person stands on
+  is not free, so no two people stand inside each other.
+- A duty moves on to the next trip when the bus stands at its first stop a minute before
+  departure, so the IBIS is no longer left on the old terminus with riders refusing to board.
+
+### Physics
+- AI wheels each stand on the highest drawn face up to 3 m above them, as Omsi.exe's ground
+  query (0x7a0814): no more cars sunk into cambered roads or hidden inside roads above the lane.
+- A wheel no longer falls through the hair-wide seam between two spline segments (an 18 cm drop).
+
+### Menu and website
+- The pause menu uses the launcher's greys, switches, sliders and scroll bars, follows the
+  Interface size, and lists destination codes in a column.
+- The website has a light theme (and a theme button), readable colours, and no sideways
+  scrolling on phones.
+
+## 0.1.1120 - 2026-10-02
+
+### Passengers and doors
+- A timetable bus waits only for the people walking up to its doors from the stop it serves and
+  those getting off, as Omsi.exe does, so a full bus no longer stands with open doors for ever. [#767](https://github.com/openOMSI-Project/openOMSI/issues/767)
+- People off a bus walk on along the pavement instead of milling round each other at the stop. [#913](https://github.com/openOMSI-Project/openOMSI/issues/913)
+- A controller button or a keyboard.cfg key can work door 1-9 front to back, or all doors
+  (`door_1` ... `door_9`, `doors_all`). [#916](https://github.com/openOMSI-Project/openOMSI/issues/916)
+- A second Shift+1 shuts both front leaves of the SD202 again.
+
+### Graphics
+- A transmapped car body is see-through only where its transmap is: AI cars are no longer half
+  transparent, with wheel arches showing through. [#928](https://github.com/openOMSI-Project/openOMSI/issues/928) [#932](https://github.com/openOMSI-Project/openOMSI/issues/932)
+- A night or light map named in a paint scheme's `[CTCTexture]` is the scheme's picture. [#895](https://github.com/openOMSI-Project/openOMSI/issues/895)
+- An active chrono event that reshapes a tile brings its own terrain and water. [#923](https://github.com/openOMSI-Project/openOMSI/issues/923) [#925](https://github.com/openOMSI-Project/openOMSI/issues/925)
+- A full beam reaches as much further than the low beam as its `[spotlight]` range says. [#941](https://github.com/openOMSI-Project/openOMSI/issues/941)
+- A see-through layer drawn in model order (a sticker on a window) is no longer painted over by
+  the opaque parts listed after it. [#918](https://github.com/openOMSI-Project/openOMSI/issues/918)
+
+### Traffic
+- A scripted child of a crossing that names one of its lights reads that light's phase, so such
+  traffic lights no longer flash yellow. [#922](https://github.com/openOMSI-Project/openOMSI/issues/922)
+
+### Vehicles
+- The rear section's wheels of an articulated bus spring on the road under each of them. [#901](https://github.com/openOMSI-Project/openOMSI/issues/901)
+- Textures waiting to be compressed go up at half size meanwhile, so a big articulated bus no
+  longer runs a 3 GB graphics card out of memory while loading. [#921](https://github.com/openOMSI-Project/openOMSI/issues/921)
+- A bus takes its own depot file of the map's place before another bus's. [#896](https://github.com/openOMSI-Project/openOMSI/issues/896)
+- A four-digit line such as 7110 keeps its number on the IBIS. [#459](https://github.com/openOMSI-Project/openOMSI/issues/459)
+
+### Launcher, menu and input
+- The launcher keeps "Hold manual gear buttons", and the pause menu's switch applies to the bus.
+- The passenger view (F2) turns all the way round. [#909](https://github.com/openOMSI-Project/openOMSI/issues/909)
+- "Camera..." in the pause menu opens the driver's view settings. [#908](https://github.com/openOMSI-Project/openOMSI/issues/908)
+- On OpenGL no thread polls the GPU beside the one drawing (a crash at start). [#898](https://github.com/openOMSI-Project/openOMSI/issues/898)
+- The minimap can be dragged anywhere on the screen. [#940](https://github.com/openOMSI-Project/openOMSI/issues/940)
+- Ctrl+Up / Ctrl+Down (gear up and down) are keys of the list that can be moved or cleared. [#907](https://github.com/openOMSI-Project/openOMSI/issues/907) [#930](https://github.com/openOMSI-Project/openOMSI/issues/930)
+- A window size can be chosen (Graphics > Window size); under gamescope the game opens full screen. [#904](https://github.com/openOMSI-Project/openOMSI/issues/904)
+
 ## 0.1.1098 - 2026-10-02
 
 ### Passengers

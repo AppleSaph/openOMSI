@@ -40,6 +40,7 @@ mod lan_world;
 mod lights;
 mod launcher;
 mod menu;
+mod mirror_hud;
 mod navigator;
 mod vr_navigator;
 mod money;
@@ -78,6 +79,7 @@ mod launcher_link;
 mod lan_mods;
 mod memory;
 mod offscreen;
+mod ground_gap;
 mod on_foot;
 mod route_arrows;
 mod server;
@@ -463,6 +465,7 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         mirrors_seen: 2,
         mirror_turn: 0,
         frozen_mirrors: None,
+        mirror_hud: Default::default(),
         hover_key: None,
         view,
         audio: None,
