@@ -3360,7 +3360,13 @@ impl Traffic {
             return;
         }
         let lane = &self.net.lanes[st.lane];
-        if lane.length() - st.s < 20.0 {
+        // (a move not over by the end of the lane carries on across the joint, `AiState::drive`:
+        // it used to be started only 20 m and more before a lane's end, with the lane beside
+        // running on for 30 m by itself - on a road built of 35-40 m spline pieces, Spandau's
+        // Falkenseer Chaussee with its kerb lanes lined with parked cars, a car that stopped
+        // behind a parked car just past a joint stood there for good with the traffic queued
+        // up behind it, the lane beside free)
+        if lane.length() - st.s < 9.0 && st.planned_next.is_none() {
             return;
         }
         let frac = st.s / lane.length().max(1.0);
@@ -3374,8 +3380,11 @@ impl Traffic {
             if lane.length() - st.s < 150.0 && turn != 0 && dir != turn {
                 continue;
             }
-            let s_side = frac * self.net.lanes[side].length();
-            if self.net.lanes[side].length() - s_side > 30.0
+            let side_lane = &self.net.lanes[side];
+            let s_side = frac * side_lane.length();
+            // the lane beside runs on for 30 m (through its joint)
+            let side_on = side_lane.length() - s_side + side_lane.next.iter().map(|&n| self.net.lanes[n].length()).fold(0.0, f32::max);
+            if side_on > 30.0
                 && self.lane_clear(i, side, s_side, 12.0, 30.0, by_lane)
                 && self.can_merge(i, side, s_side, by_lane)
             {
