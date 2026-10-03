@@ -12983,7 +12983,7 @@ mod material_tests {
         ];
         let alpha = material_alpha(&mats, 0, &defs);
         assert_eq!(alpha, AlphaMode::Opaque);
-        assert_eq!(Renderer::clamp_slot_alpha(0.35, alpha), 1.0);
+        assert_eq!(Renderer::clamp_slot_alpha(0.35, alpha, false), 1.0);
     }
 
     #[test]
