@@ -463,6 +463,18 @@ pub struct Schedule {
 /// within this many seconds; for a longer break it goes (and a bus comes back for it).
 const TOUR_LAYOVER_MAX: f64 = 30.0 * 60.0;
 
+/// A tour's bus takes its next trip on only from one of the trip's first lanes (or a short
+/// way onto one of them): Omsi.exe starts every trip at its beginning.
+const TOUR_ENTRY_LANES: usize = 4;
+
+/// Where on the next trip's route `section` the tour's bus standing on `lane` takes it on:
+/// only on one of its first lanes. A tour repeating the same trip leaves its bus on the
+/// route's last lane, and taken on there the trip was over at once - the bus stood at the
+/// last stop for good, and every bus behind it queued (#976).
+fn tour_entry(section: &[usize], lane: usize) -> Option<usize> {
+    section.iter().take(TOUR_ENTRY_LANES).position(|&l| l == lane)
+}
+
 /// How early a bus waits at its first stop for its departure (s): a quarter of an hour at a
 /// stand of its own, a minute where other buses stop as well (a layover bus there made
 /// every bus of the other lines queue behind it until it left).
@@ -2228,11 +2240,11 @@ impl Schedule {
             // from its lane onto one of the section's first lanes (round a terminal loop)
             let (lane0, s0) = (traffic.cars[ci].state.lane, traffic.cars[ci].state.s);
             let net = &traffic.net;
-            let (prefix, from) = match section.iter().position(|&l| l == lane0) {
+            let (prefix, from) = match tour_entry(&section, lane0) {
                 Some(r) => (Vec::new(), r),
                 None => {
                     let mut best: Option<(f32, Vec<usize>, usize)> = None;
-                    for t in 0..section.len().min(4) {
+                    for t in 0..section.len().min(TOUR_ENTRY_LANES) {
                         if let Some(p) = net.shortest_path(lane0, section[t]) {
                             let len = p[..p.len() - 1].iter().map(|&l| net.lanes[l].length()).sum::<f32>() - s0;
                             if len < 400.0 && best.as_ref().map(|b| len < b.0).unwrap_or(true) {
@@ -4562,6 +4574,16 @@ mod tests {
 
     /// The row OMSI's AI bus is given: the first whose ident is the destination, whatever
     /// the codes' order; of equally loose matches the first as well.
+    #[test]
+    fn a_tour_bus_takes_a_trip_on_only_at_its_start() {
+        let route = [10, 11, 12, 13, 14, 15, 16];
+        assert_eq!(tour_entry(&route, 10), Some(0));
+        assert_eq!(tour_entry(&route, 13), Some(3));
+        // the same trip again: the bus stands on its last lane
+        assert_eq!(tour_entry(&route, 16), None);
+        assert_eq!(tour_entry(&route, 99), None);
+    }
+
     #[test]
     fn a_stop_is_no_target_of_itself() {
         // a circular line: from A round to A; B has two platforms of one name
