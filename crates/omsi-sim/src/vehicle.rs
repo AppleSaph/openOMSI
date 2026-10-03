@@ -3142,15 +3142,18 @@ fn scripts_acceleration(accel_body: Vec3, orientation: Quat) -> Vec3 {
 /// bodies, so the value costs nothing); taken as the car's end, the second car was pulled
 /// 2.6 m into the first, its nose pressed through the head car's tail.
 ///
-/// So a car that is no `[scriptshare]` rear section butts its model to the leading car's
-/// model; a `[scriptshare]` rear section keeps the declared joint.
+/// So a rail car butts its model to the leading car's model; any other part - a trailer,
+/// an articulated-bus rear section - keeps the declared joint. The values are in the body
+/// frame, so that a caller that turns a reversed part around (`TrailerPart::body_rotation`)
+/// needs no more than this; a caller that does not (`Traffic::blocked`, which lays the cars
+/// straight along the heading) must turn them itself - see [`coupling_placement`].
 pub fn coupling_offsets(
     lead: &VehicleType,
     lead_reversed: bool,
     car: &VehicleType,
     car_reversed: bool,
 ) -> Option<(f32, f32)> {
-    if car.def.script_share {
+    if !car.def.is_rail() {
         return None;
     }
     // the leading car's rear end (its front end when it runs turned round), the car's own
@@ -3158,6 +3161,30 @@ pub fn coupling_offsets(
     let lead_rear = lead.model_box().map(|(lo, hi)| if lead_reversed { hi.y } else { lo.y })?;
     let car_front = car.model_box().map(|(lo, hi)| if car_reversed { lo.y } else { hi.y })?;
     Some((lead_rear, car_front))
+}
+
+/// Where a car of a consist stands, for a caller that lays the cars along one heading with
+/// no turn of its own (`Traffic::blocked`): the world position and heading of the car whose
+/// front coupling sits at the joint [`coupling_offsets`] named.
+///
+/// `back` and `front` are the two body-frame ends that function returned - the lead's rear,
+/// the car's front - and each is already the right end for the car's own direction. The
+/// joint lies `back` along the lead's own heading, and the car's origin steps back from it
+/// by `front` along the car's own heading (turned round when `reversed`); a caller that
+/// turns the part around itself (`TrailerPart::body_rotation`) needs none of this.
+pub fn coupling_placement(
+    lead_origin: DVec3,
+    lead_heading: f64,
+    back: f32,
+    front: f32,
+    reversed: bool,
+) -> (DVec3, f64) {
+    let lh = lead_heading.to_radians();
+    let joint = lead_origin + DVec3::new(lh.sin(), lh.cos(), 0.0) * back as f64;
+    let heading = if reversed { lead_heading + 180.0 } else { lead_heading };
+    let ch = heading.to_radians();
+    let origin = joint - DVec3::new(ch.sin(), ch.cos(), 0.0) * front as f64;
+    (origin, heading)
 }
 
 impl TrailerPart {

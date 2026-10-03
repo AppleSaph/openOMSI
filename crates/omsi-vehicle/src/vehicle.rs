@@ -260,6 +260,13 @@ impl Vehicle {
         self.coupling_front.is_some() && !self.has_friendly_name
     }
 
+    /// A rail vehicle (`.ovh` `[type]` 2): the cars of a `.zug`, which Omsi.exe stands end
+    /// to end by their model bodies. A road vehicle, trailer or articulated-bus rear section
+    /// keeps its declared `[coupling_front]` / `[coupling_back]`.
+    pub fn is_rail(&self) -> bool {
+        self.kind == VehicleKind::Other(2)
+    }
+
     pub fn parse(file: &CfgFile) -> Vehicle {
         let is_ovh = file.path.extension().map(|e| e.eq_ignore_ascii_case("ovh")).unwrap_or(false);
         let mut v = Vehicle { path: file.path.clone(), kind: if is_ovh { VehicleKind::Other(0) } else { VehicleKind::Bus }, mass: 1000.0, ..Default::default() };

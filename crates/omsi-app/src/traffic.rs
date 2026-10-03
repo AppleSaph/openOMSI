@@ -6207,9 +6207,8 @@ impl Traffic {
             pos,
             heading,
         ))];
-        let h = heading.to_radians();
-        let fwd = DVec3::new(h.sin(), h.cos(), 0.0);
-        let (mut origin, mut lead, mut lead_rev) = (pos, ty.clone(), false);
+        let (mut origin, mut lead, mut lead_rev, mut lead_heading) =
+            (pos, ty.clone(), false, heading);
         for (t, rev) in self.trailer_chain(ty) {
             let (back, front) = match omsi_sim::vehicle::coupling_offsets(&lead, lead_rev, &t, rev) {
                 Some((back, front)) => (back, front),
@@ -6218,14 +6217,19 @@ impl Traffic {
                     t.def.coupling_front.as_ref().map(|c| c.pos[1]).unwrap_or(4.0),
                 ),
             };
-            origin += fwd * (back - front) as f64;
+            // each car stands along its own heading: a reversed one faces the other way, so
+            // its body is not the lead's - `coupling_offsets` returns body-frame ends.
+            let (center, car_heading) =
+                omsi_sim::vehicle::coupling_placement(origin, lead_heading, back, front, rev);
             bodies.push(grown(omsi_sim::collision::Obb::from_box(
                 t.def.bounding_box.unwrap_or(DEFAULT_BOX),
-                origin,
-                heading,
+                center,
+                car_heading,
             )));
+            origin = center;
             lead = t;
             lead_rev = rev;
+            lead_heading = car_heading;
         }
         let reach = bodies
             .iter()
