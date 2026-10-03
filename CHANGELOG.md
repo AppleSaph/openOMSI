@@ -4,6 +4,17 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.1.1313 - 2026-10-03
+
+### Triple screens
+- Native triple-screen support with the HUD on the centre screen
+  ([#1127](https://github.com/openOMSI-Project/openOMSI/pull/1127)), merged with fixes: the three
+  panels are drawn at one size (the depth, AO and rain targets were made anew twice a frame),
+  SSAO on the angled side panels, traffic and pedestrians no longer appear or vanish on them,
+  fullscreen and Alt+Enter leave a spanned window alone, nothing is drawn after a lost device,
+  and the Display page shows the rig's settings only while it is on. A single screen draws
+  exactly as before.
+
 ## 0.1.1302 - 2026-10-03
 
 ### Fixes
