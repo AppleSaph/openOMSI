@@ -13,6 +13,7 @@ out=dist/linux
 mkdir -p "$out"   # (the folder is also the content folder: mods stay)
 cp target/release/openomsi target/release/openomsi-launcher "$out/"
 cp assets/icons/app/openomsi-256.png "$out/openomsi.png"
-cp assets/steam_redist/libsteam_api.so "$out/"
+# (Steam's library, x86-64 only: an ARM build has no Steam, see crates/omsi-app/build.rs)
+[ "$(uname -m)" = x86_64 ] && cp assets/steam_redist/libsteam_api.so "$out/"
 cp scripts/linux/openomsi.desktop "$out/"
 printf '\nopenOMSI %s built in %s\n' "$OPENOMSI_VERSION" "$out"

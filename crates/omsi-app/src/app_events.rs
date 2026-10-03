@@ -1403,8 +1403,8 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // handle steamapi
-                #[cfg(not(target_os = "android"))]
+                // Steam's callbacks (rich presence)
+                #[cfg(steam)]
                 if let Some(steam) = self.steam.as_ref() {
                     steam.client.run_callbacks();
                 }
