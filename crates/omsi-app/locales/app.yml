@@ -21764,3 +21764,19 @@ _version: 2
   de: "Alarm"
   uk: "Тривога"
   pl: "Alarm"
+"Voice chat through GreenTeaSpeak (multiplayer)":
+  ru: "Голосовой чат через GreenTeaSpeak (мультиплеер)"
+  de: "Sprachchat über GreenTeaSpeak (Mehrspieler)"
+  fr: "Chat vocal via GreenTeaSpeak (multijoueur)"
+  uk: "Голосовий чат через GreenTeaSpeak (мультиплеєр)"
+  pl: "Czat głosowy przez GreenTeaSpeak (gra wieloosobowa)"
+"Players near you are heard from where they stand, when GreenTeaSpeak runs with the openOMSI plugin and the server names a voice server.":
+  ru: "Игроков рядом слышно оттуда, где они стоят, если запущен GreenTeaSpeak с плагином openOMSI и сервер указывает голосовой сервер."
+  de: "Spieler in deiner Nähe hörst du von dort, wo sie stehen, wenn GreenTeaSpeak mit dem openOMSI-Plugin läuft und der Server einen Sprachserver nennt."
+  uk: "Гравців поруч чути звідти, де вони стоять, якщо запущено GreenTeaSpeak із плагіном openOMSI і сервер вказує голосовий сервер."
+"speaking":
+  ru: "говорит"
+  de: "spricht"
+  fr: "parle"
+  uk: "говорить"
+  pl: "mówi"
