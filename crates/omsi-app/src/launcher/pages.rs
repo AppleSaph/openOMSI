@@ -1412,6 +1412,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
         let cw = (w - GAP * (cols - 1) as f32) / cols as f32;
         let per_row = ROW + 4.0;
         let rows = shown_buttons.div_ceil(cols);
+        let latching = &mut d.latching;
         for (b, (act, _)) in d.buttons.iter_mut().take(shown_buttons).enumerate() {
             let (col, row) = (b / rows.max(1), b % rows.max(1));
             let r = Rect::new(x0 + col as f32 * (cw + GAP), y + row as f32 * per_row, cw, ROW);
@@ -1423,9 +1424,21 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
                 ui.p().rounded(Rect::new(r.x - 4.0, r.y - 2.0, r.w + 8.0, r.h + 4.0), 6.0, ACCENT.alpha(0.28));
             }
             ui.label(Rect::new(r.x, r.y, 90.0, r.h), &label);
+            // (a latching switch - a turn signal lever, a lit hazard button - also switches
+            // when it comes out)
+            let latch_w = 104.0;
             let mut sel = actions.iter().position(|a| a.eq_ignore_ascii_case(act)).unwrap_or(0);
-            if ui.select(&format!("pad-btn-{b}"), Rect::new(r.x + 90.0, r.y, r.w - 90.0, r.h), &mut sel, &labels) {
+            if ui.select(&format!("pad-btn-{b}"), Rect::new(r.x + 90.0, r.y, r.w - 90.0 - latch_w - GAP, r.h), &mut sel, &labels) {
                 *act = if sel == 0 { String::new() } else { actions[sel].clone() };
+                dirty = true;
+            }
+            let mut latched = latching.contains(&b);
+            if ui.toggle(&format!("pad-latch-{b}"), Rect::new(r.right() - latch_w, r.y, latch_w, r.h), &mut latched, "Latching") {
+                latching.retain(|x| *x != b);
+                if latched {
+                    latching.push(b);
+                    latching.sort_unstable();
+                }
                 dirty = true;
             }
         }
