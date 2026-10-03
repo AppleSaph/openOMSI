@@ -2846,6 +2846,7 @@ impl App {
             // Releasing the mouse button finishes scrollbar dragging.
             if state == ElementState::Released {
                 self.menu_drag = None;
+                self.dd_scroll_drag = None;
                 if self.menu_scroll_drag {
                     self.menu_scroll_drag = false;
                     self.menu_top = self.menu_top.map(f32::round);
@@ -2857,6 +2858,17 @@ impl App {
             if self.dropdown.is_some() {
                 let inside = |r: &[f32; 4]| self.cursor.0 >= r[0] && self.cursor.0 <= r[2] && self.cursor.1 >= r[1] && self.cursor.1 <= r[3];
                 let hit = self.ui.as_ref().and_then(|u| u.dd_rects.iter().position(|r| inside(r)).map(|i| i + u.dd_top));
+                // its scroll bar is dragged (a press on the track beside the thumb takes the
+                // thumb there by its middle); before, the press closed the list (#794)
+                if let Some((track, thumb)) = self.ui.as_ref().and_then(|u| u.dd_scroll).filter(|_| hit.is_none()) {
+                    let bar = [thumb[0], track[1], thumb[2], track[3]];
+                    if inside(&bar) {
+                        let grab = if inside(&thumb) { self.cursor.1 - thumb[1] } else { (thumb[3] - thumb[1]) * 0.5 };
+                        self.dd_scroll_drag = Some(grab);
+                        self.drag_dropdown(self.cursor.1);
+                        return;
+                    }
+                }
                 match hit {
                     Some(i) => self.dropdown_pick(i),
                     None => self.dropdown = None,

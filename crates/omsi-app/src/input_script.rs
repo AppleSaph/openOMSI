@@ -1053,6 +1053,14 @@ impl App {
             }
             return false;
         }
+        if self.dd_scroll_drag.is_some() {
+            if self.dropdown.is_none() || self.game_menu.is_none() {
+                self.dd_scroll_drag = None;
+            } else {
+                self.drag_dropdown(y);
+                return false;
+            }
+        }
         if self.menu_scroll_drag {
             let Some(ui) = self.ui.as_ref() else {
                 self.menu_scroll_drag = false;
@@ -1448,17 +1456,27 @@ impl App {
                     }
                     log::info!("input script: wheel {n}: menu line {:?}, chooser {:?}, placing heading {:?}", self.game_menu, self.chooser, self.placing.as_ref().map(|p| p.heading));
                 }
-                // `click`: a left click where the cursor is, through the window's own path
+                // `click`: a left click where the cursor is, through the window's own path;
+                // `click down` / `click up` only press or let go (a drag in between)
                 "click" => {
+                    let (press, release) = (arg != "up", arg != "down");
                     if self.placing.is_some() && self.game_menu.is_none() {
                         self.placing_click();
                     } else if self.game_menu.is_some() {
                         // (on the menu as the window's button: its lines, its arrows)
-                        self.left_button(event_loop, true);
-                        self.left_button(event_loop, false);
+                        if press {
+                            self.left_button(event_loop, true);
+                        }
+                        if release {
+                            self.left_button(event_loop, false);
+                        }
                     } else {
-                        self.on_left(true);
-                        self.on_left(false);
+                        if press {
+                            self.on_left(true);
+                        }
+                        if release {
+                            self.on_left(false);
+                        }
                     }
                     log::info!("input script: click: placing {:?}, placed at {:?}", self.placing.as_ref().map(|p| (p.at, p.blocked)), self.placed.last().map(|q| (q.vehicle.position, q.vehicle.heading)));
                 }
@@ -2537,6 +2555,16 @@ impl App {
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => self.menu_choose(event_loop, sel),
             _ => {}
         }
+    }
+
+    /// The open drop-down's scroll bar held with the mouse at height `y`: the first entry
+    /// shown follows the thumb.
+    pub(crate) fn drag_dropdown(&mut self, y: f32) {
+        let (Some(grab), Some(ui)) = (self.dd_scroll_drag, self.ui.as_ref()) else { return };
+        let Some((track, thumb)) = ui.dd_scroll else { return };
+        let rows = ui.dd_rows.max(1);
+        let Some(d) = self.dropdown.as_mut() else { return };
+        d.top = dropdown_top_at(y - grab, track, thumb[3] - thumb[1], d.items.len(), rows);
     }
 
     /// The mouse wheel over the game menu: the chosen line moves (the menu scrolls with it),
@@ -3746,7 +3774,7 @@ impl App {
     /// a page, a control, the scroll bar), the closed hand while a slider or the scroll bar
     /// is held.
     pub(crate) fn menu_cursor_kind(&self) -> u8 {
-        if self.menu_drag.is_some() || self.menu_scroll_drag {
+        if self.menu_drag.is_some() || self.menu_scroll_drag || self.dd_scroll_drag.is_some() {
             return 4;
         }
         let Some(u) = self.ui.as_ref() else { return 0 };
@@ -4184,5 +4212,32 @@ mod cab_look_tests {
         assert!((cab_look_yaw("pax", 170.0 + 20.0) + 170.0).abs() < 1e-3);
         assert_eq!(cab_look_yaw("driver", 200.0), 140.0);
         assert_eq!(cab_look_yaw("driver", -200.0), -140.0);
+    }
+}
+
+/// The first entry a drop-down of `n` entries showing `rows` shows with its thumb (`len`
+/// high) at the top `thumb_top` in `track`.
+pub(crate) fn dropdown_top_at(thumb_top: f32, track: [f32; 4], len: f32, n: usize, rows: usize) -> usize {
+    let max = n.saturating_sub(rows);
+    let travel = (track[3] - track[1] - len).max(1.0);
+    let f = ((thumb_top - track[1]) / travel).clamp(0.0, 1.0);
+    ((f * max as f32).round() as usize).min(max)
+}
+
+#[cfg(test)]
+mod dropdown_tests {
+    /// A drop-down's thumb dragged down its track scrolls the list to its end (#794).
+    #[test]
+    fn a_dropdowns_thumb_dragged_scrolls_it() {
+        // 40 entries, 8 shown, a 300 px track with a 60 px thumb
+        let track = [0.0, 100.0, 4.0, 400.0];
+        assert_eq!(super::dropdown_top_at(100.0, track, 60.0, 40, 8), 0);
+        assert_eq!(super::dropdown_top_at(340.0, track, 60.0, 40, 8), 32);
+        assert_eq!(super::dropdown_top_at(220.0, track, 60.0, 40, 8), 16);
+        // past the ends it stays at them
+        assert_eq!(super::dropdown_top_at(-50.0, track, 60.0, 40, 8), 0);
+        assert_eq!(super::dropdown_top_at(900.0, track, 60.0, 40, 8), 32);
+        // a list that fits never scrolls
+        assert_eq!(super::dropdown_top_at(300.0, track, 60.0, 5, 8), 0);
     }
 }
