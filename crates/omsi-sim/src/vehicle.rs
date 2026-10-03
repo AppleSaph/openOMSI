@@ -1209,6 +1209,20 @@ impl VehicleInstance {
             .unwrap_or_default()
     }
 
+    /// The string a `[texttexture]` names: its first field is either a script variable's name
+    /// or - as the Chinese AI cars write it, `[texttexture] 0 CN_REG ...` - the *number* of a
+    /// built-in string (`program/stringvarlist_roadvehicle.txt`: 0 ident, 1 number, ...).
+    /// Omsi.exe takes a number as that index (the scenery objects' `[texttexture]` do the same,
+    /// see `resolve_scenery_freetex_name`); taken for a variable's name it matches nothing and
+    /// the plate stays empty. See `Program::text_texture_var`.
+    pub fn text_texture_string(&self, field: &str) -> String {
+        self.ty
+            .program
+            .text_texture_var(field)
+            .map(|i| self.state.str_vars[i as usize].clone())
+            .unwrap_or_default()
+    }
+
     /// Re-render changed text textures; returns the indices with a pending image.
     pub fn update_text_textures(&mut self) -> Vec<usize> {
         let mut changed = Vec::new();
@@ -1217,8 +1231,8 @@ impl VehicleInstance {
             self.state.vars[id as usize] = 0.0;
         }
         for i in 0..self.text_textures.len() {
-            let var = self.text_textures[i].def.variable.clone();
-            let text = self.str_var(&var);
+            let field = self.text_textures[i].def.variable.clone();
+            let text = self.text_texture_string(&field);
             if self.text_textures[i].update(&text) {
                 changed.push(i);
             }
@@ -3319,7 +3333,7 @@ impl TrailerPart {
     pub fn update_text_textures(&mut self, main: &VehicleInstance) -> Vec<usize> {
         let mut changed = Vec::new();
         for (i, t) in self.text_textures.iter_mut().enumerate() {
-            let text = main.str_var(&t.def.variable);
+            let text = main.text_texture_string(&t.def.variable);
             if t.update(&text) {
                 changed.push(i);
             }
