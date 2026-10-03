@@ -1472,8 +1472,9 @@ fn relative_position(me: &omsi_sim::VehicleInstance, pose: &Pose) -> String {
 
 /// The other players' name tags, as ETS2 has them: the name over the bus's roof and a
 /// small line under it (line and destination, how far away), fading out beyond 300 m.
-/// Screen positions in physical pixels of a `width` x `height` picture.
-pub fn name_tags(game: &LanGame, cam: &omsi_render::Camera, width: f32, height: f32) -> Vec<((f32, f32), String, String, f32)> {
+/// Screen positions in physical pixels of a `width` x `height` picture. `speaks` tells who
+/// talks in the voice chat now (by name and id): "speaking" under their name.
+pub fn name_tags(game: &LanGame, cam: &omsi_render::Camera, width: f32, height: f32, speaks: &dyn Fn(&str, u32) -> bool) -> Vec<((f32, f32), String, String, f32)> {
     let vp = cam.view_proj(width / height.max(1.0), cam.position);
     let mut tags = Vec::new();
     for r in game.remotes.values() {
@@ -1508,6 +1509,9 @@ pub fn name_tags(game: &LanGame, cam: &omsi_render::Camera, width: f32, height: 
         if d > 25.0 {
             let dist = if d >= 1000.0 { format!("{:.1} km", d / 1000.0) } else { format!("{:.0} m", d) };
             sub = if sub.is_empty() { dist } else { format!("{sub} · {dist}") };
+        }
+        if speaks(&r.name, r.last.id) {
+            sub = if sub.is_empty() { omsi_ui::tr("speaking").into_owned() } else { format!("{} · {sub}", omsi_ui::tr("speaking")) };
         }
         let alpha = (1.0 - ((d as f32 - 300.0) / 150.0)).clamp(0.0, 1.0);
         tags.push((((x + 1.0) * 0.5 * width, (1.0 - y) * 0.5 * height), name, sub, alpha));

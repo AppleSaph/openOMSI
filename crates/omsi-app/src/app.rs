@@ -165,6 +165,8 @@ pub(crate) struct App {
     // Steamworks API layer and it's last updated time
     #[cfg(steam)]
     pub(crate) steam: Option<crate::steam::Steam>,
+    /// Positional voice through GreenTeaSpeak in a session (`voice`).
+    pub(crate) voice: Option<crate::voice::Voice>,
     /// Head tracking (Settings → head tracking), started with the first frame that wants it.
     pub(crate) headtrack: Option<crate::headtrack::HeadTracker>,
     /// When head tracking last failed to start (tried again a few seconds later).

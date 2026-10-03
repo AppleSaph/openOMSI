@@ -500,6 +500,8 @@ pub(crate) const LOCAL_ADMIN: u32 = u32::MAX;
 pub(crate) fn server_command(lan: &mut LanSession, from: u32, text: &str, adm: &mut ServerAdmin, positions: &dyn Fn(u32) -> Option<(glam::DVec3, f64)>) {
     let (verb, arg) = text.split_once(' ').unwrap_or((text, ""));
     match verb {
+        // a joining game asks which voice server the session talks on (`voice`)
+        "voice?" => lan.command(from, &crate::voice::VoiceServer::command(crate::voice::hosted().as_ref())),
         "auth?" => {
             if adm.password.is_empty() {
                 lan.command(from, "admin-no");
