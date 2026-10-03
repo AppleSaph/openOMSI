@@ -1265,6 +1265,51 @@ impl VehicleInstance {
         }
     }
 
+    /// Restore a situation without running scripts against an incomplete host. Timetable
+    /// callbacks must be attached by the caller before the next simulation frame.
+    pub fn restore_script_state(
+        &mut self,
+        vars: &[(String, f32)],
+        strings: &[(String, String)],
+    ) -> (usize, usize) {
+        let mut numeric = 0;
+        let mut textual = 0;
+        for (name, value) in vars {
+            numeric += usize::from(self.set_var(name, *value));
+            if name.eq_ignore_ascii_case("Dirt_Norm") {
+                self.dirt = value.clamp(0.0, 1.0);
+            }
+        }
+        for (name, value) in strings {
+            if let Some(i) = self.ty.program.str_var(name) {
+                self.state.str_vars[i as usize] = value.clone();
+                textual += 1;
+            }
+        }
+        // Text images are per instance. An unchanged string still needs an upload when
+        // a snapshot is applied to a vehicle whose previous images were already synced.
+        for t in &mut self.text_textures {
+            t.last_text = None;
+        }
+        for part in &mut self.trailers {
+            for t in &mut part.text_textures {
+                t.last_text = None;
+            }
+        }
+        // Stock bitmap matrices compare these with the IBIS before rebuilding their
+        // backing bitmap. The bitmap is not in an .osn, so the saved comparison cache
+        // cannot describe this instance's fresh textures. Text/roller displays keep all
+        // their saved state; no destination or power trigger is fired here.
+        if !self.host.script_textures.is_empty()
+            && self.ty.program.macro_block("Matrix_frame").is_some()
+        {
+            self.set_var("Matrix_Nr_Last", -1.0);
+            self.set_var("Matrix_TerminusIndex_Last", -1.0);
+        }
+        self.update_visuals(0.0);
+        (numeric, textual)
+    }
+
     /// Prepare the text textures with fonts from `lib`.
     pub fn init_text_textures(
         &mut self,
@@ -4123,6 +4168,169 @@ mod tests {
         let elsewhere = winding_pack(Path::new("/omsi/Sceneryobjects/x/model/y.o3d"));
         assert_eq!(elsewhere, winding_pack(Path::new("/omsi/Sceneryobjects/x/model/z.o3d")));
         assert_ne!(elsewhere, winding_pack(Path::new("/omsi/Sceneryobjects/w/model/y.o3d")));
+    }
+
+    fn restored_display_vehicle() -> VehicleInstance {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "omsi_restore_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("display.osc");
+        std::fs::write(
+            &script,
+            r#"
+{frame}
+(M.L.Matrix_frame)
+(M.L.line_draw)
+{end}
+{macro:line_draw}
+(L.$.line_request) (S.$.line_display)
+{end}
+{macro:Matrix_frame}
+(L.L.power) (L.L.IBIS_Linie_Complex) (L.L.Matrix_Nr_Last) = ! &&
+(L.L.power) (L.L.IBIS_TerminusIndex) (L.L.Matrix_TerminusIndex_Last) = ! && ||
+{if}
+0 (M.V.STNewTex)
+0 (M.V.STLock)
+0 255 255 120 0 (M.V.STSetColor)
+0 0 0 4 2 (M.V.STDrawRect)
+0 (M.V.STUnlock)
+(L.L.IBIS_Linie_Complex) (S.L.Matrix_Nr_Last)
+(L.L.IBIS_TerminusIndex) (S.L.Matrix_TerminusIndex_Last)
+{endif}
+{end}
+"#,
+        )
+        .unwrap();
+        let vars = dir.join("vars.txt");
+        std::fs::write(&vars, "power\nIBIS_Linie_Complex\nIBIS_TerminusIndex\nMatrix_Nr_Last\nMatrix_TerminusIndex_Last\n").unwrap();
+        let strings = dir.join("strings.txt");
+        std::fs::write(&strings, "line_request\nline_display\n").unwrap();
+        let program = omsi_script::compile(&omsi_script::CompileInput {
+            scripts: vec![script],
+            varlists: vec![vars],
+            stringvarlists: vec![strings],
+            ..Default::default()
+        });
+        assert!(program.errors.is_empty(), "{:?}", program.errors);
+        let mut program = program;
+        program.declare_str_var("destination");
+        let mut model = Model::default();
+        model.script_textures = vec![(4, 2)];
+        model.text_textures.push(omsi_model::TextTexture {
+            variable: "destination".into(),
+            width: 4,
+            height: 2,
+            ..Default::default()
+        });
+        model.text_textures.push(omsi_model::TextTexture {
+            variable: "line_display".into(),
+            width: 900,
+            height: 100,
+            ..Default::default()
+        });
+        let ty = Arc::new(VehicleType {
+            def: Default::default(),
+            model,
+            model_dir: dir.clone(),
+            program: Arc::new(program),
+            meshes: Vec::new(),
+            keep_winding: false,
+            paint_schemes: Vec::new(),
+            texchanges: Vec::new(),
+            wheel_meshes: Vec::new(),
+            suspension_axles: Vec::new(),
+            missing_packs: Vec::new(),
+            mesh_bounds: Vec::new(),
+            mesh_boxes: Vec::new(),
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+        VehicleInstance::new(ty, VehicleHost::new(Default::default()))
+    }
+
+    #[test]
+    fn restore_refreshes_unchanged_bitmap_without_retyping_or_powering_on() {
+        for power in [0.0, 1.0] {
+            let mut original = restored_display_vehicle();
+            original.set_var("power", power);
+            original.set_var("IBIS_Linie_Complex", 10900.0);
+            original.set_var("IBIS_TerminusIndex", 9.0);
+            original.update(0.02);
+            let vars: Vec<_> = original
+                .ty
+                .program
+                .var_names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.clone(), original.state.vars[i]))
+                .collect();
+            let mut resumed =
+                VehicleInstance::new(original.ty.clone(), VehicleHost::new(Default::default()));
+            resumed.restore_script_state(
+                &vars,
+                &[("destination".into(), "  Manual destination  ".into())],
+            );
+            assert_eq!(resumed.var("power"), Some(power));
+            assert_eq!(resumed.var("IBIS_Linie_Complex"), Some(10900.0));
+            assert_eq!(resumed.var("IBIS_TerminusIndex"), Some(9.0));
+            assert_eq!(resumed.str_var("destination"), "  Manual destination  ");
+            assert!(resumed.host.script_textures[0].rgba.iter().all(|p| *p == 0));
+            resumed.update(0.02);
+            assert_eq!(
+                resumed.host.script_textures[0].rgba,
+                original.host.script_textures[0].rgba
+            );
+            assert_eq!(
+                resumed.host.script_textures[0].rgba.iter().any(|p| *p != 0),
+                power > 0.0
+            );
+        }
+    }
+
+    #[test]
+    fn string_only_restore_preserves_and_reuploads_main_and_articulated_displays() {
+        for power in [0.0, 1.0] {
+            let mut v = restored_display_vehicle();
+            v.set_var("power", power);
+            v.attach_trailer(v.ty.clone());
+            for def in &v.ty.model.text_textures {
+                v.text_textures
+                    .push(crate::texttex::TextTextureState::new(def.clone(), None));
+                v.trailers[0]
+                    .text_textures
+                    .push(crate::texttex::TextTextureState::new(def.clone(), None));
+            }
+            let strings = [
+                ("line_request".into(), "X9                            ".into()),
+                ("line_display".into(), "X9                            ".into()),
+                ("destination".into(), "  Manual destination  ".into()),
+            ];
+            // Repeat with already uploaded, unchanged text: a newly bound texture still
+            // needs its image, even when no numeric variables were saved.
+            for _ in 0..2 {
+                v.restore_script_state(&[], &strings);
+                v.update(0.02);
+                assert_eq!(v.var("power"), Some(power));
+                assert_eq!(v.str_var("destination"), "  Manual destination  ");
+                assert_eq!(v.str_var("line_request"), "X9                            ");
+                assert_eq!(v.str_var("line_display"), "X9                            ");
+                assert_eq!(v.update_text_textures(), vec![0, 1]);
+                let mut part = v.trailers.pop().unwrap();
+                assert_eq!(part.update_text_textures(&v), vec![0, 1]);
+                assert_eq!(
+                    part.text_textures[1].last_text.as_deref(),
+                    Some("X9                            ")
+                );
+                v.trailers.push(part);
+                for t in &mut v.text_textures {
+                    t.pending.take();
+                }
+                assert!(v.update_text_textures().is_empty());
+            }
+        }
     }
 
     #[test]

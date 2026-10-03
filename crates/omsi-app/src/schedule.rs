@@ -4366,6 +4366,15 @@ impl PlayerDuty {
         self.placed = true;
     }
 
+    /// Resume the saved trip at its saved ordinal, without choosing a fresh starting
+    /// point or asking the device to retype its already restored programming.
+    pub fn restore_progress(&mut self, stop: usize) {
+        self.next_stop = stop.min(self.trip().stops.len().saturating_sub(1));
+        self.placed = true;
+        self.picked = true;
+        self.trip_changed = false;
+    }
+
     /// A page sets the stop the duty goes on with (`omsi.setNextStop`), forwards or
     /// backwards: skipped stops count as not served, and going back makes the stops from
     /// `stop` on due again. Not once the trip's last stop is reached (`done`), unless the
@@ -4444,6 +4453,18 @@ impl PlayerDuty {
         let day_time = self.duty_time(day_time);
         self.heading = bus.heading;
         let served = self.advance(bus.position, day_time);
+        self.feed_host(bus, day_time);
+        served
+    }
+
+    /// Supply restored timetable data before the first resumed script frame.
+    pub fn restore_host(&self, bus: &mut omsi_sim::VehicleInstance, day_time: f64) {
+        self.feed_host(bus, day_time);
+        bus.host.schedule_active = 1.0;
+        bus.set_var("schedule_active", 1.0);
+    }
+
+    fn feed_host(&self, bus: &mut omsi_sim::VehicleInstance, day_time: f64) {
         let delay = self.delay(day_time);
         let trip = &self.trips[self.trip_index];
         let host = &mut bus.host;
@@ -4457,7 +4478,6 @@ impl PlayerDuty {
         host.tt_busstop_index = self.next_stop as i32;
         host.tt_terminus_index = tt_terminus_index(host.hof.as_deref(), &trip.terminus);
         host.tt_delay = delay as f32;
-        served
     }
 
     /// The bus came to a later stop of the trip than the one it is due at (it drove past
@@ -4910,6 +4930,79 @@ mod tests {
             end: stops.last().unwrap().arr,
             stops,
         }
+    }
+
+    #[test]
+    fn resumed_duty_keeps_its_trip_and_stop_before_the_first_script_frame() {
+        let trips = vec![
+            planned(100.0, &[(0.0, 100.0, 100.0), (500.0, 200.0, 220.0)]),
+            planned(
+                400.0,
+                &[
+                    (500.0, 400.0, 400.0),
+                    (1000.0, 500.0, 520.0),
+                    (1500.0, 600.0, 600.0),
+                ],
+            ),
+            planned(800.0, &[(1500.0, 800.0, 800.0)]),
+        ];
+        let mut d = PlayerDuty {
+            line: "5".into(),
+            tour: "65104".into(),
+            trips,
+            trip_index: 0,
+            first_trip: 0,
+            next_stop: 0,
+            at_stop: false,
+            arrived_late: None,
+            done: false,
+            left_late: None,
+            held_back: false,
+            placed: false,
+            trip_changed: false,
+            picked: false,
+            first_update: None,
+            heading: 90.0,
+        };
+        // The same name appears twice. Its saved ordinal, rather than its name or the
+        // bus's position far from any stop, selects the second occurrence.
+        d.trips[1].stops[0].name = "Central".into();
+        d.trips[1].stops[1].name = "Central".into();
+        d.start_at(1, 0);
+        d.restore_progress(1);
+        assert!(
+            !d.take_trip_change(),
+            "resume must not request automatic reprogramming"
+        );
+        let mut v = crate::situation::timetable_test_vehicle();
+        // Demonstrate that this device really loses its programming without callbacks.
+        let vars = vec![("duty".into(), 65104.0)];
+        let strings = vec![("destination".into(), "  Manual destination  ".into())];
+        v.restore_script_state(&vars, &strings);
+        v.update(0.02);
+        assert_eq!(v.var("duty"), Some(0.0));
+        v.restore_script_state(&vars, &strings);
+        v.position = glam::DVec3::new(-3500.0, 0.0, 0.0);
+        d.restore_host(&mut v, 542.0);
+        v.update(0.02);
+        assert_eq!(v.var("duty"), Some(65104.0));
+        let dest = v.ty.program.str_var("destination").unwrap() as usize;
+        assert_eq!(v.state.str_vars[dest], "  Manual destination  ");
+        assert_eq!(v.var("observed_stop"), Some(1.0));
+        assert_eq!(v.var("observed_delay"), Some(42.0));
+        d.update(&mut v, 542.0);
+        assert_eq!((d.trip_index, d.next_stop), (1, 1));
+        assert_eq!(d.tour, "65104");
+        d.restore_progress(usize::MAX);
+        assert_eq!(d.next_stop, 2);
+        d.restore_progress(0);
+        assert_eq!(d.next_stop, 0);
+        // Ordinary duty updates retain their existing handling of schedule_active.
+        v.host.schedule_active = 0.0;
+        v.set_var("schedule_active", 0.0);
+        d.update(&mut v, 542.0);
+        assert_eq!(v.host.schedule_active, 0.0);
+        assert_eq!(v.var("schedule_active"), Some(0.0));
     }
 
     #[test]
