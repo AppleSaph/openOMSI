@@ -265,7 +265,7 @@ pub fn content_dir() -> Option<PathBuf> {
             let dir = game.parent()?.to_path_buf();
             let beside = if dir.ends_with("Contents/MacOS") { dir.parent()?.parent()?.parent()?.to_path_buf() } else { dir };
             let cand = omsi_cfg::content_folder_of(&beside);
-            if (cand.exists() || std::fs::create_dir_all(&cand).is_ok()) && omsi_cfg::is_writable(&cand) {
+            if !omsi_cfg::is_programs_folder(&cand) && (cand.exists() || std::fs::create_dir_all(&cand).is_ok()) && omsi_cfg::is_writable(&cand) {
                 cand
             } else {
                 data_dir().join("content")

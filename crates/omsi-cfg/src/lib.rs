@@ -946,6 +946,14 @@ pub fn content_folder_of(dir: &Path) -> PathBuf {
     }
 }
 
+/// A folder of programs - macOS's `/Applications` or `~/Applications`, where an
+/// openOMSI.app is usually copied to - is no place for the content folder: the game laid
+/// OMSI's folders (Vehicles, maps, Mods ...) out among the user's applications (#1043). The
+/// content folder then lives in the user's data folder instead.
+pub fn is_programs_folder(dir: &Path) -> bool {
+    dir.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("Applications"))
+}
+
 /// Check if a directory is writable by attempting to create and remove a probe file.
 pub fn is_writable(dir: &Path) -> bool {
     let probe = dir.join(".openomsi-write-test");
@@ -982,6 +990,13 @@ mod tests {
         assert!(is_writable(&tmp));
         let nonexistent = tmp.join("nonexistent_subfolder_xyz_123");
         assert!(!is_writable(&nonexistent));
+    }
+
+    #[test]
+    fn applications_folder_is_no_content_folder() {
+        assert!(is_programs_folder(Path::new("/Applications")));
+        assert!(is_programs_folder(Path::new("/Users/x/Applications")));
+        assert!(!is_programs_folder(Path::new("/Users/x/Games/openOMSI")));
     }
 
     #[test]

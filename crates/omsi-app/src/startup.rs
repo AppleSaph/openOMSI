@@ -112,7 +112,7 @@ pub(crate) fn content_dir() -> Option<PathBuf> {
         dir
     };
     let cand = omsi_cfg::content_folder_of(&dir);
-    if (cand.exists() || std::fs::create_dir_all(&cand).is_ok()) && omsi_cfg::is_writable(&cand) {
+    if !omsi_cfg::is_programs_folder(&cand) && (cand.exists() || std::fs::create_dir_all(&cand).is_ok()) && omsi_cfg::is_writable(&cand) {
         Some(cand)
     } else {
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
