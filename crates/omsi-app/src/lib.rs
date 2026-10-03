@@ -11,6 +11,7 @@
 
 mod admin;
 mod discord;
+mod steam;
 mod headtrack;
 #[cfg(windows)]
 mod openxr;
@@ -501,6 +502,7 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         teleport_pick: false,
         discord: None,
         discord_t: 0.0,
+        steam: None,
         headtrack: None,
         headtrack_failed: None,
         controllers: None,

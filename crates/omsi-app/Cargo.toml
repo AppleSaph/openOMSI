@@ -65,6 +65,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 [target.'cfg(not(target_os = "android"))'.dependencies]
 arboard = { version = "3", default-features = false }
 rfd = "0.15"
+steamworks = "0.13.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

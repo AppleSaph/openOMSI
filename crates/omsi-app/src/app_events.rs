@@ -1387,6 +1387,12 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+
+                // handle steamapi
+                #[cfg(not(target_os = "android"))]
+                if let Some(steam) = self.steam.as_ref() {
+                    steam.client.run_callbacks();
+                }
                 // the plugins' frame, with the bus's scripts done
                 let plugins = self.plugins.get_or_insert_with(crate::plugins::load);
                 if !plugins.is_empty() && !self.paused {
