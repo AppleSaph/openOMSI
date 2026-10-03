@@ -404,6 +404,31 @@ impl App {
         if self.settings.fullscreen || gamescope {
             attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         }
+        if self.settings.triple.enabled
+            && self.settings.triple_span
+            && !self.settings.vr_requested()
+        {
+            let mut monitors: Vec<_> = event_loop.available_monitors().collect();
+            monitors.sort_by_key(|m| m.position().x);
+            let row = monitors.windows(3).find(|row| {
+                let size = row[0].size();
+                row.iter()
+                    .all(|m| m.size() == size && m.position().y == row[0].position().y)
+                    && row[1].position().x == row[0].position().x + size.width as i32
+                    && row[2].position().x == row[1].position().x + size.width as i32
+            });
+            if let Some(row) = row {
+                let size = row[0].size();
+                attrs = attrs
+                    .with_fullscreen(None)
+                    .with_decorations(false)
+                    .with_position(row[0].position())
+                    .with_inner_size(winit::dpi::PhysicalSize::new(size.width * 3, size.height));
+                log::info!("triple screen: spanning {}x{}", size.width * 3, size.height);
+            } else {
+                log::warn!("triple screen: no equal horizontal monitor row found; using configured window size (Surround/Eyefinity can expose one wide display)");
+            }
+        }
         // OMSI_BACKGROUND=1: a test window that does not take the keyboard from whoever is
         // working at the screen (OMSI_INPUT drives the handlers directly, it needs no focus)
         if omsi_cfg::env::var_os("OMSI_BACKGROUND").is_some() {

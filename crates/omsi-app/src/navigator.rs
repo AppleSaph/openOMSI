@@ -268,6 +268,7 @@ pub struct Navigator {
     /// screen.
     pub city: CityMap,
     panel_rect: [f32; 4],
+    origin_x: f32,
     gpu: Option<Gpu>,
     fonts: Fonts,
     atlas: Atlas,
@@ -392,6 +393,7 @@ impl Navigator {
             panel_room: [0.0; 2],
             city: CityMap::default(),
             panel_rect: [0.0; 4],
+            origin_x: 0.0,
             gpu: None,
             fonts: Fonts::new(),
             atlas: Atlas::new(1024),
@@ -814,6 +816,31 @@ impl Navigator {
     }
 
     /// Advance, draw into the texture and put it on the screen.
+    pub fn frame_at(
+        &mut self,
+        renderer: &Renderer,
+        scene: &mut Scene,
+        f: &NavFrame,
+        origin_x: f32,
+    ) {
+        for rect in [&mut self.panel_rect, &mut self.city.rect] {
+            rect[0] -= self.origin_x;
+            rect[2] -= self.origin_x;
+        }
+        if self.origin_x != origin_x {
+            self.panel_drag = None;
+            self.city.drag = None;
+        }
+        let start = scene.overlays.len();
+        self.frame(renderer, scene, f);
+        crate::ui::shift_overlays(scene, start, origin_x);
+        for rect in [&mut self.panel_rect, &mut self.city.rect] {
+            rect[0] += origin_x;
+            rect[2] += origin_x;
+        }
+        self.origin_x = origin_x;
+    }
+
     pub fn frame(&mut self, renderer: &Renderer, scene: &mut Scene, f: &NavFrame) {
         self.panel_overlay = None;
         // (with the navigator off the route is still followed for OMSI 2's arrows)
@@ -2161,7 +2188,11 @@ impl Navigator {
     /// The mouse button went down on the small navigator: a click opens the city map, a
     /// drag moves the navigator (see [`Navigator::panel_move`]).
     pub fn panel_press(&mut self, x: f32, y: f32) {
-        self.panel_drag = Some(([x, y], [self.panel_rect[0], self.panel_rect[1]], false));
+        self.panel_drag = Some((
+            [x, y],
+            [self.panel_rect[0] - self.origin_x, self.panel_rect[1]],
+            false,
+        ));
     }
 
     /// The cursor moved with the button held on the navigator: past a few pixels it follows
@@ -2555,6 +2586,24 @@ impl Navigator {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn centre_panel_map_click_and_drag_use_window_coordinates() {
+        let mut n = Navigator::new(true, 0.85, "bottom-left");
+        n.origin_x = 1920.0;
+        n.panel_rect = [1930.0, 600.0, 2290.0, 890.0];
+        n.panel_room = [1240.0, 610.0];
+        assert!(!n.over_panel(100.0, 700.0));
+        assert!(n.over_panel(2020.0, 700.0));
+        n.panel_press(2020.0, 700.0);
+        n.panel_move(2630.0, 405.0);
+        assert_eq!(n.at, Some([0.5, 0.5]));
+        n.city.open = true;
+        n.city.rect = [2100.0, 100.0, 3700.0, 900.0];
+        n.city.center = DVec2::new(100.0, 200.0);
+        n.city.mpp = 2.0;
+        assert_eq!(n.map_point(2900.0, 500.0), Some(n.city.center));
+        assert_eq!(n.map_point(1000.0, 500.0), None);
+    }
     /// A press and a small wobble is a click (the city map), a longer move drags the
     /// navigator, and the place reads back from the setting it is saved as (#940).
     #[test]

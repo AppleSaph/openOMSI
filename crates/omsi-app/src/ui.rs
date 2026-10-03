@@ -467,6 +467,7 @@ pub struct Frame<'a> {
 }
 
 pub struct Ui {
+    origin_x: f32,
     pub text: TextCache,
     pub chat: ChatWidget,
     /// Where the game menu's lines were drawn this frame (physical pixels), for the mouse.
@@ -522,9 +523,93 @@ pub struct Ui {
     images: hashbrown::HashMap<std::path::PathBuf, Option<(TextureId, u32, u32)>>,
 }
 
+pub(crate) fn shift_overlays(scene: &mut Scene, start: usize, x: f32) {
+    for (_, rect) in &mut scene.overlays[start..] {
+        rect[0] += x;
+        rect[2] += x;
+    }
+}
+
 impl Ui {
+    /// Lay out at panel resolution, then move both pixels and mouse targets to
+    /// that panel's position in the spanning window.
+    pub fn draw_at(&mut self, r: &Renderer, scene: &mut Scene, f: &Frame, dt: f32, origin_x: f32) {
+        self.shift_hitboxes(-self.origin_x);
+        let start = scene.overlays.len();
+        self.draw(r, scene, f, dt);
+        shift_overlays(scene, start, origin_x);
+        self.shift_hitboxes(origin_x);
+        self.origin_x = origin_x;
+    }
+
+    fn shift_hitboxes(&mut self, x: f32) {
+        for rect in self
+            .menu_rects
+            .iter_mut()
+            .chain(self.menu_side.iter_mut())
+            .chain(self.menu_pane.iter_mut())
+            .chain(self.menu_time.iter_mut())
+            .chain(self.dd_rects.iter_mut())
+            .chain(self.menu_ctl.iter_mut().flatten())
+            .chain(self.menu_scroll_thumb.iter_mut())
+            .chain(self.menu_scroll_track.iter_mut())
+            .chain(self.menu_pane_go.iter_mut())
+            .chain(self.menu_pane_box.iter_mut())
+        {
+            rect[0] += x;
+            rect[2] += x;
+        }
+        for arrows in self.menu_arrows.iter_mut().flatten() {
+            for at in arrows {
+                *at += x;
+            }
+        }
+        if let Some((track, thumb)) = &mut self.dd_scroll {
+            for rect in [track, thumb] {
+                rect[0] += x;
+                rect[2] += x;
+            }
+        }
+        if let Some((track, thumb, _, _)) = &mut self.menu_pane_scroll {
+            for rect in [track, thumb] {
+                rect[0] += x;
+                rect[2] += x;
+            }
+        }
+        self.chat.rect[0] += x;
+        self.chat.rect[2] += x;
+    }
     pub fn new() -> Option<Ui> {
-        Some(Ui { text: TextCache::new()?, chat: ChatWidget::default(), menu_rects: Vec::new(), menu_arrows: Vec::new(), menu_scroll_thumb: None, menu_scroll_track: None, menu_ctl: Vec::new(), dd_rects: Vec::new(), dd_top: 0, dd_rows: 8, dd_scroll: None, menu_side: Vec::new(), menu_pane: Vec::new(), menu_pane_start: 0, menu_pane_go: None, menu_pane_box: None, menu_pane_scroll: None, menu_time: Vec::new(), anim: Default::default(), anim_dt: 0.0, menu_overlay_range: 0..0, vr_cursor_overlay: None, vr_tooltip_overlay: None, menu_start: 0, menu_rows: 0, menu_row_h: 1.0, images: Default::default() })
+        Some(Ui {
+            origin_x: 0.0,
+            text: TextCache::new()?,
+            chat: ChatWidget::default(),
+            menu_rects: Vec::new(),
+            menu_arrows: Vec::new(),
+            menu_scroll_thumb: None,
+            menu_scroll_track: None,
+            menu_ctl: Vec::new(),
+            dd_rects: Vec::new(),
+            dd_top: 0,
+            dd_rows: 8,
+            dd_scroll: None,
+            menu_side: Vec::new(),
+            menu_pane: Vec::new(),
+            menu_pane_start: 0,
+            menu_pane_go: None,
+            menu_pane_box: None,
+            menu_pane_scroll: None,
+            menu_time: Vec::new(),
+            anim: Default::default(),
+            anim_dt: 0.0,
+            menu_overlay_range: 0..0,
+            vr_cursor_overlay: None,
+            vr_tooltip_overlay: None,
+            menu_start: 0,
+            menu_rows: 0,
+            menu_row_h: 1.0,
+            images: Default::default(),
+        })
     }
 
     /// Draw the frame's interface: its overlays go after the HUD's in `scene.overlays`.
@@ -831,10 +916,10 @@ impl Ui {
         self.vr_tooltip_overlay = None;
         if let Some(t) = f.tooltip.as_ref().filter(|t| !t.is_empty()) {
             let l = self.text.label(r, scene, t, (14.0 * s) as u32, [255, 255, 255, 235]);
-            let mut x = f.cursor.0 + 16.0 * s;
+            let mut x = f.cursor.0.clamp(0.0, f.width) + 16.0 * s;
             let mut y = f.cursor.1 + 2.0 * s;
             if x + l.w as f32 > f.width {
-                x = f.cursor.0 - 8.0 * s - l.w as f32;
+                x = (f.cursor.0.clamp(0.0, f.width) - 8.0 * s - l.w as f32).max(5.0 * s);
             }
             if y + l.h as f32 > f.height {
                 y = f.height - l.h as f32;
@@ -2174,6 +2259,35 @@ mod tests {
             push_notice(&mut list, Notice::parse(&format!("{k} 5 info n{k}")).unwrap().1);
         }
         assert_eq!(list.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["n2", "n3", "n4"]);
+    }
+
+    #[test]
+    fn centre_hud_moves_menu_controls_and_chat_hitboxes_together() {
+        let mut ui = Ui::new().unwrap();
+        ui.menu_rects.push([20.0, 100.0, 900.0, 140.0]);
+        ui.menu_ctl.push(Some([600.0, 110.0, 860.0, 130.0]));
+        ui.menu_side.push([30.0, 100.0, 200.0, 140.0]);
+        ui.dd_rects.push([650.0, 150.0, 850.0, 180.0]);
+        ui.menu_arrows.push(Some([600.0, 640.0, 820.0]));
+        ui.chat.rect = [10.0, 800.0, 400.0, 1000.0];
+        ui.dd_scroll = Some(([850.0, 150.0, 860.0, 300.0], [844.0, 160.0, 864.0, 200.0]));
+        ui.menu_pane_scroll = Some((
+            [880.0, 150.0, 890.0, 700.0],
+            [874.0, 160.0, 894.0, 220.0],
+            40,
+            10,
+        ));
+        ui.shift_hitboxes(1920.0);
+        let track = ui.menu_ctl[0].unwrap();
+        assert_eq!((2650.0 - track[0]) / (track[2] - track[0]), 0.5);
+        assert!(ui.chat.contains(2020.0, 900.0));
+        assert!(!ui.chat.contains(100.0, 900.0));
+        assert_eq!(ui.dd_rects[0], [2570.0, 150.0, 2770.0, 180.0]);
+        assert_eq!(ui.menu_arrows[0], Some([2520.0, 2560.0, 2740.0]));
+        assert_eq!(ui.dd_scroll.unwrap().0[0], 2770.0);
+        assert_eq!(ui.menu_pane_scroll.unwrap().1[0], 2794.0);
+        ui.shift_hitboxes(-1920.0);
+        assert_eq!(ui.menu_ctl[0], Some([600.0, 110.0, 860.0, 130.0]));
     }
 
     #[test]

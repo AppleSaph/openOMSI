@@ -2580,7 +2580,10 @@ pub(crate) fn run_offscreen(
         if let Some(l) = lan_off.as_ref() {
             lines.extend(lan::hud_lines(l, &remotes_off, Some(p)));
         }
+        let viewport = settings.hud_viewport((w, h));
+        let overlay_start = scene.overlays.len();
         hud.update(&renderer, &mut scene, &lines);
+        crate::ui::shift_overlays(&mut scene, overlay_start, viewport[0]);
         // the navigator, as the window shows it (its camera settled first)
         if settings.navigator {
             let mut nav = navigator::Navigator::new(true, settings.ui_opacity, &settings.navigator_corner);
@@ -2616,16 +2619,16 @@ pub(crate) fn run_offscreen(
                 time: clock.time,
                 weekday: clock.weekday(),
                 language: &settings.language,
-                screen: (w as f32, h as f32),
+                screen: (viewport[2], viewport[3]),
                 ui_scale: settings.ui_scale,
                 follow_window: settings.ui_scale_window,
                 dt: 0.1,
             };
             for _ in 0..30 {
-                nav.frame(&renderer, &mut scene, &frame);
+                nav.frame_at(&renderer, &mut scene, &frame, viewport[0]);
                 scene.overlays.pop();
             }
-            nav.frame(&renderer, &mut scene, &frame);
+            nav.frame_at(&renderer, &mut scene, &frame, viewport[0]);
         }
     }
     // OMSI_ROAD_PHOTO: photograph the road network from above, point by point, and say
@@ -2855,9 +2858,16 @@ pub(crate) fn run_offscreen(
                 panels.toggle_edit(p);
             }
         }
-        panels.push(&mut scene, &world, w as f32, h as f32, (0.0, 0.0));
+        let viewport = settings.hud_viewport((w, h));
+        let start = scene.overlays.len();
+        panels.push(&mut scene, &world, viewport[2], viewport[3], (0.0, 0.0));
+        crate::ui::shift_overlays(&mut scene, start, viewport[0]);
     }
-    let pixels = renderer.render_to_image(&mut scene, w, h, &camera, &lighting)?;
+    let pixels = if settings.triple.enabled {
+        renderer.render_triple_to_image(&mut scene, w, h, &camera, &lighting, &settings.triple)?
+    } else {
+        renderer.render_to_image(&mut scene, w, h, &camera, &lighting)?
+    };
     log::info!(
         "rendered {} instances in {:.1} ms; GPU memory: textures {:.0} MB, meshes {:.0} MB ({} meshes, {} textures)",
         scene.instances.len(),

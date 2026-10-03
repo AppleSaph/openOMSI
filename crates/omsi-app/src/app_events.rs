@@ -1478,8 +1478,13 @@ impl ApplicationHandler for App {
                     // turns (kept per bus in mirrors.cfg when the keys are let go)
                     // the mirror editor: an arrow held over a panel aims that panel's mirror
                     // (kept per bus like Ctrl+Alt+arrows below)
-                    if let (Some(size), Some(a)) = (self.mirror_hud_size(), self.mirror_hud.turning()) {
-                        if let (Some(i), Some(p)) = (self.mirror_hud.cam_under(self.cursor, size), self.player.as_mut()) {
+                    if let (Some(size), Some(a)) =
+                        (self.mirror_hud_size(), self.mirror_hud.turning())
+                    {
+                        if let (Some(i), Some(p)) = (
+                            self.mirror_hud.cam_under(self.hud_cursor(), size),
+                            self.player.as_mut(),
+                        ) {
                             let n = p.vehicle.ty.def.cameras_reflexion.len();
                             if p.mirror_offsets.len() < n {
                                 p.mirror_offsets.resize(n, [0.0; 2]);
@@ -2013,7 +2018,19 @@ impl ApplicationHandler for App {
                     // pictures' only)
                     scene.overlays.clear();
                     let notes = lines;
-                    if let (Some(nav), Some(p), Some(s)) = (self.navigator.as_mut(), self.player.as_ref(), self.surface.as_ref()) {
+                    let hud = self
+                        .surface
+                        .as_ref()
+                        .map(|s| {
+                            self.settings
+                                .hud_viewport((s.config.width, s.config.height))
+                        })
+                        .unwrap_or([0.0, 0.0, 1.0, 1.0]);
+                    if let (Some(nav), Some(p), Some(_)) = (
+                        self.navigator.as_mut(),
+                        self.player.as_ref(),
+                        self.surface.as_ref(),
+                    ) {
                         let old_enabled = nav.enabled;
                         let old_opacity = nav.opacity;
                         nav.cockpit_display = vr_active;
@@ -2070,13 +2087,25 @@ impl ApplicationHandler for App {
                             time: self.clock.time,
                             weekday: self.clock.weekday(),
                             language: &self.settings.language,
-                            screen: if vr_active { (1440.0, 1440.0) } else { (s.config.width as f32, s.config.height as f32) },
-                            ui_scale: if vr_active { 1.0 } else { self.settings.ui_scale },
-                            follow_window: if vr_active { true } else { self.settings.ui_scale_window },
+                            screen: if vr_active {
+                                (1440.0, 1440.0)
+                            } else {
+                                (hud[2], hud[3])
+                            },
+                            ui_scale: if vr_active {
+                                1.0
+                            } else {
+                                self.settings.ui_scale
+                            },
+                            follow_window: if vr_active {
+                                true
+                            } else {
+                                self.settings.ui_scale_window
+                            },
                             dt,
                         };
                         let __tn = Instant::now();
-                        nav.frame(r, scene, &frame);
+                        nav.frame_at(r, scene, &frame, hud[0]);
                         nav.enabled = old_enabled;
                         nav.opacity = old_opacity;
                         *self.profile.entry("hud.navigator").or_default() += __tn.elapsed().as_secs_f64();
@@ -2090,7 +2119,7 @@ impl ApplicationHandler for App {
                     }
                     if let (Some(ui), Some(s)) = (self.ui.as_mut(), self.surface.as_ref()) {
                         let scale = self.window.as_ref().map(|w| w.scale_factor() as f32).unwrap_or(1.0);
-                        let (w, h) = (s.config.width as f32, s.config.height as f32);
+                        let (w, h) = (hud[2], hud[3]);
                         self.remotes.chat.disabled = !self.settings.chat;
                         let chat = (self.lan.is_some() && self.settings.chat).then(|| ui::ChatView {
                             lines: &self.remotes.chat.lines,
@@ -2098,15 +2127,37 @@ impl ApplicationHandler for App {
                             error: self.remotes.chat.error(),
                         });
                         ui.chat.hidden = self.remotes.chat.hidden;
-                        let tags = if self.settings.name_tags {
-                            {
+                        let mut tags = if self.settings.name_tags {
                             let voice = self.voice.as_ref();
                             let speaks = |name: &str, id: u32| voice.is_some_and(|v| v.speaks(name, id));
-                            self.camera.as_ref().map(|c| lan::name_tags(&self.remotes, c, w, h, &speaks)).unwrap_or_default()
-                        }
+                            let rig = (self.settings.triple.enabled
+                                && !self.settings.vr_requested())
+                            .then(|| {
+                                self.settings.triple.zoomed(
+                                    s.config.width,
+                                    s.config.height,
+                                    self.view_zoom.get(&self.view).copied().unwrap_or(1.0),
+                                )
+                            });
+                            self.camera
+                                .as_ref()
+                                .map(|c| {
+                                    lan::name_tags(
+                                        &self.remotes,
+                                        c,
+                                        s.config.width as f32,
+                                        h,
+                                        rig.as_ref(),
+                                        &speaks,
+                                    )
+                                })
+                                .unwrap_or_default()
                         } else {
                             Vec::new()
                         };
+                        for (pos, _, _, _) in &mut tags {
+                            pos.0 -= hud[0];
+                        }
                         // the vehicle chooser shows its vehicles in the menu's place (the menu
                         // scrolls a long list)
                         // the name of the cab's switch under the cursor, unless the interface
@@ -2143,7 +2194,7 @@ impl ApplicationHandler for App {
                             opacity: ui::backdrop(self.settings.ui_opacity),
                             width: w,
                             height: h,
-                            cursor: self.cursor,
+                            cursor: (self.cursor.0 - hud[0], self.cursor.1),
                             vr: {
                                 #[cfg(windows)] { self.vr.is_some() }
                                 #[cfg(not(windows))] { false }
@@ -2177,7 +2228,7 @@ impl ApplicationHandler for App {
                             notices: &self.notices,
                             notice_anchor: self.navigator.as_ref().and_then(|n| n.screen_rect()),
                         };
-                        ui.draw(r, scene, &frame, dt);
+                        ui.draw_at(r, scene, &frame, dt, hud[0]);
                     }
                     *self.profile.entry("hud").or_default() += __t.elapsed().as_secs_f64();
                 }
@@ -2407,7 +2458,10 @@ impl ApplicationHandler for App {
                             // its frustum can leave a mirror visible in VR uninitialised
                             // (black). Refresh all bus mirrors in VR, still taking turns
                             // within the configured budget; keep desktop visibility culling.
-                            let mirror_view = if vr_active || (self.mirror_hud.active() && self.in_cab) {
+                            let mirror_view = if vr_active
+                                || self.settings.triple.enabled
+                                || (self.mirror_hud.active() && self.in_cab)
+                            {
                                 None
                             } else {
                                 Some((*cam, s.config.width as f32 / s.config.height.max(1) as f32))
@@ -2495,14 +2549,43 @@ impl ApplicationHandler for App {
                         if self.in_cab {
                             if let Some(w) = self.world.as_ref() {
                                 self.mirror_hud.ensure_frame(r, scene);
-                                self.mirror_hud.push(scene, w, s.config.width as f32, s.config.height as f32, self.cursor);
+                                let hud = self
+                                    .settings
+                                    .hud_viewport((s.config.width, s.config.height));
+                                let start = scene.overlays.len();
+                                self.mirror_hud.push(
+                                    scene,
+                                    w,
+                                    hud[2],
+                                    hud[3],
+                                    (self.cursor.0 - hud[0], self.cursor.1),
+                                );
+                                crate::ui::shift_overlays(scene, start, hud[0]);
                             }
                             // (the editor's keys, on screen as long as it is on)
                             if self.mirror_hud.editing() && self.service_msg.is_none() {
                                 self.service_msg = Some((crate::mirror_hud::HINT.into(), 2.0));
                             }
                         }
-                        if !mirrored {
+                        if !mirrored
+                            && self.settings.triple.enabled
+                            && !self.settings.vr_requested()
+                        {
+                            let rig = self.settings.triple.zoomed(
+                                s.config.width,
+                                s.config.height,
+                                self.view_zoom.get(&self.view).copied().unwrap_or(1.0),
+                            );
+                            r.render_triple(
+                                scene,
+                                &view,
+                                s.config.width,
+                                s.config.height,
+                                cam,
+                                &lighting,
+                                &rig,
+                            );
+                        } else if !mirrored {
                             r.render(
                                 scene,
                                 &view,
@@ -2778,7 +2861,7 @@ impl App {
         if !self.in_cab || self.game_menu.is_some() || !self.mirror_hud.editing() {
             return None;
         }
-        self.surface.as_ref().map(|s| (s.config.width as f32, s.config.height as f32))
+        Some(self.hud_size())
     }
 
     /// The mouse wheel (or a pinch of two fingers): `amount` notches, up positive.
@@ -2786,8 +2869,12 @@ impl App {
         if self.vr_nav_edit.is_some() { self.vr_nav_scroll(amount); return; }
         // over a mirror panel the wheel resizes it (Shift: wider or narrower)
         if let Some(size) = self.mirror_hud_size() {
-            let shift = self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
-            if self.mirror_hud.wheel(amount, shift, self.cursor, size) {
+            let shift =
+                self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+            if self
+                .mirror_hud
+                .wheel(amount, shift, self.hud_cursor(), size)
+            {
                 return;
             }
         }
@@ -2862,8 +2949,11 @@ impl App {
     pub(crate) fn left_button(&mut self, event_loop: &ActiveEventLoop, pressed: bool) {
         if let Some(edit) = self.vr_nav_edit.as_mut() { edit.moving = pressed; return; }
         // a mirror panel is dragged with the left button (a release always ends a drag)
-        if let Some(size) = self.mirror_hud_size().or_else(|| (!pressed).then(|| self.surface.as_ref().map(|s| (s.config.width as f32, s.config.height as f32))).flatten()) {
-            if self.mirror_hud.press(pressed, self.cursor, size) {
+        if let Some(size) = self
+            .mirror_hud_size()
+            .or_else(|| (!pressed).then(|| self.hud_size()))
+        {
+            if self.mirror_hud.press(pressed, self.hud_cursor(), size) {
                 return;
             }
         }

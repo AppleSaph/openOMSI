@@ -90,8 +90,8 @@ impl App {
             // R puts the mirror under the cursor back as the bus has it, Shift+R every mirror
             if self.mirror_hud.editing() && code == KeyCode::KeyR {
                 if pressed && !repeat {
-                    let size = self.surface.as_ref().map(|s| (s.config.width as f32, s.config.height as f32)).unwrap_or((1.0, 1.0));
-                    let which = self.mirror_hud.cam_under(self.cursor, size);
+                    let size = self.hud_size();
+                    let which = self.mirror_hud.cam_under(self.hud_cursor(), size);
                     let msg = match self.player.as_mut() {
                         Some(p) if shift => {
                             let n = p.vehicle.ty.def.cameras_reflexion.len();
@@ -123,9 +123,9 @@ impl App {
             }
             if self.mirror_hud.editing() && matches!(code, KeyCode::Insert | KeyCode::Delete | KeyCode::Backspace | KeyCode::KeyC | KeyCode::Escape) {
                 if pressed && !repeat {
-                    let size = self.surface.as_ref().map(|s| (s.config.width as f32, s.config.height as f32)).unwrap_or((1.0, 1.0));
+                    let size = self.hud_size();
                     if let Some(p) = self.player.as_ref() {
-                        if let Some(msg) = self.mirror_hud.key(code, p, self.cursor, size) {
+                        if let Some(msg) = self.mirror_hud.key(code, p, self.hud_cursor(), size) {
                             self.service_msg = Some((msg, 4.0));
                         }
                     }
@@ -957,8 +957,9 @@ impl App {
         // a mirror panel being dragged follows the cursor (nothing else of the cursor's
         // work is done meanwhile, and outside a drag none of it is touched)
         if self.mirror_hud.dragging() {
-            if let Some(size) = self.surface.as_ref().map(|s| (s.config.width as f32, s.config.height as f32)) {
-                if self.mirror_hud.moved((x, y), size) {
+            if let Some(size) = self.surface.as_ref().map(|_| self.hud_size()) {
+                let origin_x = self.cursor.0 - self.hud_cursor().0;
+                if self.mirror_hud.moved((x - origin_x, y), size) {
                     self.cursor = (x, y);
                     return;
                 }
@@ -2610,7 +2611,7 @@ impl App {
             return true;
         }
         let (Some(cam), Some(s), Some(world)) = (self.camera.as_ref(), self.surface.as_ref(), self.world.clone()) else { return true };
-        let (o, d) = cursor_ray(cam, self.cursor.0, self.cursor.1, s.config.width as f32, s.config.height as f32);
+        let (o, d, _) = self.cockpit_cursor_ray(cam, (s.config.width, s.config.height));
         let ed = self.editor.as_mut().unwrap();
         // (the copy being edited stays the one dragged while it is under the cursor)
         let on_added = ed.editing_added.and_then(|k| ed.added.get(k)).map(|a| {
@@ -2633,7 +2634,7 @@ impl App {
             return;
         }
         let (Some(cam), Some(s), Some(world)) = (self.camera.as_ref(), self.surface.as_ref(), self.world.clone()) else { return };
-        let (o, d) = cursor_ray(cam, self.cursor.0, self.cursor.1, s.config.width as f32, s.config.height as f32);
+        let (o, d, _) = self.cockpit_cursor_ray(cam, (s.config.width, s.config.height));
         let Some(hit) = crate::placing::ground_hit(&world, o, d.as_dvec3(), 400.0) else { return };
         let (Some(r), Some(scene), Some(ed)) = (self.renderer.as_ref(), self.scene.as_mut(), self.editor.as_mut()) else { return };
         if let Some(m) = ed.drag_to(&world, r, scene, hit) {
@@ -3810,10 +3811,43 @@ impl App {
         }
     }
 
+    pub(crate) fn hud_size(&self) -> (f32, f32) {
+        let v = self
+            .surface
+            .as_ref()
+            .map(|s| {
+                self.settings
+                    .hud_viewport((s.config.width, s.config.height))
+            })
+            .unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        (v[2], v[3])
+    }
+
+    pub(crate) fn hud_cursor(&self) -> (f32, f32) {
+        let x = self
+            .surface
+            .as_ref()
+            .map(|s| {
+                self.settings
+                    .hud_viewport((s.config.width, s.config.height))[0]
+            })
+            .unwrap_or(0.0);
+        (self.cursor.0 - x, self.cursor.1)
+    }
+
     pub(crate) fn cockpit_cursor_ray(&self, cam: &Camera, size: (u32, u32)) -> (glam::DVec3, glam::Vec3, f32) {
         #[cfg(windows)]
         if let Some(ray) = self.vr.as_ref().and_then(|vr| vr.cursor_ray(self.cursor.0, self.cursor.1, size)) {
             return (ray.0, ray.1, ray.2 * 6.0);
+        }
+        if self.settings.triple.enabled && !self.settings.vr_requested() {
+            let rig = self.settings.triple.zoomed(
+                size.0,
+                size.1,
+                self.view_zoom.get(&self.view).copied().unwrap_or(1.0),
+            );
+            let (o, d, spread) = rig.cursor_ray(cam, self.cursor, size);
+            return (o, d, spread * 6.0);
         }
         let (o, d) = cursor_ray(cam, self.cursor.0, self.cursor.1, size.0 as f32, size.1 as f32);
         (o, d, pixel_angle(cam, size.1 as f32) * 6.0)
