@@ -4200,6 +4200,30 @@ impl PlayerDuty {
         }
     }
 
+    /// The places of the stops ahead as the map has them now (`World::object_positions`):
+    /// a stop whose tile was not loaded when the duty began - and that no index placed -
+    /// gets its place once the tile comes, and one placed roughly (an object hung on
+    /// another) its exact one. A stop without a place was never reached: the next stop
+    /// stayed on it for the rest of the trip (#975) and the map left it out (#1014).
+    pub fn learn_loaded(&mut self, positions: &HashMap<i64, (glam::DVec3, [f64; 3])>) {
+        // (the trip under way and the next: the later ones learn theirs when they come)
+        let from = self.trip_index;
+        for trip in self.trips[from..].iter_mut().take(2) {
+            let mut changed = false;
+            for s in &mut trip.stops {
+                if let Some((p, _)) = positions.get(&s.object_id) {
+                    if s.position != Some(*p) {
+                        s.position = Some(*p);
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                trip.set_dirs();
+            }
+        }
+    }
+
     /// Time to drive from `pos` to `to` (s), roughly: roads are longer than the straight
     /// line, a bus in town makes some 25 km/h, and it takes a minute or two to get going.
     fn approach_time(pos: glam::DVec3, to: glam::DVec3) -> f64 {
@@ -4897,6 +4921,25 @@ mod tests {
         assert_eq!(tt_terminus_index(Some(&hof), "B"), 1);
         assert_eq!(tt_terminus_index(Some(&hof), "b"), -1);
         assert_eq!(tt_terminus_index(None, "B"), -1);
+    }
+
+    #[test]
+    fn a_stop_placed_only_once_its_tile_loads_is_reached() {
+        // stop 1's object was in no tile loaded when the duty began
+        let mut t = planned(0.0, &[(0.0, 0.0, 0.0), (500.0, 100.0, 100.0), (1000.0, 200.0, 200.0)]);
+        t.stops[1].position = None;
+        let mut d = PlayerDuty { line: "5".into(), tour: "1".into(), trips: vec![t], trip_index: 0, first_trip: 0, next_stop: 0, at_stop: false, arrived_late: None, done: false, left_late: None, held_back: false, placed: true, trip_changed: false, picked: true, first_update: None, heading: 90.0 };
+        d.advance(glam::DVec3::new(0.0, 0.0, 0.0), 0.0);
+        d.advance(glam::DVec3::new(100.0, 0.0, 0.0), 10.0);
+        assert_eq!(d.next_stop, 1);
+        // its tile comes: the map has it now
+        let mut positions = HashMap::new();
+        positions.insert(1i64, (glam::DVec3::new(500.0, 0.0, 0.0), [0.0; 3]));
+        d.learn_loaded(&positions);
+        assert_eq!(d.trips[0].stops[1].position, Some(glam::DVec3::new(500.0, 0.0, 0.0)));
+        d.advance(glam::DVec3::new(500.0, 0.0, 0.0), 100.0);
+        d.advance(glam::DVec3::new(700.0, 0.0, 0.0), 130.0);
+        assert_eq!(d.next_stop, 2);
     }
 
     #[test]

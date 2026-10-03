@@ -1299,6 +1299,7 @@ impl ApplicationHandler for App {
                             p.ibis_to_stop(trip, k);
                         }
                     }
+                    d.learn_loaded(&w.object_positions.lock());
                     if let Some((arrival, departure)) = d.update(&mut p.vehicle, self.clock.time) {
                         self.career.stop_served(arrival, departure);
                     }
