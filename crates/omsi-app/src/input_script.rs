@@ -1053,6 +1053,14 @@ impl App {
             }
             return false;
         }
+        if self.pane_scroll_drag.is_some() {
+            if self.chooser.is_none() || self.game_menu.is_none() {
+                self.pane_scroll_drag = None;
+            } else {
+                self.drag_pane(y);
+                return false;
+            }
+        }
         if self.dd_scroll_drag.is_some() {
             if self.dropdown.is_none() || self.game_menu.is_none() {
                 self.dd_scroll_drag = None;
@@ -2567,6 +2575,14 @@ impl App {
         d.top = dropdown_top_at(y - grab, track, thumb[3] - thumb[1], d.items.len(), rows);
     }
 
+    /// The scroll bar of the timetable beside the tours held with the mouse at height `y`:
+    /// the first stop shown follows the thumb.
+    pub(crate) fn drag_pane(&mut self, y: f32) {
+        let (Some(grab), Some(k)) = (self.pane_scroll_drag, self.chooser) else { return };
+        let Some((track, thumb, n, fit)) = self.ui.as_ref().and_then(|u| u.menu_pane_scroll) else { return };
+        self.pane_scroll = Some((k, dropdown_top_at(y - grab, track, thumb[3] - thumb[1], n, fit)));
+    }
+
     /// The mouse wheel over the game menu: the chosen line moves (the menu scrolls with it),
     /// in a list the same; no wrapping round.
     pub(crate) fn menu_wheel(&mut self, amount: f32) {
@@ -3774,7 +3790,7 @@ impl App {
     /// a page, a control, the scroll bar), the closed hand while a slider or the scroll bar
     /// is held.
     pub(crate) fn menu_cursor_kind(&self) -> u8 {
-        if self.menu_drag.is_some() || self.menu_scroll_drag || self.dd_scroll_drag.is_some() {
+        if self.menu_drag.is_some() || self.menu_scroll_drag || self.dd_scroll_drag.is_some() || self.pane_scroll_drag.is_some() {
             return 4;
         }
         let Some(u) = self.ui.as_ref() else { return 0 };
@@ -4215,8 +4231,8 @@ mod cab_look_tests {
     }
 }
 
-/// The first entry a drop-down of `n` entries showing `rows` shows with its thumb (`len`
-/// high) at the top `thumb_top` in `track`.
+/// The first entry a drop-down (or the tours' timetable) of `n` entries showing `rows`
+/// shows with its thumb (`len` high) at the top `thumb_top` in `track`.
 pub(crate) fn dropdown_top_at(thumb_top: f32, track: [f32; 4], len: f32, n: usize, rows: usize) -> usize {
     let max = n.saturating_sub(rows);
     let travel = (track[3] - track[1] - len).max(1.0);
