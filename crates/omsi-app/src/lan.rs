@@ -448,6 +448,9 @@ pub struct RemoteVehicle {
     /// Their bus type is not installed here: ours stands in for it.
     pub stand_in: bool,
     pub last: Pose,
+    /// The bus file and paint scheme it was made in (`last` is the state drawn, which may be
+    /// an interpolated older one).
+    made_as: (String, String),
     /// The driver at the wheel (their bus stood empty here), hidden while they walk about.
     driver: Option<crate::driver::DriverFigure>,
     driver_tried: bool,
@@ -1688,7 +1691,17 @@ pub fn my_pose(
         id: 0,
         name: String::new(),
         bus: content_relative(&v.ty.def.path, &args.root),
-        paint: paint_name(args, &v.ty),
+        // (the scheme the bus wears now: one picked in the game's menu after the start too)
+        paint: match v.host.paint_scheme {
+            Some(Some(i)) => {
+                v.ty.paint_schemes
+                    .get(i)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default()
+            }
+            Some(None) => String::new(),
+            None => paint_name(args, &v.ty),
+        },
         line,
         destination,
         tour: String::new(),
@@ -2365,6 +2378,7 @@ fn new_remote(
         shown: (String::new(), String::new()),
         stand_in,
         last: pose.clone(),
+        made_as: (pose.bus.clone(), pose.paint.clone()),
         driver: None,
         driver_tried: false,
         samples: std::collections::VecDeque::new(),
@@ -2981,11 +2995,12 @@ pub fn tick(
         .map(|p| p.pose.clone())
         .collect();
     for pose in poses {
-        // another vehicle than before (the player changed buses): made again
+        // another vehicle than before (the player changed buses), or another paint scheme on
+        // it: made again
         if game
             .remotes
             .get(&pose.id)
-            .map(|rv| rv.last.bus != pose.bus)
+            .map(|rv| rv.made_as.0 != pose.bus || rv.made_as.1 != pose.paint)
             .unwrap_or(false)
         {
             if let Some(rv) = game.remotes.remove(&pose.id) {
