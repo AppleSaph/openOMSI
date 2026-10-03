@@ -4,6 +4,23 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.1.1239 - 2026-10-03
+
+### AI traffic
+- A car stopped behind a parked car just past a joint between road pieces pulls out round it:
+  a lane change now carries on across the joint, so cars no longer queue for good behind a
+  parked car on short road pieces ([#1055](https://github.com/openOMSI-Project/openOMSI/issues/1055)).
+- A car held for a long time by nothing anybody can see is taken away even in view, and a
+  car creeping a few centimetres at a time counts as standing; people and cars on a bridge
+  above or in a subway below no longer stop a car.
+- AI cars give way to the player's bus by the same rules as to each other - at junctions,
+  where lanes merge, and when the bus is in the junction - and let a bus out of a stop when it
+  indicates towards the road (for 20 s at most).
+
+### Maps
+- Route arrows show street and stop names in Cyrillic and other scripts their font lacks,
+  drawn with the interface font in the arrow's colour.
+
 ## 0.1.1234 - 2026-10-03
 
 ### Launcher
