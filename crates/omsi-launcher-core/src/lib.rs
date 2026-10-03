@@ -1819,153 +1819,24 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
         match k.as_str() {
             "anisotropy" => v[&k] = json!(val.parse::<i64>().unwrap_or(8).clamp(1, 16)),
             "msaa" | "shadow_size" => v[&k] = json!(val.parse::<i64>().unwrap_or(0)),
-            "ui_opacity" | "volume" | "vol_ai" | "vol_scenery" | "min_obj_size" => {
-                v[&k] = json!(val.parse::<f64>().unwrap_or(0.0))
-            }
-            "pax_density" => {
-                v[&k] = json!(val
-                    .trim_end_matches('%')
-                    .parse::<f64>()
-                    .map(|x| if x > 5.0 { x / 100.0 } else { x })
-                    .unwrap_or(1.0))
-            }
-            "triple_fov_deg" => {
-                v[&k] = json!(val
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|x| x.is_finite())
-                    .map(|x| if x < 20.0 { 0.0 } else { x.min(120.0) })
-                    .unwrap_or(0.0))
-            }
-            "triple_width_mm" => {
-                v[&k] = json!(val
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|x| x.is_finite())
-                    .map(|x| x.clamp(200.0, 2000.0))
-                    .unwrap_or(600.0))
-            }
-            "triple_distance_mm" => {
-                v[&k] = json!(val
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|x| x.is_finite())
-                    .map(|x| x.clamp(200.0, 3000.0))
-                    .unwrap_or(650.0))
-            }
-            "triple_bezel_mm" => {
-                v[&k] = json!(val
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|x| x.is_finite())
-                    .map(|x| x.clamp(0.0, 100.0))
-                    .unwrap_or(0.0))
-            }
-            "triple_left_angle_deg" => {
-                v[&k] = json!(val
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|x| x.is_finite())
-                    .map(|x| x.clamp(0.0, 90.0))
-                    .unwrap_or(45.0))
-            }
-            "triple_right_angle_deg" => {
-                v[&k] = json!(val
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|x| x.is_finite())
-                    .map(|x| x.clamp(0.0, 90.0))
-                    .unwrap_or(45.0))
-            }
-            "triple_eye_height_mm" => {
-                v[&k] = json!(val
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|x| x.is_finite())
-                    .map(|x| x.clamp(-500.0, 500.0))
-                    .unwrap_or(0.0))
-            }
-            "vr_scale" => {
-                v[&k] = json!(val
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|x| x.is_finite())
-                    .map(|x| x.clamp(0.5, 1.0))
-                    .unwrap_or(0.65))
-            }
-            "vr_head_smoothing_ms" => {
-                v[&k] = json!(val
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|x| x.is_finite())
-                    .map(|x| x.clamp(0.0, 30.0) as i64)
-                    .unwrap_or(0))
-            }
-            "vr_mirror_rate" => {
-                v[&k] = json!(val
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|x| x.is_finite())
-                    .map(|x| x.clamp(-1.0, 360.0) as i64)
-                    .unwrap_or(16))
-            }
-            "mirror_size" => {
-                v[&k] = json!(val
-                    .parse::<i64>()
-                    .map(|x| if x == 0 { 0 } else { x.clamp(64, 2048) })
-                    .unwrap_or(256))
-            }
+            "ui_opacity" | "volume" | "vol_ai" | "vol_scenery" | "min_obj_size" => v[&k] = json!(val.parse::<f64>().unwrap_or(0.0)),
+            "pax_density" => v[&k] = json!(val.trim_end_matches('%').parse::<f64>().map(|x| if x > 5.0 { x / 100.0 } else { x }).unwrap_or(1.0)),
+            "triple_fov_deg" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| if x < 20.0 { 0.0 } else { x.min(120.0) }).unwrap_or(0.0)),
+            "triple_width_mm" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(200.0, 2000.0)).unwrap_or(600.0)),
+            "triple_distance_mm" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(200.0, 3000.0)).unwrap_or(650.0)),
+            "triple_bezel_mm" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 100.0)).unwrap_or(0.0)),
+            "triple_left_angle_deg" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 90.0)).unwrap_or(45.0)),
+            "triple_right_angle_deg" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 90.0)).unwrap_or(45.0)),
+            "triple_eye_height_mm" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(-500.0, 500.0)).unwrap_or(0.0)),
+            "vr_scale" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.5, 1.0)).unwrap_or(0.65)),
+            "vr_head_smoothing_ms" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 30.0) as i64).unwrap_or(0)),
+            "vr_mirror_rate" => v[&k] = json!(val.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(-1.0, 360.0) as i64).unwrap_or(16)),
+            "mirror_size" => v[&k] = json!(val.parse::<i64>().map(|x| if x == 0 { 0 } else { x.clamp(64, 2048) }).unwrap_or(256)),
             "mirror_refresh" => v[&k] = json!(mirror_refresh(val)),
             "max_fps" => v[&k] = json!(val.parse::<f64>().map(|x| x as i64).unwrap_or(0)),
-            "max_obj_dist" => {
-                v[&k] = if val.eq_ignore_ascii_case("auto") {
-                    json!("auto")
-                } else {
-                    json!(val
-                        .parse::<f64>()
-                        .map(|m| (m.round() as i64).to_string())
-                        .unwrap_or_else(|_| "auto".into()))
-                }
-            }
-            "ssao"
-            | "shadows"
-            | "shadow_blobs"
-            | "navigator"
-            | "enhanced"
-            | "triple_screen"
-            | "triple_span"
-            | "triple_hud_center"
-            | "vr"
-            | "vr_desktop_mirror"
-            | "fullscreen"
-            | "vsync"
-            | "exact_fare"
-            | "detail_textures"
-            | "texture_compression"
-            | "chat"
-            | "tooltips"
-            | "name_tags"
-            | "show_fps"
-            | "clouds"
-            | "doppler"
-            | "driver"
-            | "use_real_time"
-            | "use_real_date"
-            | "use_real_year"
-            | "collision_vehicles"
-            | "collision_objects"
-            | "collision_pedestrians"
-            | "head_movement"
-            | "driverview_smooth"
-            | "hands_in_cab"
-            | "alt_view" => v[&k] = json!(b(val)),
-            "maintenance" | "ai_unsched_factor" | "ai_max_scheduled" => {
-                v[&k] = json!(val
-                    .trim_end_matches('%')
-                    .parse::<f64>()
-                    .map(|x| x.max(0.0) as i64)
-                    .unwrap_or(0))
-            }
+            "max_obj_dist" => v[&k] = if val.eq_ignore_ascii_case("auto") { json!("auto") } else { json!(val.parse::<f64>().map(|m| (m.round() as i64).to_string()).unwrap_or_else(|_| "auto".into())) },
+            "ssao" | "shadows" | "shadow_blobs" | "navigator" | "enhanced" | "triple_screen" | "triple_span" | "triple_hud_center" | "vr" | "vr_desktop_mirror" | "fullscreen" | "vsync" | "exact_fare" | "detail_textures" | "texture_compression" | "chat" | "tooltips" | "name_tags" | "show_fps" | "clouds" | "doppler" | "driver" | "use_real_time" | "use_real_date" | "use_real_year" | "collision_vehicles" | "collision_objects" | "collision_pedestrians" | "head_movement" | "driverview_smooth" | "hands_in_cab" | "alt_view" => v[&k] = json!(b(val)),
+            "maintenance" | "ai_unsched_factor" | "ai_max_scheduled" => v[&k] = json!(val.trim_end_matches('%').parse::<f64>().map(|x| x.max(0.0) as i64).unwrap_or(0)),
             // (-1: no parked cars at all, #864)
             "ai_max_parked" => v[&k] = json!(val.parse::<f64>().map(|x| x.max(-1.0) as i64).unwrap_or(0)),
             "ai_max_humans" => v[&k] = json!(val.parse::<f64>().map(|x| x.max(1.0) as i64).unwrap_or(200)),
@@ -2314,49 +2185,11 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
     text.push_str(&format!("mirror_refresh={}\n", mirror_refresh(v.get("mirror_refresh").and_then(|x| x.as_str()).unwrap_or("full"))));
     text.push_str(&format!("look_sens={}\nsteer_look_angle={}\nsteer_look_response={}\ntime_sync={}\nmetar_sync={}\nmetar_station={}\n", f("look_sens", 1.0).clamp(0.1, 2.0), f("steer_look_angle", 30.0).clamp(0.0, 60.0), f("steer_look_response", 0.25).clamp(0.05, 1.0), b("time_sync", false), b("metar_sync", false), v.get("metar_station").and_then(|x| x.as_str()).unwrap_or("").chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>().to_ascii_uppercase()));
     let triple_fov = f("triple_fov_deg", 0.0);
-    text.push_str(&format!(
-        "triple_hud_center={}\ntriple_fov_deg={}\n",
-        b("triple_hud_center", true),
-        if triple_fov < 20.0 {
-            0.0
-        } else {
-            triple_fov.min(120.0)
-        }
-    ));
-    text.push_str(&format!(
-        "triple_screen={}\ntriple_span={}\n",
-        b("triple_screen", false),
-        b("triple_span", true)
-    ));
-    text.push_str(&format!(
-        "triple_width_mm={}\n",
-        f("triple_width_mm", 600.0).clamp(200.0, 2000.0)
-    ));
-    text.push_str(&format!(
-        "triple_distance_mm={}\n",
-        f("triple_distance_mm", 650.0).clamp(200.0, 3000.0)
-    ));
-    text.push_str(&format!(
-        "triple_bezel_mm={}\n",
-        f("triple_bezel_mm", 0.0).clamp(0.0, 100.0)
-    ));
-    text.push_str(&format!(
-        "triple_left_angle_deg={}\n",
-        f("triple_left_angle_deg", 45.0).clamp(0.0, 90.0)
-    ));
-    text.push_str(&format!(
-        "triple_right_angle_deg={}\n",
-        f("triple_right_angle_deg", 45.0).clamp(0.0, 90.0)
-    ));
-    text.push_str(&format!(
-        "triple_eye_height_mm={}\n",
-        f("triple_eye_height_mm", 0.0).clamp(-500.0, 500.0)
-    ));
-    let written: Vec<String> = text
-        .lines()
-        .filter_map(|l| l.split_once('='))
-        .map(|(k, _)| k.trim().to_ascii_lowercase())
-        .collect();
+    text.push_str(&format!("triple_hud_center={}\ntriple_fov_deg={}\n", b("triple_hud_center", true), if triple_fov < 20.0 { 0.0 } else { triple_fov.min(120.0) }));
+    text.push_str(&format!("triple_screen={}\ntriple_span={}\n", b("triple_screen", false), b("triple_span", true)));
+    text.push_str(&format!("triple_width_mm={}\ntriple_distance_mm={}\ntriple_bezel_mm={}\n", f("triple_width_mm", 600.0).clamp(200.0, 2000.0), f("triple_distance_mm", 650.0).clamp(200.0, 3000.0), f("triple_bezel_mm", 0.0).clamp(0.0, 100.0)));
+    text.push_str(&format!("triple_left_angle_deg={}\ntriple_right_angle_deg={}\ntriple_eye_height_mm={}\n", f("triple_left_angle_deg", 45.0).clamp(0.0, 90.0), f("triple_right_angle_deg", 45.0).clamp(0.0, 90.0), f("triple_eye_height_mm", 0.0).clamp(-500.0, 500.0)));
+    let written: Vec<String> = text.lines().filter_map(|l| l.split_once('=')).map(|(k, _)| k.trim().to_ascii_lowercase()).collect();
     for line in old.unwrap_or("").lines() {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') || t.starts_with(';') {

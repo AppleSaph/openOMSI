@@ -580,36 +580,7 @@ impl Ui {
         self.chat.rect[2] += x;
     }
     pub fn new() -> Option<Ui> {
-        Some(Ui {
-            origin_x: 0.0,
-            text: TextCache::new()?,
-            chat: ChatWidget::default(),
-            menu_rects: Vec::new(),
-            menu_arrows: Vec::new(),
-            menu_scroll_thumb: None,
-            menu_scroll_track: None,
-            menu_ctl: Vec::new(),
-            dd_rects: Vec::new(),
-            dd_top: 0,
-            dd_rows: 8,
-            dd_scroll: None,
-            menu_side: Vec::new(),
-            menu_pane: Vec::new(),
-            menu_pane_start: 0,
-            menu_pane_go: None,
-            menu_pane_box: None,
-            menu_pane_scroll: None,
-            menu_time: Vec::new(),
-            anim: Default::default(),
-            anim_dt: 0.0,
-            menu_overlay_range: 0..0,
-            vr_cursor_overlay: None,
-            vr_tooltip_overlay: None,
-            menu_start: 0,
-            menu_rows: 0,
-            menu_row_h: 1.0,
-            images: Default::default(),
-        })
+        Some(Ui { origin_x: 0.0, text: TextCache::new()?, chat: ChatWidget::default(), menu_rects: Vec::new(), menu_arrows: Vec::new(), menu_scroll_thumb: None, menu_scroll_track: None, menu_ctl: Vec::new(), dd_rects: Vec::new(), dd_top: 0, dd_rows: 8, dd_scroll: None, menu_side: Vec::new(), menu_pane: Vec::new(), menu_pane_start: 0, menu_pane_go: None, menu_pane_box: None, menu_pane_scroll: None, menu_time: Vec::new(), anim: Default::default(), anim_dt: 0.0, menu_overlay_range: 0..0, vr_cursor_overlay: None, vr_tooltip_overlay: None, menu_start: 0, menu_rows: 0, menu_row_h: 1.0, images: Default::default() })
     }
 
     /// Draw the frame's interface: its overlays go after the HUD's in `scene.overlays`.
