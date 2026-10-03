@@ -1194,16 +1194,9 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
             Some(("collision_vehicles", bit))
         }
         "mouse" => {
-            app.mouse_drive = on;
-            if !app.mouse_drive {
-                crate::player::keep_wheel(app.player.as_mut());
-            }
-            #[cfg(windows)]
-            if !app.mouse_drive {
-                app.reset_vr_pointer();
-            }
-            app.mouse_steer = (app.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
-            app.mouse_pedals = app.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
+            // (as the O key does it: switched off from the menu, the brake the mouse held
+            // stayed behind and the bus rolled away - #517, #760)
+            app.set_mouse_drive(on);
             None
         }
         "blinker_cancel" => {

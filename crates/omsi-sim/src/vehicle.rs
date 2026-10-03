@@ -19,7 +19,7 @@ fn script_speed(speed_kmh: f32) -> f32 {
     if speed_kmh.abs() < 0.01 { 0.0 } else { speed_kmh }
 }
 
-// A vehicle section may contain many tiny trim meshes and only a few large body/interior
+// A vehicle pack may contain many tiny trim meshes and only a few large body/interior
 // meshes. When the mesh vote is close, use capped triangle counts as a tie-breaker instead
 // of letting every tiny mesh carry the same weight.
 const WINDING_EVIDENCE_CAP: usize = 4096;
@@ -40,6 +40,31 @@ fn keep_authored_winding(
     let forward_clearly_heavier =
         forward_weight.saturating_mul(10) >= backward_weight.saturating_mul(11);
     counts_close && forward_clearly_heavier
+}
+
+#[derive(Default, Debug)]
+struct WindingVotes {
+    forward: usize,
+    backward: usize,
+    forward_weight: usize,
+    backward_weight: usize,
+}
+
+impl WindingVotes {
+    fn record(&mut self, forward: bool, triangles: usize) {
+        let weight = triangles.min(WINDING_EVIDENCE_CAP);
+        if forward {
+            self.forward += 1;
+            self.forward_weight += weight;
+        } else {
+            self.backward += 1;
+            self.backward_weight += weight;
+        }
+    }
+
+    fn keep_authored(&self) -> bool {
+        keep_authored_winding(self.forward, self.backward, self.forward_weight, self.backward_weight)
+    }
 }
 
 /// Built-in variables every road vehicle has (`program/varlist_roadvehicle.txt` + generated).
@@ -130,6 +155,8 @@ pub struct VehicleMesh {
     pub viewpoint: i32,
     /// `[smoothskin]` bones (empty for a rigid mesh, and for an AI type).
     pub skin: Vec<SkinBone>,
+    /// A backwards mesh drawn as wound after all (its pack's exporter, see `load`).
+    pub keep_winding: bool,
 }
 
 pub struct VehicleType {
@@ -138,7 +165,6 @@ pub struct VehicleType {
     pub model_dir: PathBuf,
     pub program: Arc<Program>,
     pub meshes: Vec<VehicleMesh>,
-    pub keep_winding: bool,
     /// Paint schemes / adverts from the `[CTC]` folders' `.cti` files.
     pub paint_schemes: Vec<PaintScheme>,
     /// `[texchanges]`: material textures a script variable swaps (roller blinds, trim).
@@ -247,6 +273,26 @@ pub fn load_paint_schemes(dir: &Path) -> Vec<PaintScheme> {
     schemes
 }
 
+/// The vehicle pack a mesh file belongs to (the folder under `Vehicles`, lower case), the
+/// unit its exporter's winding is judged by; a file elsewhere is judged with its folder.
+fn winding_pack(p: &Path) -> String {
+    // (a part borrowed as `..\..\Other\model\x.o3d`: the folders it climbs out of are not its own)
+    let mut comps: Vec<String> = Vec::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                comps.pop();
+            }
+            std::path::Component::CurDir => {}
+            c => comps.push(c.as_os_str().to_string_lossy().to_ascii_lowercase()),
+        }
+    }
+    match comps.iter().rposition(|c| c == "vehicles") {
+        Some(i) if i + 2 < comps.len() => comps[i + 1].clone(),
+        _ => comps[..comps.len().saturating_sub(1)].join("/"),
+    }
+}
+
 /// Where a `[mesh]` file of a model lives: next to the model file as OMSI reads it, else -
 /// for add-ons laid out for another folder (Studio Polygon's `Configuration Files` sit
 /// beside `model`, and packs that borrow parts name them from the vehicle folder or the
@@ -336,9 +382,9 @@ impl VehicleType {
         }
         let mut meshes = Vec::new();
         let mut missing_packs: Vec<(String, usize)> = Vec::new();
-        let (mut turned, mut positive_forward, mut positive_backward) =
-            (Vec::new(), 0usize, 0usize);
-        let (mut forward_weight, mut backward_weight) = (0usize, 0usize);
+        // (by the vehicle pack each mesh comes from, see `winding_pack`)
+        let mut turned: Vec<(usize, String)> = Vec::new();
+        let mut votes: std::collections::HashMap<String, WindingVotes> = std::collections::HashMap::new();
         if !model.lods.is_empty() {
             let start = model.lods[0].first_mesh;
             let end = model
@@ -377,19 +423,13 @@ impl VehicleType {
                         };
                         // (a mesh none of whose bones is bound moves as a rigid one)
                         let skin = if skin.iter().any(|b| b.def_index.is_some()) { skin } else { Vec::new() };
+                        let pack = winding_pack(&p);
                         match omsi_geometry::positive_det_faces_forward(&m) {
-                            Some(true) => {
-                                positive_forward += 1;
-                                forward_weight += m.triangles.len().min(WINDING_EVIDENCE_CAP);
-                            }
-                            Some(false) => {
-                                positive_backward += 1;
-                                backward_weight += m.triangles.len().min(WINDING_EVIDENCE_CAP);
-                            }
+                            Some(forward) => votes.entry(pack.clone()).or_default().record(forward, m.triangles.len()),
                             None => {}
                         }
                         if omsi_geometry::turns_round(&m) {
-                            turned.push(meshes.len());
+                            turned.push((meshes.len(), pack));
                         }
                         meshes.push(VehicleMesh {
                             def_index: start + i,
@@ -400,6 +440,7 @@ impl VehicleType {
                             pivot: pivot_from_mesh(&m),
                             viewpoint: md.viewpoint,
                             skin,
+                            keep_winding: false,
                         })
                     }
                     Err(e) => {
@@ -414,21 +455,21 @@ impl VehicleType {
                 }
             }
         }
-        let keep_winding = keep_authored_winding(
-            positive_forward,
-            positive_backward,
-            forward_weight,
-            backward_weight,
-        );
-        if keep_winding && !turned.is_empty() {
-            for &i in &turned {
-                omsi_geometry::reverse_winding(&mut meshes[i].data);
+        // A pack whose meshes with a positive determinant mostly face along their normals
+        // keeps the winding of its backwards ones (see bb0c32b: the Citelis' buttons). Asked
+        // of the whole vehicle, a part borrowed from another pack - a ticket machine, a
+        // display - was turned in one bus and kept in the next, whatever its own pack's
+        // exporter does: the same Atron machine inside out in some buses only (#977, #1054).
+        let mut kept = 0;
+        for (i, pack) in &turned {
+            if votes.get(pack).is_some_and(WindingVotes::keep_authored) {
+                omsi_geometry::reverse_winding(&mut meshes[*i].data);
+                meshes[*i].keep_winding = true;
+                kept += 1;
             }
-            log::info!(
-                "{}: {} meshes keep their winding ({positive_forward} forward / {positive_backward} backward meshes; capped triangle evidence {forward_weight} / {backward_weight})",
-                bus_file.display(),
-                turned.len()
-            );
+        }
+        if kept > 0 {
+            log::info!("{}: {kept} meshes keep their winding (their packs' meshes with a positive determinant face along their normals: {votes:?})", bus_file.display());
         }
         for (pack, n) in &missing_packs {
             log::warn!(
@@ -524,7 +565,6 @@ impl VehicleType {
             missing_packs,
             mesh_bounds,
             mesh_boxes,
-            keep_winding,
         })
     }
 
@@ -682,7 +722,7 @@ impl VehicleType {
             return Some(std::borrow::Cow::Borrowed(&m.data));
         }
         match omsi_o3d::load_mesh(&m.file) {
-            Ok(o) => Some(std::borrow::Cow::Owned(omsi_geometry::mesh_from_o3d_turning(&o, !self.keep_winding))),
+            Ok(o) => Some(std::borrow::Cow::Owned(omsi_geometry::mesh_from_o3d_turning(&o, !m.keep_winding))),
             Err(e) => {
                 log::warn!("{}: {e}", m.file.display());
                 None
@@ -1768,8 +1808,8 @@ impl VehicleInstance {
                     self.put(w[0], rw.rotation_deg.to_radians());
                     self.put(w[1], rw.rpm);
                     // (each axle's own angle: OMSI turns every axle towards the centre of
-                    // the bend on the `[rot_pnt_long]` line)
-                    self.put(w[2], rw.steer);
+                    // the bend on the `[rot_pnt_long]` line - one angle for both sides)
+                    self.put(w[2], rb.axle_steer(ai * 2 + si));
                     // `Axle_Suspension_*` is the wheel's travel *relative to the body*, and
                     // the stock model.cfg moves the wheel down for a positive value
                     // (`origin_rot_y -90` + `anim_trans`, checked with OMSI_DEBUG_ANIM on
@@ -2201,9 +2241,8 @@ impl VehicleInstance {
             0.0
         };
         // `steer_deg` is the front wheel angle of a bicycle model turning about the
-        // `[rot_pnt_long]` line: every wheel ahead of that line points at the common turning
-        // centre (the inner one further than the outer, as with Ackermann steering), and
-        // every wheel rolls as far as its own track through the bend is long
+        // `[rot_pnt_long]` line: every axle ahead of that line points at the common turning
+        // centre, and every wheel rolls as far as its own track through the bend is long
         let (rot, wheelbase) = crate::ai_motion::rotation_point(&self.ty.def);
         let k = ai.steer_deg.to_radians().tan() / wheelbase;
         for (ai_idx, axle) in self.v_wheels.clone().iter().enumerate() {
@@ -2213,8 +2252,10 @@ impl VehicleInstance {
                 };
                 let arm = ws.long - rot;
                 let across = 1.0 - ws.lat * k;
+                // (the axle's angle, the same for both sides, as Omsi.exe hands it to the
+                // scripts: see `RigidBody::axle_steer`)
                 let steer = if arm > 0.5 {
-                    (arm * k).atan2(across).clamp(-1.2, 1.2)
+                    (arm * k).atan().clamp(-1.2, 1.2)
                 } else {
                     0.0
                 };
@@ -4022,6 +4063,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_borrowed_part_is_judged_with_its_own_pack() {
+        // the same machine from its own pack, whichever bus borrows it (#977)
+        let a = winding_pack(Path::new("/omsi/Vehicles/Citelis/model/body.o3d"));
+        let b = winding_pack(Path::new("/omsi/vehicles/Atron_AFR4/model/afr4.o3d"));
+        let c = winding_pack(Path::new("/omsi/Vehicles/MAN_SD200/model/../../Atron_AFR4/model/afr4.o3d"));
+        assert_eq!(a, "citelis");
+        assert_eq!(b, "atron_afr4");
+        assert_eq!(winding_pack(Path::new("/omsi/Vehicles/Atron_AFR4/model/sub/afr4.o3d")), b);
+        assert_eq!(c, b);
+        let elsewhere = winding_pack(Path::new("/omsi/Sceneryobjects/x/model/y.o3d"));
+        assert_eq!(elsewhere, winding_pack(Path::new("/omsi/Sceneryobjects/x/model/z.o3d")));
+        assert_ne!(elsewhere, winding_pack(Path::new("/omsi/Sceneryobjects/w/model/y.o3d")));
+    }
+
+    #[test]
     fn script_speed_reports_tiny_resting_motion_as_stopped() {
         assert_eq!(script_speed(0.000251), 0.0);
         assert_eq!(script_speed(-0.000251), 0.0);
@@ -4857,10 +4913,36 @@ mod grip_tests {
     }
 }
 
-
 #[cfg(test)]
 mod winding_exporter_tests {
-    use super::keep_authored_winding;
+    use super::{keep_authored_winding, winding_pack, WindingVotes, WINDING_EVIDENCE_CAP};
+    use std::path::Path;
+
+    #[test]
+    fn borrowed_pack_evidence_stays_separate_and_capped() {
+        let body = winding_pack(Path::new("/omsi/Vehicles/Bus/model/body.o3d"));
+        let borrowed = winding_pack(Path::new("/omsi/Vehicles/Bus/model/../../Display/model/display.o3d"));
+        let mut votes: std::collections::HashMap<String, WindingVotes> = std::collections::HashMap::new();
+        for _ in 0..4 {
+            votes.entry(body.clone()).or_default().record(true, usize::MAX);
+        }
+        for _ in 0..5 {
+            votes.entry(body.clone()).or_default().record(false, 2);
+        }
+        votes.entry(borrowed.clone()).or_default().record(false, 100);
+        assert!(votes[&body].keep_authored());
+        assert_eq!(votes[&body].forward_weight, 4 * WINDING_EVIDENCE_CAP);
+        assert!(!votes[&borrowed].keep_authored());
+        let local_display = winding_pack(Path::new("/omsi/Vehicles/Display/model/display.o3d"));
+        assert_eq!(borrowed, local_display);
+    }
+
+    #[test]
+    fn empty_or_inconclusive_votes_keep_default() {
+        assert!(!WindingVotes::default().keep_authored());
+        assert!(!keep_authored_winding(0, 5, 0, 10));
+        assert!(!keep_authored_winding(5, 5, 10, 10));
+    }
 
     #[test]
     fn close_mesh_count_can_use_triangle_evidence() {

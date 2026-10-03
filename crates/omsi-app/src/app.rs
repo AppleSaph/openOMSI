@@ -125,6 +125,11 @@ pub(crate) struct App {
     /// (in lines, fractional while dragged); `None`: the chosen line is kept in view.
     pub(crate) menu_top: Option<f32>,
     pub(crate) menu_scroll_drag: bool,
+    /// The scroll bar of an open drop-down held with the mouse: where on its thumb it was
+    /// taken (pixels from the thumb's top).
+    pub(crate) dd_scroll_drag: Option<f32>,
+    /// The same for the scroll bar of the timetable beside a line's tours.
+    pub(crate) pane_scroll_drag: Option<f32>,
     /// The timetable beside the tours scrolled with the wheel: (the tour's line in the list,
     /// the first stop shown).
     pub(crate) pane_scroll: Option<(usize, usize)>,

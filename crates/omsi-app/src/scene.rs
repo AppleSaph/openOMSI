@@ -366,6 +366,9 @@ impl LampSlots {
     }
 }
 
+/// `LightObject::parent` of a signal that names no crossing: no crossing has this id.
+pub const NO_CROSSING: i64 = i64::MIN;
+
 /// A placed `[trafficlight]` object: its render instances follow the light state of
 /// light `index` of the crossing `parent`.
 #[derive(Clone)]
@@ -3903,6 +3906,8 @@ impl World {
                     .unwrap_or(false)
         };
         // [object]
+        let debug_outside = omsi_cfg::env::var_os("OMSI_DEBUG_OBJECTS").is_some();
+        let mut outside = 0usize;
         for o in &tile.objects {
             if !wanted(&o.file) {
                 continue;
@@ -3913,6 +3918,21 @@ impl World {
             // Objects with traffic paths (crossings, switches, road pieces) are stored with
             // absolute heights like the splines themselves; so are [absheight] ones.
             let absolute = ot.sco.absolute_height();
+            // An object that stands on the terrain but lies outside its own tile is never
+            // seen in OMSI: Omsi.exe finds its height with a ray from 1000 m down onto that
+            // tile's terrain mesh only (0x79e43d -> 0x7ab594), and where the ray misses the
+            // mesh it answers 10000 m more, which puts the object 11 km under the ground.
+            // Maps copied from a `[worldcoordinates]` map keep such leftovers (Ahlheim's
+            // Bostoner Weg: 588 objects past the edge, redrawn by the author where they
+            // belong), and drawn they stood as houses and bushes in the road (#787).
+            let edge = tile_size() + 1e-3;
+            if !absolute && !((-1e-3..=edge).contains(&o.pos[0]) && (-1e-3..=edge).contains(&o.pos[1])) {
+                if outside == 0 || debug_outside {
+                    log::info!("object {} id {} at ({:.1}, {:.1}) lies outside tile ({tx}, {ty}): not shown, as in OMSI", o.file, o.id, o.pos[0], o.pos[1]);
+                }
+                outside += 1;
+                continue;
+            }
             let (x, y) = (origin2.x + o.pos[0], origin2.y + o.pos[1]);
             let place = if absolute {
                 // On a `[worldcoordinates]` map the tile's splines are stretched onto the
@@ -3946,6 +3966,9 @@ impl World {
                 instance: 0,
                 key: o.id,
             });
+        }
+        if outside > 1 {
+            log::info!("tile ({tx}, {ty}): {outside} objects lie outside the tile and are not shown, as in OMSI");
         }
         // [attachObj]
         for o in &tile.attach_objects {
@@ -4922,7 +4945,12 @@ impl World {
                         Some(p) => log::info!("traffic light {} (id {}) at ({:.0}, {:.0}): crossing {p}, light {:?}", ot.sco.path.display(), o.id, pos.x, pos.y, o.extra),
                     }
                 }
-                o.lamp_parent.map(|p| (p, index, named.is_none()))
+                // (a signal that names no crossing - Korean maps fix pedestrian heads to a
+                // road spline without a [varparent] - is a lamp all the same: its lenses
+                // follow [visible]/[alphascale] on the dummy phase every unlinked object
+                // reads, see `UNLINKED_PHASE`; drawn as plain scenery, the red and the green
+                // man were both lit all the time, #988)
+                Some((o.lamp_parent.unwrap_or(NO_CROSSING), index, named.is_none()))
             } else {
                 None
             };
@@ -5878,7 +5906,26 @@ impl World {
                 // A separate transmap is a mask, not an automatic instruction to make the
                 // whole material transparent. Opaque body panels must stay opaque unless the
                 // model's `[matl_alpha]` or a material override explicitly says otherwise.
-                let alpha = alpha;
+                // A declared blend on a texture without alpha is opaque, as the splines take
+                // it, for a ground-layer object (`[rendertype] surface` / `on_surface`): the
+                // surface phases draw a blend without writing depth, so every spline after
+                // it showed through - the far roads and a bridge over NCCR's apartment
+                // blocks (`[matl_alpha] 2` on a 24-bit BMP), Westcountry's road signs. In
+                // Omsi.exe such a blend writes depth and its alpha is 1 throughout, the same
+                // picture. (Not with a transmap, an `[alphascale]` or a texture with alpha.)
+                let surface_phase = matches!(
+                    ot.sco.render_type,
+                    omsi_scenery::sco::RenderType::Surface | omsi_scenery::sco::RenderType::OnSurface
+                );
+                let faded = slot_ov.iter().any(|o| o.alphascale.as_ref().is_some_and(|v| !v.trim().is_empty()));
+                let alpha = if alpha == AlphaMode::Blend && surface_phase && tex.is_some() && transmap.is_none() && !faded && {
+                    let dirs_ref: Vec<&Path> = dirs.iter().map(|p| p.as_path()).collect();
+                    omsi_texture::find_texture(&m.texture, &dirs_ref).is_some_and(|p| gpu.textures.get(&p).is_some_and(|e| !e.alpha))
+                } {
+                    AlphaMode::Opaque
+                } else {
+                    alpha
+                };
                 // [matl_envmap]: the same reflection rule as on vehicles (factor x mask; a
                 // texture without an alpha channel reads as a full mask)
                 let envmap = match slot_ov.iter().find_map(|o| o.envmap.clone()) {
@@ -8969,7 +9016,7 @@ impl World {
             let vars = omsi_sim::scenery::SceneryVars {
                 nightlight: use_.lit(now.time, day, brightness) as i32 as f32,
                 in_use: in_use as i32 as f32,
-                traffic_light_phase: light.map(|(c, li)| phase_of(c, li).0).unwrap_or(-1.0),
+                traffic_light_phase: light.map(|(c, li)| phase_of(c, li).0).unwrap_or(omsi_sim::traffic::UNLINKED_PHASE as f32),
                 traffic_light_approach: light.map(|(c, li)| phase_of(c, li).1).unwrap_or(0.0),
                 switch: None,
             };

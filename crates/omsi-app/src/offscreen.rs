@@ -2420,7 +2420,7 @@ pub(crate) fn run_offscreen(
             traffic
                 .as_ref()
                 .map(|t| t.light_vars(c, li))
-                .unwrap_or((-1.0, 0.0))
+                .unwrap_or((omsi_sim::traffic::UNLINKED_PHASE as f32, 0.0))
         };
         let dt = 1.0 / 30.0;
         let mut n = 0;

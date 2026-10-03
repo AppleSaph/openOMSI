@@ -1456,6 +1456,13 @@ pub struct LightStop {
 /// `[approachdist]` (m): about four seconds at town speed.
 pub const DEFAULT_APPROACH: f32 = 50.0;
 
+/// The `TrafficLightPhase` of an object no crossing light drives: a signal without a
+/// `[varparent]`, one whose crossing has no program, any other scripted object. Omsi.exe
+/// binds every placed object's `TrafficLightPhase` and `TrafficLightApproach` to a light
+/// of its parent crossing ("RefreshAmpelParenting", 0x77d460) and, failing that, to a
+/// shared dummy variable in .bss (0x8619a4), which reads 0: red, not "no light".
+pub const UNLINKED_PHASE: i32 = 0;
+
 /// Traffic light program of a crossing object instance (`TAmpelGroup`): its lights'
 /// phases and one cycle clock that runs on game time. The clock is state, not a function
 /// of the time of day, because the program may wait at a stop point or jump.

@@ -258,6 +258,21 @@ impl MapIndex {
                     let Some(first) = row_start(a, s, None).and_then(|st| place_on(a, s, origin, None, st).into_iter().next()) else { continue };
                     part.objects.entry(a.id).or_insert(((*tx, *ty), first.pose.pos, [first.pose.heading(), 0.0, 0.0]));
                 }
+                // an object hung on another (`[attachObj]`: the stops of Ahlheim and many
+                // other maps hang on their shelters): at its parent's place - a few metres
+                // off at most, and the placed object gives the exact place once its tile is
+                // loaded. They were in no index at all: a duty's stop beyond the loaded tiles
+                // had no place, never showed on the map and was never reached (#1014, #975).
+                for o in &tile.attach_objects {
+                    let Some(parent) = o.parent_id.and_then(|id| part.objects.get(&id).copied()) else { continue };
+                    part.objects.entry(o.id).or_insert(((*tx, *ty), parent.1, [parent.2[0] + o.rot[0], 0.0, 0.0]));
+                    if o.extra.len() >= 2 {
+                        part.stop_weights.insert(o.id, stop_exit_weight(&o.extra));
+                        part.stop_enter.insert(o.id, stop_enter(&o.extra));
+                        part.stop_side.insert(o.id, stop_side(&o.extra));
+                        part.stop_length.insert(o.id, stop_length(&o.extra));
+                    }
+                }
                 part.tiles_read = 1;
                 Some((part, rows, lights))
             })

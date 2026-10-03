@@ -53,8 +53,11 @@ impl TextCache {
     /// its size.
     fn label(&mut self, r: &Renderer, scene: &mut Scene, text: &str, px: u32, color: [u8; 4]) -> Label {
         let color = [color[0], color[1], color[2], outline_for(color, if self.flat { 1.0 } else { self.backdrop })];
-        // (in the interface's language: the menu, the notes, the windows)
-        let text = &*omsi_ui::tr(text);
+        // (in the interface's language: the menu, the notes, the windows; a letter and its
+        // combining mark as one, as macOS gives file names - the weather "Eiseska\u{308}lte"
+        // showed a box after its "a" in the menu's list)
+        let text = omsi_ui::tr(text);
+        let text = &*omsi_ui::text::composed(&text);
         let key = (text.to_string(), px, color);
         if let Some(l) = self.labels.get_mut(&key) {
             l.used = self.frame;
@@ -85,6 +88,7 @@ impl TextCache {
     }
 
     fn width_in(&self, base: &FontVec, text: &str, px: f32) -> f32 {
+        let text = omsi_ui::text::composed(text);
         let mut w = 0.0;
         let mut prev: Option<(ab_glyph::GlyphId, *const FontVec)> = None;
         for c in text.chars() {
@@ -429,6 +433,9 @@ pub struct Ui {
     pub menu_pane_go: Option<[f32; 4]>,
     /// The whole timetable pane beside the tours: the wheel over it scrolls its stops.
     pub menu_pane_box: Option<[f32; 4]>,
+    /// Its scroll bar when it has more stops than it shows: the track, the thumb (widened
+    /// to be hit), how many stops there are and how many it shows - for the mouse to drag.
+    pub menu_pane_scroll: Option<([f32; 4], [f32; 4], usize, usize)>,
     /// The two arrows beside the time of a tour: the trip before, the next one.
     pub menu_time: Vec<[f32; 4]>,
     /// The colours and positions of the menu's parts that ease to their new state (a line's
@@ -452,13 +459,16 @@ pub struct Ui {
     pub dd_rects: Vec<[f32; 4]>,
     pub dd_top: usize,
     pub dd_rows: usize,
+    /// The drop-down's scroll bar when it has more entries than it shows: its track and
+    /// its thumb (widened to be hit), for the mouse to drag.
+    pub dd_scroll: Option<([f32; 4], [f32; 4])>,
     /// Pictures shown in the interface (a tutorial page's), by file.
     images: hashbrown::HashMap<std::path::PathBuf, Option<(TextureId, u32, u32)>>,
 }
 
 impl Ui {
     pub fn new() -> Option<Ui> {
-        Some(Ui { text: TextCache::new()?, chat: ChatWidget::default(), menu_rects: Vec::new(), menu_arrows: Vec::new(), menu_scroll_thumb: None, menu_scroll_track: None, menu_ctl: Vec::new(), dd_rects: Vec::new(), dd_top: 0, dd_rows: 8, menu_side: Vec::new(), menu_pane: Vec::new(), menu_pane_start: 0, menu_pane_go: None, menu_pane_box: None, menu_time: Vec::new(), anim: Default::default(), anim_dt: 0.0, menu_overlay_range: 0..0, vr_cursor_overlay: None, vr_tooltip_overlay: None, menu_start: 0, menu_rows: 0, menu_row_h: 1.0, images: Default::default() })
+        Some(Ui { text: TextCache::new()?, chat: ChatWidget::default(), menu_rects: Vec::new(), menu_arrows: Vec::new(), menu_scroll_thumb: None, menu_scroll_track: None, menu_ctl: Vec::new(), dd_rects: Vec::new(), dd_top: 0, dd_rows: 8, dd_scroll: None, menu_side: Vec::new(), menu_pane: Vec::new(), menu_pane_start: 0, menu_pane_go: None, menu_pane_box: None, menu_pane_scroll: None, menu_time: Vec::new(), anim: Default::default(), anim_dt: 0.0, menu_overlay_range: 0..0, vr_cursor_overlay: None, vr_tooltip_overlay: None, menu_start: 0, menu_rows: 0, menu_row_h: 1.0, images: Default::default() })
     }
 
     /// Draw the frame's interface: its overlays go after the HUD's in `scene.overlays`.
@@ -1216,10 +1226,12 @@ impl Ui {
         self.menu_pane_start = 0;
         self.menu_pane_go = None;
         self.menu_pane_box = None;
+        self.menu_pane_scroll = None;
         self.menu_time.clear();
         self.menu_scroll_thumb = None;
         self.menu_scroll_track = None;
         self.dd_rects.clear();
+        self.dd_scroll = None;
         let overlay_start = scene.overlays.len();
         let Some((sel, items)) = f.menu else {
             self.menu_overlay_range = overlay_start..overlay_start;
@@ -1560,7 +1572,9 @@ impl Ui {
                 // (a long list of stops: a thin scroll bar at the pane's edge)
                 if n > fit {
                     let hot = over([px0, py0, px1, py1]);
-                    self.thumb(r, scene, [px1 - 7.0 * s, top, px1 - 3.0 * s, go[1] - 10.0 * s], first, fit, n, hot, s);
+                    let track = [px1 - 7.0 * s, top, px1 - 3.0 * s, go[1] - 10.0 * s];
+                    let thumb = self.thumb(r, scene, track, first, fit, n, hot, s);
+                    self.menu_pane_scroll = Some((track, [thumb[0] - 6.0 * s, thumb[1], thumb[2] + 3.0 * s, thumb[3]], n, fit));
                 }
                 let time_w = p.rows.iter().skip(first).take(fit).map(|row| self.text.width(&row.1, rpx as f32)).fold(0.0f32, f32::max);
                 for (i, (what, when)) in p.rows.iter().enumerate().skip(first).take(fit) {
@@ -1903,7 +1917,8 @@ impl Ui {
             }
             if more {
                 let track = [px1 - 8.0 * s, py0 + inner, px1 - 4.0 * s, py0 + ph - inner];
-                self.thumb(r, scene, track, top, n_vis, dd.items.len(), over(panel), s);
+                let thumb = self.thumb(r, scene, track, top, n_vis, dd.items.len(), over(panel), s);
+                self.dd_scroll = Some((track, [thumb[0] - 6.0 * s, thumb[1], thumb[2] + 4.0 * s, thumb[3]]));
             }
         }
     }

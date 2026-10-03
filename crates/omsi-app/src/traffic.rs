@@ -961,7 +961,8 @@ impl Traffic {
             // trafficdensity` for it (see `uvg_density`): 0 means only where the paths ask
             // for the group. Taken as "off", Spandau had no trucks and no Trabant at all,
             // though 865 paths ask for the one and 462 around Falkensee for the other.
-            // `OMSI_TRAFFIC_ALL_GROUPS=1` lets such groups drive everywhere.
+            // `OMSI_TRAFFIC_ALL_GROUPS=1` lets such groups drive everywhere (and, on a map
+            // without the file, every group, not only the default one).
             let all_groups = omsi_cfg::env::var_os("OMSI_TRAFFIC_ALL_GROUPS").is_some();
             let unscheduled: Option<Vec<(String, i32)>> =
                 omsi_cfg::CfgFile::read(&world.map_dir.join("unsched_vehgroups.txt"))
@@ -980,9 +981,20 @@ impl Traffic {
                     .collect();
             }
             let lists = &world.ailists;
-            for g in lists.groups.iter().filter(|g| {
+            // Without `unsched_vehgroups.txt` the random traffic is the ailists' default group
+            // alone (the first, or the one the `[ailist]` header names): Omsi.exe 0x785f98
+            // makes one nameless group then, and a nameless group takes the default group.
+            // Taking every group instead, a map whose ailists keep an ambulance (or a bus,
+            // or a lorry) in a group of its own had one car in four of that kind (#1025).
+            if unscheduled.is_none() && !all_groups {
+                if let Some(g) = lists.groups.get(lists.default_group) {
+                    log::info!("random traffic: no unsched_vehgroups.txt, only the default AI group {}", g.name);
+                }
+            }
+            for (_, g) in lists.groups.iter().enumerate().filter(|(i, g)| {
                 !g.is_depot
                     && g.hof.is_none()
+                    && (unscheduled.is_some() || all_groups || *i == lists.default_group)
                     && !g
                         .vehicles
                         .iter()
@@ -6571,7 +6583,7 @@ impl Traffic {
                     ctl.request.get(li).copied().unwrap_or(false) as i32 as f32,
                 )
             })
-            .unwrap_or((-1.0, 0.0))
+            .unwrap_or((omsi_sim::traffic::UNLINKED_PHASE as f32, 0.0))
     }
 
     pub fn sync(&mut self, world: &World, renderer: &Renderer, scene: &mut Scene) {
@@ -6641,8 +6653,9 @@ impl Traffic {
                     ctl.state(lamp.index),
                     ctl.request.get(lamp.index).copied().unwrap_or(false),
                 ),
-                // a lamp whose crossing has no program stays dark
-                None => (-1, false),
+                // a lamp that names no crossing, or one whose crossing has no program,
+                // reads the engine's dummy (see `UNLINKED_PHASE`): red, as in OMSI
+                None => (omsi_sim::traffic::UNLINKED_PHASE, false),
             };
             let (r, y, g) = TrafficLightController::lamps(state);
             let value = |lamp: &crate::scene::LightObject, var: &str| -> f32 {
