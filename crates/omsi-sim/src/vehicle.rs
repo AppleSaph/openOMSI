@@ -1835,8 +1835,41 @@ impl VehicleInstance {
 
     pub fn trigger(&mut self, name: &str) -> bool {
         let p = self.ty.program.clone();
-        self.vm
-            .run_trigger(&p, name, &mut self.state, &mut self.host)
+        let rear_target_was_open = self.var("doorTarget_23").is_some_and(|target| target > 0.0);
+        let rear_force_close_was_active = self.var("bdoor_embtn_cls").is_some_and(|close| close > 0.5);
+        let rear_was_open = self.var("doorTarget_23").is_some_and(|target| target > 0.0)
+            || self.var("door_2").is_some_and(|door| door > 0.05)
+            || self.var("door_3").is_some_and(|door| door > 0.05);
+        let mut fired = self
+            .vm
+            .run_trigger(&p, name, &mut self.state, &mut self.host);
+        // Several Volvo Wright door scripts expose the actual force-close operation as
+        // `bus_dooraft1_external_CL`, while the dashboard `bus_dooraftclose` trigger only
+        // sounds the button when its handbrake guard rejects the request.  Use that explicit
+        // close path when the dashboard request left the rear door open.  Other buses are
+        // unaffected because the fallback trigger is only present in those scripts.
+        // A toggle pressed while the leaves are already closing is an open request.  The
+        // fallback must not immediately undo that request just because the leaves are still
+        // physically open for a few frames.
+        let toggle_is_reopen_request = name.eq_ignore_ascii_case("bus_dooraft")
+            && !rear_target_was_open
+            && (rear_force_close_was_active || self.var("doorTarget_23").is_some_and(|target| target > 0.0));
+        if (name.eq_ignore_ascii_case("bus_dooraftclose")
+            || (name.eq_ignore_ascii_case("bus_dooraft") && !toggle_is_reopen_request))
+            && rear_was_open
+            && (self.var("doorTarget_23").is_some_and(|target| target > 0.0)
+                || self.var("door_2").is_some_and(|door| door > 0.05)
+                || self.var("door_3").is_some_and(|door| door > 0.05))
+            && p.trigger("bus_dooraft1_external_CL").is_some()
+        {
+            fired |= self.vm.run_trigger(
+                &p,
+                "bus_dooraft1_external_CL",
+                &mut self.state,
+                &mut self.host,
+            );
+        }
+        fired
     }
 
     /// The script variables as `names` would leave them, run one after another, with the
@@ -4015,6 +4048,7 @@ pub fn skin_vertices(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn a_borrowed_part_is_judged_with_its_own_pack() {
@@ -4069,6 +4103,210 @@ mod tests {
             (axle[0] - 0.15).abs() < 1e-5 && axle[1] == 0.0 && axle[2] == 0.0,
             "{axle:?}"
         );
+    }
+
+    /// Volvo Wright's dashboard rear-close trigger falls back to its explicit external-close
+    /// path when the handbrake guard only produced the button sound.
+    #[test]
+    fn volvo_wright_rear_close_fallback_moves_a_partly_open_door() {
+        let root = omsi_cfg::env::var_os("OMSI_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("../../../OMSI 2 Original"));
+        let bus = root.join("Vehicles/Volvo_Wright_Family/AVBWS1.bus");
+        if !bus.exists() {
+            eprintln!("skipped: no {}", bus.display());
+            return;
+        }
+        let ty = Arc::new(VehicleType::load(&root, &bus).expect("AVBWS1"));
+        let mut v = VehicleInstance::new(ty, VehicleHost::new(crate::SimClock::default()));
+        for (name, value) in [
+            ("elec_real_main", 1.0),
+            ("elec_busbar_main", 1.0),
+            ("elec_busbar_avail", 1.0),
+            ("cockpit_button_ignition", 1.0),
+            ("bremse_feststell_sw", 0.0),
+            ("cockpit_button_smallhb", 0.0),
+            ("door_2", 0.5),
+            ("door_3", 0.5),
+            ("doorTarget_23", 1.0),
+        ] {
+            assert!(v.set_var(name, value), "missing {name}");
+        }
+        assert!(v.trigger("bus_dooraftclose"));
+        assert_eq!(v.var("doorTarget_23"), Some(0.0));
+    }
+
+    #[test]
+    fn volvo_wright_rear_toggle_falls_back_to_external_close() {
+        let root = omsi_cfg::env::var_os("OMSI_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("../../../OMSI 2 Original"));
+        let bus = root.join("Vehicles/Volvo_Wright_Family/AVBWS1.bus");
+        if !bus.exists() {
+            eprintln!("skipped: no {}", bus.display());
+            return;
+        }
+        let ty = Arc::new(VehicleType::load(&root, &bus).expect("AVBWS1"));
+        let mut v = VehicleInstance::new(ty, VehicleHost::new(crate::SimClock::default()));
+        for (name, value) in [
+            ("elec_real_main", 1.0),
+            ("elec_busbar_main", 1.0),
+            ("elec_busbar_avail", 1.0),
+            ("cockpit_button_ignition", 1.0),
+            ("bremse_feststell_sw", 0.0),
+            ("cockpit_button_smallhb", 0.0),
+            ("door_2", 0.5),
+            ("door_3", 0.5),
+            ("doorTarget_23", 1.0),
+        ] {
+            assert!(v.set_var(name, value), "missing {name}");
+        }
+        assert!(v.trigger("bus_dooraft"));
+        assert_eq!(v.var("doorTarget_23"), Some(0.0));
+        assert_eq!(v.var("bdoor_embtn_cls"), Some(1.0));
+    }
+
+    #[test]
+    fn volvo_wright_rear_toggle_closes_open_leaves_even_with_zero_target() {
+        let root = omsi_cfg::env::var_os("OMSI_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("../../../OMSI 2 Original"));
+        let bus = root.join("Vehicles/Volvo_Wright_Family/AVBWS1.bus");
+        if !bus.exists() {
+            eprintln!("skipped: no {}", bus.display());
+            return;
+        }
+        let ty = Arc::new(VehicleType::load(&root, &bus).expect("AVBWS1"));
+        let mut v = VehicleInstance::new(ty, VehicleHost::new(crate::SimClock::default()));
+        for (name, value) in [
+            ("elec_real_main", 1.0),
+            ("elec_busbar_main", 1.0),
+            ("elec_busbar_avail", 1.0),
+            ("cockpit_button_ignition", 1.0),
+            ("bremse_feststell_sw", 0.0),
+            ("cockpit_button_smallhb", 0.0),
+            ("door_2", 0.5),
+            ("door_3", 0.5),
+            ("doorTarget_23", 0.0),
+        ] {
+            assert!(v.set_var(name, value), "missing {name}");
+        }
+        assert!(v.trigger("bus_dooraft"));
+        assert_eq!(v.var("doorTarget_23"), Some(0.0));
+    }
+
+    #[test]
+    fn volvo_wright_rear_toggle_reopens_during_forced_close() {
+        let root = omsi_cfg::env::var_os("OMSI_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("../../../OMSI 2 Original"));
+        let bus = root.join("Vehicles/Volvo_Wright_Family/AVBWS1.bus");
+        if !bus.exists() {
+            eprintln!("skipped: no {}", bus.display());
+            return;
+        }
+        let ty = Arc::new(VehicleType::load(&root, &bus).expect("AVBWS1"));
+        let mut v = VehicleInstance::new(ty, VehicleHost::new(crate::SimClock::default()));
+        for (name, value) in [
+            ("elec_real_main", 1.0),
+            ("elec_busbar_main", 1.0),
+            ("elec_busbar_avail", 1.0),
+            ("cockpit_button_ignition", 1.0),
+            ("bremse_feststell_sw", 1.0),
+            ("cockpit_button_smallhb", 0.0),
+            ("door_2", 0.5),
+            ("door_3", 0.5),
+            ("doorTarget_23", 0.0),
+            ("bdoor_embtn_cls", 1.0),
+        ] {
+            assert!(v.set_var(name, value), "missing {name}");
+        }
+        assert!(v.trigger("bus_dooraft"));
+        assert_eq!(v.var("doorTarget_23"), Some(1.0));
+        assert_eq!(v.var("bdoor_embtn_cls"), Some(0.0));
+    }
+
+    #[test]
+    fn volvo_wright_rear_toggle_keeps_close_target_through_frames() {
+        let root = omsi_cfg::env::var_os("OMSI_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("../../../OMSI 2 Original"));
+        let bus = root.join("Vehicles/Volvo_Wright_Family/AVBWS1.bus");
+        if !bus.exists() {
+            eprintln!("skipped: no {}", bus.display());
+            return;
+        }
+        let ty = Arc::new(VehicleType::load(&root, &bus).expect("AVBWS1"));
+        let mut v = VehicleInstance::new(ty, VehicleHost::new(crate::SimClock::default()));
+        for (name, value) in [
+            ("elec_real_main", 1.0),
+            ("elec_busbar_main", 1.0),
+            ("elec_busbar_avail", 1.0),
+            ("cockpit_button_ignition", 1.0),
+            ("bremse_feststell_sw", 0.0),
+            ("cockpit_button_smallhb", 0.0),
+            ("bremse_p_Tank04", 800000.0),
+            ("door_2", 1.0),
+            ("door_3", 1.0),
+            ("doorTarget_23", 1.0),
+            ("bdoor_sound_played", 1.0),
+        ] {
+            assert!(v.set_var(name, value), "missing {name}");
+        }
+        assert!(v.trigger("bus_dooraft"));
+        v.update(1.0 / 30.0);
+        assert_eq!(v.var("backdoor_buzzer"), Some(1.0));
+        for _ in 1..120 {
+            v.update(1.0 / 30.0);
+        }
+        assert_eq!(v.var("doorTarget_23"), Some(0.0));
+        assert!(v.var("door_2").unwrap_or(1.0) < 0.1);
+        assert!(v.var("door_3").unwrap_or(1.0) < 0.1);
+        assert!(v.host.fired_triggers.iter().any(|name| name == "ev_doortriggerclose_2"));
+    }
+
+    #[test]
+    fn volvo_wright_family_rear_toggle_closes_every_bus_variant() {
+        let root = omsi_cfg::env::var_os("OMSI_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("../../../OMSI 2 Original"));
+        let dir = root.join("Vehicles/Volvo_Wright_Family");
+        if !dir.is_dir() {
+            eprintln!("skipped: no {}", dir.display());
+            return;
+        }
+        let mut buses: Vec<_> = std::fs::read_dir(&dir)
+            .expect("Volvo Wright directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("bus")))
+            .collect();
+        buses.sort();
+        assert!(buses.len() >= 20, "unexpectedly few Volvo Wright buses: {}", buses.len());
+        for bus in buses {
+            let name = bus.file_name().unwrap().to_string_lossy().into_owned();
+            let ty = Arc::new(VehicleType::load(&root, &bus).unwrap_or_else(|e| panic!("{name}: {e}")));
+            let mut v = VehicleInstance::new(ty, VehicleHost::new(crate::SimClock::default()));
+            for (var, value) in [
+                ("elec_real_main", 1.0),
+                ("elec_busbar_main", 1.0),
+                ("elec_busbar_avail", 1.0),
+                ("cockpit_button_ignition", 1.0),
+                ("bremse_feststell_sw", 0.0),
+                ("cockpit_button_smallhb", 0.0),
+                ("door_2", 0.5),
+                ("door_3", 0.5),
+                ("doorTarget_23", 1.0),
+            ] {
+                if v.var(var).is_some() {
+                    assert!(v.set_var(var, value), "{name}: missing {var}");
+                }
+            }
+            assert!(v.trigger("bus_dooraft"), "{name}: missing bus_dooraft");
+            let target = v.var("doorTarget_23").unwrap_or(0.0);
+            let request = v.var("door_back_close_request").unwrap_or(0.0);
+            assert!(target == 0.0 || request > 0.0, "{name}: rear door stayed open (target={target}, request={request})");
+        }
     }
 
     /// The wheel of a body without a rigid body stands on the road the drawn faces put
