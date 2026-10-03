@@ -223,11 +223,17 @@ pub(crate) fn window_renderer(
     options: omsi_render::RenderOptions,
 ) -> Result<Renderer> {
     let mut failures: Vec<String> = Vec::new();
-    // the instance made for the settings' interface first, then every interface in turn
-    let mut candidates: Vec<(Option<wgpu::Backends>, wgpu::Instance)> = vec![(None, instance.clone())];
-    for b in backend_order() {
-        candidates.push((Some(b), backend_instance(b)));
-    }
+    // The instance made for the settings' interface first, then every interface in turn -
+    // each made only when the ones before it could not draw. Made all at once, a Windows
+    // machine drawing on DirectX 12 loaded the Vulkan loader and its layers (Optimus,
+    // overlays) and made an OpenGL context for nothing, and when those were dropped right
+    // after the renderer was made, the game and the launcher went down ("[Vulkan Loader]
+    // vkDestroyFramebuffer: Invalid device", #1058, #1044) or hung (#746).
+    let candidates = std::iter::once((None, instance.clone()))
+        .chain(backend_order().into_iter().map(|b| {
+            log::info!("graphics: trying {b:?}");
+            (Some(b), backend_instance(b))
+        }));
     for (b, inst) in candidates {
         let surface = match inst.create_surface(window.clone()) {
             Ok(s) => s,
