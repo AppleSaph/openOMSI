@@ -420,7 +420,6 @@ pub(crate) fn timetable_test_vehicle() -> omsi_sim::VehicleInstance {
         model_dir: dir.clone(),
         program: Arc::new(program),
         meshes: Vec::new(),
-        keep_winding: false,
         paint_schemes: Vec::new(),
         texchanges: Vec::new(),
         wheel_meshes: Vec::new(),
