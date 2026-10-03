@@ -6583,7 +6583,7 @@ impl Traffic {
                     ctl.request.get(li).copied().unwrap_or(false) as i32 as f32,
                 )
             })
-            .unwrap_or((-1.0, 0.0))
+            .unwrap_or((omsi_sim::traffic::UNLINKED_PHASE as f32, 0.0))
     }
 
     pub fn sync(&mut self, world: &World, renderer: &Renderer, scene: &mut Scene) {
@@ -6653,8 +6653,9 @@ impl Traffic {
                     ctl.state(lamp.index),
                     ctl.request.get(lamp.index).copied().unwrap_or(false),
                 ),
-                // a lamp whose crossing has no program stays dark
-                None => (-1, false),
+                // a lamp that names no crossing, or one whose crossing has no program,
+                // reads the engine's dummy (see `UNLINKED_PHASE`): red, as in OMSI
+                None => (omsi_sim::traffic::UNLINKED_PHASE, false),
             };
             let (r, y, g) = TrafficLightController::lamps(state);
             let value = |lamp: &crate::scene::LightObject, var: &str| -> f32 {

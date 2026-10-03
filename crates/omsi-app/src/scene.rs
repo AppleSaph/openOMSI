@@ -366,6 +366,9 @@ impl LampSlots {
     }
 }
 
+/// `LightObject::parent` of a signal that names no crossing: no crossing has this id.
+pub const NO_CROSSING: i64 = i64::MIN;
+
 /// A placed `[trafficlight]` object: its render instances follow the light state of
 /// light `index` of the crossing `parent`.
 #[derive(Clone)]
@@ -4942,7 +4945,12 @@ impl World {
                         Some(p) => log::info!("traffic light {} (id {}) at ({:.0}, {:.0}): crossing {p}, light {:?}", ot.sco.path.display(), o.id, pos.x, pos.y, o.extra),
                     }
                 }
-                o.lamp_parent.map(|p| (p, index, named.is_none()))
+                // (a signal that names no crossing - Korean maps fix pedestrian heads to a
+                // road spline without a [varparent] - is a lamp all the same: its lenses
+                // follow [visible]/[alphascale] on the dummy phase every unlinked object
+                // reads, see `UNLINKED_PHASE`; drawn as plain scenery, the red and the green
+                // man were both lit all the time, #988)
+                Some((o.lamp_parent.unwrap_or(NO_CROSSING), index, named.is_none()))
             } else {
                 None
             };
@@ -9008,7 +9016,7 @@ impl World {
             let vars = omsi_sim::scenery::SceneryVars {
                 nightlight: use_.lit(now.time, day, brightness) as i32 as f32,
                 in_use: in_use as i32 as f32,
-                traffic_light_phase: light.map(|(c, li)| phase_of(c, li).0).unwrap_or(-1.0),
+                traffic_light_phase: light.map(|(c, li)| phase_of(c, li).0).unwrap_or(omsi_sim::traffic::UNLINKED_PHASE as f32),
                 traffic_light_approach: light.map(|(c, li)| phase_of(c, li).1).unwrap_or(0.0),
                 switch: None,
             };

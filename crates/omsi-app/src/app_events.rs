@@ -1877,7 +1877,7 @@ impl ApplicationHandler for App {
                 ) {
                     let traffic = self.traffic.as_ref();
                     let phase = |c: usize, li: usize| {
-                        traffic.map(|t| t.light_vars(c, li)).unwrap_or((-1.0, 0.0))
+                        traffic.map(|t| t.light_vars(c, li)).unwrap_or((omsi_sim::traffic::UNLINKED_PHASE as f32, 0.0))
                     };
                     let __tb = Instant::now();
                     if let Some(p) = self.player.as_mut() {
