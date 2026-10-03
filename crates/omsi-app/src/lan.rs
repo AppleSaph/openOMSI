@@ -448,6 +448,9 @@ pub struct RemoteVehicle {
     /// Their bus type is not installed here: ours stands in for it.
     pub stand_in: bool,
     pub last: Pose,
+    /// The bus file and paint scheme it was made in (`last` is the state drawn, which may be
+    /// an interpolated older one).
+    made_as: (String, String),
     /// The driver at the wheel (their bus stood empty here), hidden while they walk about.
     driver: Option<crate::driver::DriverFigure>,
     driver_tried: bool,
@@ -2370,6 +2373,7 @@ fn new_remote(
         shown: (String::new(), String::new()),
         stand_in,
         last: pose.clone(),
+        made_as: (pose.bus.clone(), pose.paint.clone()),
         driver: None,
         driver_tried: false,
         samples: std::collections::VecDeque::new(),
@@ -2991,7 +2995,7 @@ pub fn tick(
         if game
             .remotes
             .get(&pose.id)
-            .map(|rv| rv.last.bus != pose.bus || rv.last.paint != pose.paint)
+            .map(|rv| rv.made_as.0 != pose.bus || rv.made_as.1 != pose.paint)
             .unwrap_or(false)
         {
             if let Some(rv) = game.remotes.remove(&pose.id) {
