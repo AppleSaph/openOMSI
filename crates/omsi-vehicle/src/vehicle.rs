@@ -260,11 +260,16 @@ impl Vehicle {
         self.coupling_front.is_some() && !self.has_friendly_name
     }
 
-    /// A rail vehicle (`.ovh` `[type]` 2): the cars of a `.zug`, which Omsi.exe stands end
-    /// to end by their model bodies. A road vehicle, trailer or articulated-bus rear section
-    /// keeps its declared `[coupling_front]` / `[coupling_back]`.
+    /// A rail vehicle: a car of a `.zug` runs on rails, which Omsi.exe stands end to end by
+    /// their model bodies (its cars' declared coupling points need not be at the cars' ends).
+    /// A road vehicle, a trailer or an articulated-bus rear section keeps its declared
+    /// `[coupling_front]` / `[coupling_back]`.
+    ///
+    /// Rails are what the file says they are: a `[boogies]`, a `[contact_shoe]` or a
+    /// `[rail_body_osc]` (`rail_drive::is_rail` reads the same three; a rail car has all of
+    /// a bogie, and Omsi.exe's `[type] 2` marks the same vehicles).
     pub fn is_rail(&self) -> bool {
-        self.kind == VehicleKind::Other(2)
+        self.boogies.is_some() || !self.contact_shoes.is_empty() || self.rail_body_osc.is_some()
     }
 
     pub fn parse(file: &CfgFile) -> Vehicle {

@@ -1027,11 +1027,8 @@ impl Traffic {
                     let path = omsi_cfg::resolve_path(root, &v.file);
                     match VehicleType::load_ai(root, &path) {
                         Ok(t) => {
-                            // `[type]` 2 = rail (only as scheduled trains), 3 = aircraft on flight paths
-                            let rail =
-                                matches!(t.def.kind, omsi_vehicle::vehicle::VehicleKind::Other(2))
-                                    || t.def.rail_body_osc.is_some()
-                                    || !t.def.contact_shoes.is_empty();
+                            // rail (only as scheduled trains), 3 = aircraft on flight paths
+                            let rail = t.def.is_rail();
                             let air =
                                 matches!(t.def.kind, omsi_vehicle::vehicle::VehicleKind::Other(3));
                             if rail {
