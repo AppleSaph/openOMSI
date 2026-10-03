@@ -2342,6 +2342,7 @@ impl ApplicationHandler for App {
                     if frame.is_none() {
                         self.hidden_frames += 1;
                     }
+                    let shown_nothing = frame.is_none() && stand_in.is_none();
                     let view = frame
                         .as_ref()
                         .map(|f| f.texture.create_view(&Default::default()))
@@ -2563,6 +2564,10 @@ impl ApplicationHandler for App {
                     } else {
                         max_fps
                     };
+                    // a frame not shown (the window minimised or out of sight): 30 frames a
+                    // second keep the simulation and the sound going; more is only heat
+                    // (OMSI_RENDER_OCCLUDED, which draws them anyway, keeps its pace)
+                    let max_fps = if shown_nothing { if max_fps == 0 { 30 } else { max_fps.min(30) } } else { max_fps };
                     #[cfg(windows)]
                     let vr_active = self.vr.is_some();
                     #[cfg(not(windows))]
