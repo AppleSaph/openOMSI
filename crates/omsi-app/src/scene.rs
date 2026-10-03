@@ -9727,7 +9727,7 @@ fn material_extra(
     MaterialExtra {
         env_mask,
         no_z_write: ov.iter().any(|o| o.no_z_write),
-        depth_guess: false,
+        writes_depth: false,
         // `[matl_noZcheck]` leaves Omsi.exe's depth test on: its draw of the slot (0x7fd6c4)
         // never reads the flag, which only adds a colourless stencil pass marking the panes
         // for the raindrops (0x7c32c4 -> 0x7fc58c, ZENABLE 1, blend ZERO/ONE). Taken as "no
@@ -11476,7 +11476,7 @@ impl World {
                 .iter()
                 .filter_map(|(_, _, slot)| inst.materials.get(*slot as usize))
                 .filter_map(|&m| scene.materials.get(m))
-                .map(|m| (m.alpha, !m.no_z_write && !m.no_z_check))
+                .map(|m| (m.alpha, (!m.no_z_write || m.writes_depth) && !m.no_z_check))
                 .collect()
         };
         let mut blended_first = false;
@@ -11838,9 +11838,13 @@ impl World {
                     // though their alpha mode is Blend. They are transparent colour layers,
                     // not solid shadow casters; letting them into the shadow map paints the
                     // bus shadow with the pane/film texture (the striped triangular artifact).
+                    // (Its depth is still written as Omsi.exe writes it, whenever the model
+                    // blends the slot by [matl_alpha] 2 without [matl_noZwrite] - a dirt
+                    // film's as well: see `MaterialExtra::writes_depth`. Left out of the
+                    // depth buffer, the stacked panes of a door blended over each other
+                    // whichever lay in front, #211.)
                     if (transparent_layer_hint || see_through) && alpha == AlphaMode::Blend {
-                        // (written by Omsi.exe unless the model says [matl_noZwrite])
-                        extra.depth_guess = !extra.no_z_write && !dirt_overlay;
+                        extra.writes_depth = declared_alpha == AlphaMode::Blend && !ov.iter().any(|o| o.no_z_write) && !def.is_shadow;
                         extra.no_z_write = true;
                     }
                     // Name the pane explicitly for the shader. A plain blended window has
