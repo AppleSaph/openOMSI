@@ -1928,9 +1928,6 @@ impl ApplicationHandler for App {
                     // the trip, the launcher the keys): only what the driver has to act on,
                     // in the interface font, top left.
                     let mut lines: Vec<String> = Vec::new();
-                    if self.paused {
-                        lines.push(ui::PAUSE_NOTICE.into());
-                    }
                     // why the bus is not moving, whenever the throttle is pressed and nothing
                     // happens: the things a driver checks first
                     if let Some(p) = self.player.as_ref() {

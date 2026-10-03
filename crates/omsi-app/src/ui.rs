@@ -11,7 +11,6 @@ use omsi_render::{Renderer, Scene, TextureId};
 
 /// Roboto (Apache 2.0), the interface font.
 const ROBOTO: &[u8] = include_bytes!("../../../assets/fonts/Roboto-VariableFont_wdth,wght.ttf");
-pub(crate) const PAUSE_NOTICE: &str = "Paused  ·  P to go on";
 
 /// A rendered text: its texture and size in pixels.
 #[derive(Clone, Copy)]
@@ -688,17 +687,6 @@ impl Ui {
             let plate = self.text.plate(r, scene, 3);
             scene.overlays.push((plate, [x, top, x + w, y]));
             scene.overlays.extend(items);
-        }
-        // --- paused
-        if f.paused && f.menu.is_none() {
-            let l = self.text.label(r, scene, "Paused  ·  P to go on", (18.0 * s) as u32, [255, 255, 255, 0]);
-            let pad = 14.0 * s;
-            let (w, h) = (l.w as f32 + pad * 2.0, l.h as f32 + pad);
-            let x = (f.width - w) * 0.5;
-            let y = f.height * 0.2;
-            let plate = self.text.plate(r, scene, 3);
-            scene.overlays.push((plate, [x, y, x + w, y + h]));
-            scene.overlays.push((l.tex, [x + pad, y + pad * 0.5, x + pad + l.w as f32, y + pad * 0.5 + l.h as f32]));
         }
         // --- the game menu and its lists, in the middle over a dimmed picture
         self.anim_dt = dt.clamp(0.0, 0.1);
@@ -2057,19 +2045,6 @@ mod tests {
             }
         }
         assert_eq!(vr_settings_sidebar_step(1000.0, 8, 1.0), 42.0);
-    }
-
-    #[test]
-    fn pause_notice_is_translated_in_every_supported_language() {
-        for &(_, _, language, _) in omsi_launcher_lib::LANGUAGES {
-            if language == "en" {
-                continue;
-            }
-            let translated = crate::_rust_i18n_try_translate(language, PAUSE_NOTICE)
-                .unwrap_or_else(|| panic!("missing pause notice for {language}"));
-            assert!(!translated.trim().is_empty());
-            assert_ne!(translated, PAUSE_NOTICE, "{language}");
-        }
     }
 
     #[test]
