@@ -19,6 +19,29 @@ fn script_speed(speed_kmh: f32) -> f32 {
     if speed_kmh.abs() < 0.01 { 0.0 } else { speed_kmh }
 }
 
+// A vehicle section may contain many tiny trim meshes and only a few large body/interior
+// meshes. When the mesh vote is close, use capped triangle counts as a tie-breaker instead
+// of letting every tiny mesh carry the same weight.
+const WINDING_EVIDENCE_CAP: usize = 4096;
+
+fn keep_authored_winding(
+    forward_meshes: usize,
+    backward_meshes: usize,
+    forward_weight: usize,
+    backward_weight: usize,
+) -> bool {
+    if forward_meshes > backward_meshes {
+        return true;
+    }
+    if forward_meshes == 0 || backward_meshes == 0 {
+        return false;
+    }
+    let counts_close = forward_meshes.saturating_mul(5) >= backward_meshes.saturating_mul(4);
+    let forward_clearly_heavier =
+        forward_weight.saturating_mul(10) >= backward_weight.saturating_mul(11);
+    counts_close && forward_clearly_heavier
+}
+
 /// Built-in variables every road vehicle has (`program/varlist_roadvehicle.txt` + generated).
 pub fn builtin_vars(root: &Path) -> Vec<String> {
     let mut v: Vec<String> =
@@ -313,7 +336,9 @@ impl VehicleType {
         }
         let mut meshes = Vec::new();
         let mut missing_packs: Vec<(String, usize)> = Vec::new();
-        let (mut turned, mut positive_forward, mut positive_backward) = (Vec::new(), 0usize, 0usize);
+        let (mut turned, mut positive_forward, mut positive_backward) =
+            (Vec::new(), 0usize, 0usize);
+        let (mut forward_weight, mut backward_weight) = (0usize, 0usize);
         if !model.lods.is_empty() {
             let start = model.lods[0].first_mesh;
             let end = model
@@ -353,8 +378,14 @@ impl VehicleType {
                         // (a mesh none of whose bones is bound moves as a rigid one)
                         let skin = if skin.iter().any(|b| b.def_index.is_some()) { skin } else { Vec::new() };
                         match omsi_geometry::positive_det_faces_forward(&m) {
-                            Some(true) => positive_forward += 1,
-                            Some(false) => positive_backward += 1,
+                            Some(true) => {
+                                positive_forward += 1;
+                                forward_weight += m.triangles.len().min(WINDING_EVIDENCE_CAP);
+                            }
+                            Some(false) => {
+                                positive_backward += 1;
+                                backward_weight += m.triangles.len().min(WINDING_EVIDENCE_CAP);
+                            }
                             None => {}
                         }
                         if omsi_geometry::turns_round(&m) {
@@ -383,12 +414,21 @@ impl VehicleType {
                 }
             }
         }
-        let keep_winding = positive_forward > positive_backward;
+        let keep_winding = keep_authored_winding(
+            positive_forward,
+            positive_backward,
+            forward_weight,
+            backward_weight,
+        );
         if keep_winding && !turned.is_empty() {
             for &i in &turned {
                 omsi_geometry::reverse_winding(&mut meshes[i].data);
             }
-            log::info!("{}: {} meshes keep their winding ({positive_forward} of the meshes with a positive determinant face along their normals, {positive_backward} against them)", bus_file.display(), turned.len());
+            log::info!(
+                "{}: {} meshes keep their winding ({positive_forward} forward / {positive_backward} backward meshes; capped triangle evidence {forward_weight} / {backward_weight})",
+                bus_file.display(),
+                turned.len()
+            );
         }
         for (pack, n) in &missing_packs {
             log::warn!(
@@ -4814,5 +4854,26 @@ mod grip_tests {
                 );
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod winding_exporter_tests {
+    use super::keep_authored_winding;
+
+    #[test]
+    fn close_mesh_count_can_use_triangle_evidence() {
+        assert!(keep_authored_winding(64, 74, 91_597, 79_544));
+    }
+
+    #[test]
+    fn clear_backward_majority_is_not_overridden() {
+        assert!(!keep_authored_winding(40, 80, 120_000, 60_000));
+    }
+
+    #[test]
+    fn forward_majority_keeps_existing_behaviour() {
+        assert!(keep_authored_winding(80, 40, 1, 1));
     }
 }

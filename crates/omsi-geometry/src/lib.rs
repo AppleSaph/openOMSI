@@ -971,7 +971,17 @@ pub fn turns_round(m: &omsi_o3d::Mesh) -> bool {
     // face up with their normals down, faced the ground and left holes in the streets.)
     let linear = glam::Mat3::from_mat4(m.transform);
     let identity = linear.abs_diff_eq(glam::Mat3::IDENTITY, 1e-4);
-    let mirrored = m.has_transform && !identity && m.transform.determinant() > 0.0;
+    // Some exporters keep authored winding with a positive non-uniform scale or a small
+    // rotation. Those transforms are not mirrors, even when the stored normals face the
+    // other way. Ignore scale when checking whether the basis still follows the object axes.
+    let axis_aligned = {
+        let x = linear.x_axis.normalize_or_zero();
+        let y = linear.y_axis.normalize_or_zero();
+        let z = linear.z_axis.normalize_or_zero();
+        x.dot(Vec3::X) > 0.9 && y.dot(Vec3::Y) > 0.9 && z.dot(Vec3::Z) > 0.9
+    };
+    let mirrored =
+        m.has_transform && !identity && !axis_aligned && m.transform.determinant() > 0.0;
     let explained = against_turned * 10 <= counted;
     mirrored && !explained && counted >= 2 && against * 10 >= counted * 9
 }
@@ -2804,5 +2814,40 @@ mod ray_hit_tests {
         assert!((h.t - 3.0).abs() < 1e-4);
         assert!((h.uv - Vec2::new(0.75, 0.375)).length() < 1e-4, "{:?}", h.uv);
         assert_eq!(ray_mesh_hit(Vec3::new(11.0, -3.0, 0.5), Vec3::Y, &m, &xf).map(|h| h.t), ray_mesh(Vec3::new(11.0, -3.0, 0.5), Vec3::Y, &m, &xf));
+    }
+}
+
+
+#[cfg(test)]
+mod winding_transform_tests {
+    use super::*;
+
+    #[test]
+    fn positive_near_identity_scale_keeps_authored_winding() {
+        let v = |x: f32, y: f32| omsi_o3d::Vertex {
+            position: Vec3::new(x, y, 1.0),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            uv: Vec2::ZERO,
+        };
+        let mesh = omsi_o3d::Mesh {
+            vertices: vec![v(0.0, 0.0), v(0.0, 1.0), v(1.0, 0.0), v(1.0, 1.0)],
+            triangles: vec![
+                omsi_o3d::Triangle {
+                    indices: [0, 1, 2],
+                    material: 0,
+                },
+                omsi_o3d::Triangle {
+                    indices: [2, 1, 3],
+                    material: 0,
+                },
+            ],
+            materials: vec![omsi_o3d::Material::default()],
+            transform: glam::Mat4::from_scale(Vec3::new(0.918_948, 0.951_776, 1.0)),
+            has_transform: true,
+            ..Default::default()
+        };
+        assert_eq!(positive_det_faces_forward(&mesh), Some(false));
+        assert!(!turns_round(&mesh));
+        assert_eq!(mesh_from_o3d(&mesh).indices[..3], [0, 1, 2]);
     }
 }
