@@ -4,7 +4,7 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
-## 0.1.1231 - 2026-10-03
+## 0.1.1234 - 2026-10-03
 
 ### Launcher
 - The Drive page is laid out again, in three steps - the bus, the day and the weather, the map
