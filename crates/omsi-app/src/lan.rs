@@ -1600,6 +1600,25 @@ fn line_and_destination(p: &Player, duty: Option<(&str, &str)>) -> (String, Stri
     (line, dest.trim().to_string())
 }
 
+/// What a vehicle's indicators show: 0 off, 1 left, 2 right, 3 hazard - the indicator
+/// switch where the script has one, else the lamps (as they are lit just now).
+pub(crate) fn indicator(v: &omsi_sim::VehicleInstance) -> u8 {
+    let on = |n: &str| v.var(n).unwrap_or(0.0) > 0.5;
+    if on("lights_sw_warnblinker") {
+        3
+    } else {
+        match v.var("lights_sw_blinker") {
+            Some(s) if (0.5..2.5).contains(&s) => s.round() as u8,
+            _ => match (on("lights_blinker_l"), on("lights_blinker_r")) {
+                (true, true) => 3,
+                (true, false) => 1,
+                (false, true) => 2,
+                _ => 0,
+            },
+        }
+    }
+}
+
 /// What we send about our own bus.
 pub fn my_pose(
     game: &mut LanGame,
@@ -1657,21 +1676,7 @@ pub fn my_pose(
     } else {
         0
     };
-    // the indicator switch where the script has one (0 off, 1 left, 2 right, 3 hazard),
-    // else the lamps, remembered across their dark phase
-    let blinker = if on("lights_sw_warnblinker") {
-        3
-    } else {
-        match v.var("lights_sw_blinker") {
-            Some(s) if (0.5..2.5).contains(&s) => s.round() as u8,
-            _ => match (on("lights_blinker_l"), on("lights_blinker_r")) {
-                (true, true) => 3,
-                (true, false) => 1,
-                (false, true) => 2,
-                _ => 0,
-            },
-        }
-    };
+    let blinker = indicator(v);
     let fp = footprint_of(v, BUS_BOX);
     let bb = v.ty.def.bounding_box.unwrap_or(BUS_BOX);
     let h = v.heading.to_radians();
