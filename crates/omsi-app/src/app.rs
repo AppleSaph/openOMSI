@@ -154,7 +154,6 @@ pub(crate) struct App {
     pub(crate) discord_t: f32,
     // Steamworks API layer and it's last updated time
     pub(crate) steam: Option<crate::steam::Steam>,
-    pub(crate) steam_t: f32,
     /// Head tracking (Settings → head tracking), started with the first frame that wants it.
     pub(crate) headtrack: Option<crate::headtrack::HeadTracker>,
     /// When head tracking last failed to start (tried again a few seconds later).
@@ -349,7 +348,7 @@ impl App {
         #[cfg(not(target_os = "android"))]
         if self.steam.is_none() {
             self.steam = crate::steam::Steam::start();
-            log::info!("Steam set, current existance: {}", self.steam.is_some());
+            log::info!("Steam API initialized");
         }
 
         // --size sets the window's size in points as well (1600x900 unless given)

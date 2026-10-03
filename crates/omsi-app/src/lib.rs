@@ -500,7 +500,6 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         discord: None,
         discord_t: 0.0,
         steam: None,
-        steam_t: 0.0,
         headtrack: None,
         headtrack_failed: None,
         controllers: None,

@@ -1386,35 +1386,11 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
-                log::info!("Steampi exists? {}", self.steam.is_some());
 
                 // handle steamapi
                 #[cfg(not(target_os = "android"))]
-                if let Some(steam) = self.steam.as_mut() {
-                    log::info!("Entered steam statement");
+                if let Some(steam) = self.steam.as_ref() {
                     steam.client.run_callbacks();
-
-                    self.steam_t -= dt;
-                    if self.steam_t <= 0.0 {
-                        log::info!("Entered steam periodic statement");
-                        self.steam_t = 5.0;
-
-                        let name = self.world.as_ref()
-                            .map(|w| {
-                                if w.global.friendly_name.trim().is_empty() {
-                                    w.global.name.clone()
-                                } else {
-                                    w.global.friendly_name.clone()
-                                }
-                            })
-                            .unwrap_or_default();
-
-                        log::info!("Map name: {}", name);
-
-                        steam.set_presence(crate::steam::Presence {
-                            map_name: Some(name)
-                        });
-                    }
                 }
                 // the plugins' frame, with the bus's scripts done
                 let plugins = self.plugins.get_or_insert_with(crate::plugins::load);
