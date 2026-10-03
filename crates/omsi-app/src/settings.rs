@@ -56,6 +56,9 @@ pub struct Settings {
     pub vr_mirror_rate: f32,
     /// Copy the left eye to the desktop while VR is active.
     pub vr_desktop_mirror: bool,
+    pub triple: omsi_render::TripleScreen,
+    pub triple_span: bool,
+    pub triple_hud_center: bool,
     pub fullscreen: bool,
     pub vsync: bool,
     /// Master volume 0..1.
@@ -303,9 +306,128 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// HUD coordinates occupy the centre panel by default; world picking always
+    /// keeps the full window's physical coordinates.
+    pub fn hud_viewport(&self, size: (u32, u32)) -> [f32; 4] {
+        if self.triple.enabled && self.triple_hud_center && !self.vr_requested() && size.0 >= 3 {
+            let left = size.0 / 3;
+            let right = (size.0 as u64 * 2 / 3) as u32;
+            [left as f32, 0.0, (right - left) as f32, size.1 as f32]
+        } else {
+            [0.0, 0.0, size.0 as f32, size.1 as f32]
+        }
+    }
     /// The defaults of a computer.
     fn desktop() -> Self {
-        Self { msaa: 4, anisotropy: 8, ssao: true, shadows: true, shadow_size: 2048, shadow_blobs: true, navigator: true, ui_opacity: 0.85, notes: true, ui_scale: 1.0, ui_scale_window: true, navigator_corner: "bottom-left".into(), boarding: "auto".into(), detail_textures: true, exact_fare: true, enhanced: false, graphics: "vanilla_plus".into(), vr: false, vr_scale: 0.65, vr_head_smoothing_ms: 0.0, vr_mirror_rate: 16.0, vr_desktop_mirror: true, fullscreen: false, vsync: true, volume: 0.6, drive_keys: "simple".into(), post_aa: "fxaa".into(), render_scale: 0.0, language: "ENG".into(), pax_voices: "all".into(), nav_arrows: false, nav_ai: true, get_up: false, texture_compression: true, texture_memory: 0, auto_clutch: true, momentary_gears: false, auto_shift: false, min_obj_size: 0.013, max_obj_dist: -1.0, max_fps: 0, chat: true, tooltips: true, name_tags: true, show_fps: false, clouds: true, pax_density: 1.0, vol_ai: 1.0, vol_scenery: 1.0, mirror_size: 256, mirror_hud: 0, mirror_refresh: "full".into(), doppler: true, driver: true, maintenance: 0, ai_unsched_factor: 1.0, ai_max_scheduled: 0, ai_max_parked: 0, ai_max_humans: 200, collision_vehicles: true, collision_objects: true, collision_pedestrians: true, head_movement: true, driverview_smooth: true, hands_in_cab: false, alt_view: true, time_speed: 1.0, time_sync: false, metar_sync: false, metar_station: String::new(), machine_translation: false, shadow_casters: "all".into(), ctrl_deadzone: 0.0, ctrl_off: String::new(), steering_linear: false, old_steering: false, red_steer_spd: false, reflections: true, led_glow: 6, led_mips: 1.3, mouse_sens: 1.0, graphics_api: "auto".into(), ff_invert: false, ff_enabled: true, brake_hold: true, mouse_steering: false, mouse_right_off: false, look_sens: 1.0, blinker_cancel: true, wheel_range: 900.0, wheel_lock: 0.0, fov: 0.0, camera_collision: true, steer_look: false, steer_look_angle: 30.0, steer_look_response: 0.25, pedal_throttle: 1.0, pedal_brake: 1.0, seat: [0.0; 3], head_tracking: false, head_tracking_port: 4242, head_tracking_invert: String::new(), discord_status: true, discord_app_id: String::new() }
+        Self {
+            msaa: 4,
+            anisotropy: 8,
+            ssao: true,
+            shadows: true,
+            shadow_size: 2048,
+            shadow_blobs: true,
+            navigator: true,
+            ui_opacity: 0.85,
+            notes: true,
+            ui_scale: 1.0,
+            ui_scale_window: true,
+            navigator_corner: "bottom-left".into(),
+            boarding: "auto".into(),
+            detail_textures: true,
+            exact_fare: true,
+            enhanced: false,
+            graphics: "vanilla_plus".into(),
+            triple: Default::default(),
+            triple_span: true,
+            triple_hud_center: true,
+            vr: false,
+            vr_scale: 0.65,
+            vr_head_smoothing_ms: 0.0,
+            vr_mirror_rate: 16.0,
+            vr_desktop_mirror: true,
+            fullscreen: false,
+            vsync: true,
+            volume: 0.6,
+            drive_keys: "simple".into(),
+            post_aa: "fxaa".into(),
+            render_scale: 0.0,
+            language: "ENG".into(),
+            pax_voices: "all".into(),
+            nav_arrows: false,
+            nav_ai: true,
+            get_up: false,
+            texture_compression: true,
+            texture_memory: 0,
+            auto_clutch: true,
+            momentary_gears: false,
+            auto_shift: false,
+            min_obj_size: 0.013,
+            max_obj_dist: -1.0,
+            max_fps: 0,
+            chat: true,
+            tooltips: true,
+            name_tags: true,
+            show_fps: false,
+            clouds: true,
+            pax_density: 1.0,
+            vol_ai: 1.0,
+            vol_scenery: 1.0,
+            mirror_size: 256,
+            mirror_hud: 0,
+            mirror_refresh: "full".into(),
+            doppler: true,
+            driver: true,
+            maintenance: 0,
+            ai_unsched_factor: 1.0,
+            ai_max_scheduled: 0,
+            ai_max_parked: 0,
+            ai_max_humans: 200,
+            collision_vehicles: true,
+            collision_objects: true,
+            collision_pedestrians: true,
+            head_movement: true,
+            driverview_smooth: true,
+            hands_in_cab: false,
+            alt_view: true,
+            time_speed: 1.0,
+            time_sync: false,
+            metar_sync: false,
+            metar_station: String::new(),
+            machine_translation: false,
+            shadow_casters: "all".into(),
+            ctrl_deadzone: 0.0,
+            ctrl_off: String::new(),
+            steering_linear: false,
+            old_steering: false,
+            red_steer_spd: false,
+            reflections: true,
+            led_glow: 6,
+            led_mips: 1.3,
+            mouse_sens: 1.0,
+            graphics_api: "auto".into(),
+            ff_invert: false,
+            ff_enabled: true,
+            brake_hold: true,
+            mouse_steering: false,
+            mouse_right_off: false,
+            look_sens: 1.0,
+            blinker_cancel: true,
+            wheel_range: 900.0,
+            wheel_lock: 0.0,
+            fov: 0.0,
+            camera_collision: true,
+            steer_look: false,
+            steer_look_angle: 30.0,
+            steer_look_response: 0.25,
+            pedal_throttle: 1.0,
+            pedal_brake: 1.0,
+            seat: [0.0; 3],
+            head_tracking: false,
+            head_tracking_port: 4242,
+            head_tracking_invert: String::new(),
+            discord_status: true,
+            discord_app_id: String::new(),
+        }
     }
 }
 
@@ -379,6 +501,65 @@ impl Settings {
                 "vr_head_smoothing_ms" => s.vr_head_smoothing_ms = v.parse::<f32>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 30.0)).unwrap_or(s.vr_head_smoothing_ms),
                 "vr_mirror_rate" => s.vr_mirror_rate = v.parse::<f32>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(-1.0, 360.0)).unwrap_or(s.vr_mirror_rate),
                 "vr_desktop_mirror" => s.vr_desktop_mirror = b(v),
+                "triple_screen" => s.triple.enabled = b(v),
+                "triple_span" => s.triple_span = b(v),
+                "triple_hud_center" => s.triple_hud_center = b(v),
+                "triple_fov_deg" => {
+                    s.triple.fov_deg = v
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|x| x.is_finite())
+                        .map(|x| if x < 20.0 { 0.0 } else { x.min(120.0) })
+                        .unwrap_or(s.triple.fov_deg)
+                }
+                "triple_width_mm" => {
+                    s.triple.width_mm = v
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|x| x.is_finite())
+                        .map(|x| x.clamp(200.0, 2000.0))
+                        .unwrap_or(s.triple.width_mm)
+                }
+                "triple_distance_mm" => {
+                    s.triple.distance_mm = v
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|x| x.is_finite())
+                        .map(|x| x.clamp(200.0, 3000.0))
+                        .unwrap_or(s.triple.distance_mm)
+                }
+                "triple_bezel_mm" => {
+                    s.triple.bezel_mm = v
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|x| x.is_finite())
+                        .map(|x| x.clamp(0.0, 100.0))
+                        .unwrap_or(s.triple.bezel_mm)
+                }
+                "triple_left_angle_deg" => {
+                    s.triple.left_angle_deg = v
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|x| x.is_finite())
+                        .map(|x| x.clamp(0.0, 90.0))
+                        .unwrap_or(s.triple.left_angle_deg)
+                }
+                "triple_right_angle_deg" => {
+                    s.triple.right_angle_deg = v
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|x| x.is_finite())
+                        .map(|x| x.clamp(0.0, 90.0))
+                        .unwrap_or(s.triple.right_angle_deg)
+                }
+                "triple_eye_height_mm" => {
+                    s.triple.eye_height_mm = v
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|x| x.is_finite())
+                        .map(|x| x.clamp(-500.0, 500.0))
+                        .unwrap_or(s.triple.eye_height_mm)
+                }
                 "fullscreen" => s.fullscreen = b(v),
                 "vsync" => s.vsync = b(v),
                 "volume" => s.volume = v.parse().unwrap_or(s.volume),
@@ -525,6 +706,11 @@ impl Settings {
             "vr_head_smoothing_ms={}\nvr_mirror_rate={}\nvr_desktop_mirror={}\nled_glow={}\nled_mips={}\nui_scale={}\nui_scale_window={}\nnotes={}\n",
             self.vr_head_smoothing_ms, self.vr_mirror_rate, self.vr_desktop_mirror as u8, self.led_glow, self.led_mips, self.ui_scale, self.ui_scale_window as u8, self.notes as u8,
         ));
+        text.push_str(&format!(
+            "triple_hud_center={}\ntriple_fov_deg={}\nfov={}\n",
+            self.triple_hud_center as u8, self.triple.fov_deg, self.fov
+        ));
+        text.push_str(&format!("triple_screen={}\ntriple_span={}\ntriple_width_mm={}\ntriple_distance_mm={}\ntriple_bezel_mm={}\ntriple_left_angle_deg={}\ntriple_right_angle_deg={}\ntriple_eye_height_mm={}\n", self.triple.enabled as u8, self.triple_span as u8, self.triple.width_mm, self.triple.distance_mm, self.triple.bezel_mm, self.triple.left_angle_deg, self.triple.right_angle_deg, self.triple.eye_height_mm));
         text.push_str(&format!("steer_look={}\nsteer_look_angle={}\nsteer_look_response={}\nlook_sens={}\nblinker_cancel={}\n", self.steer_look as u8, self.steer_look_angle, self.steer_look_response, self.look_sens, self.blinker_cancel as u8));
         text.push_str(&format!("discord_status={}\ndiscord_app_id={}\n", self.discord_status as u8, self.discord_app_id));
         text.push_str(&format!("auto_shift={}\n", self.auto_shift as u8));
@@ -594,6 +780,43 @@ pub fn view_distance() -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn triple_hud_defaults_to_the_centre_panel_and_can_span() {
+        let mut s = super::Settings::from_text("triple_screen=1\n");
+        assert_eq!(s.hud_viewport((5761, 1080)), [1920.0, 0.0, 1920.0, 1080.0]);
+        s.triple_hud_center = false;
+        assert_eq!(s.hud_viewport((5761, 1080)), [0.0, 0.0, 5761.0, 1080.0]);
+        let s = super::Settings::from_text("triple_screen=0\n");
+        assert_eq!(s.hud_viewport((1920, 1080)), [0.0, 0.0, 1920.0, 1080.0]);
+    }
+
+    #[test]
+    fn triple_fov_and_hud_preferences_round_trip() {
+        let s = super::Settings::from_text(
+            "triple_screen=1\ntriple_hud_center=0\ntriple_fov_deg=75\nfov=50\n",
+        );
+        assert_eq!(super::Settings::from_text(&s.to_text()), s);
+        assert_eq!(s.triple.fov_deg, 75.0);
+        assert_eq!(s.fov, 50.0);
+        assert_eq!(
+            super::Settings::from_text("triple_fov_deg=NaN\n")
+                .triple
+                .fov_deg,
+            0.0
+        );
+    }
+    #[test]
+    fn triple_settings_round_trip_and_reject_nonfinite_geometry() {
+        let s = super::Settings::from_text("triple_screen=1\ntriple_span=0\ntriple_width_mm=620\ntriple_distance_mm=700\ntriple_bezel_mm=18\ntriple_left_angle_deg=50\ntriple_right_angle_deg=40\ntriple_eye_height_mm=60\n");
+        assert_eq!(super::Settings::from_text(&s.to_text()), s);
+        assert!(s.triple.enabled);
+        assert!(!s.triple_span);
+        let invalid = super::Settings::from_text("triple_width_mm=NaN\ntriple_distance_mm=inf\ntriple_left_angle_deg=-30\ntriple_bezel_mm=-20\n");
+        assert_eq!(invalid.triple.width_mm, 600.0);
+        assert_eq!(invalid.triple.distance_mm, 650.0);
+        assert_eq!(invalid.triple.left_angle_deg, 0.0);
+        assert_eq!(invalid.triple.bezel_mm, 0.0);
+    }
     use super::*;
 
     #[test]

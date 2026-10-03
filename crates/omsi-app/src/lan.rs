@@ -1463,8 +1463,29 @@ fn relative_position(me: &omsi_sim::VehicleInstance, pose: &Pose) -> String {
 /// The other players' name tags, as ETS2 has them: the name over the bus's roof and a
 /// small line under it (line and destination, how far away), fading out beyond 300 m.
 /// Screen positions in physical pixels of a `width` x `height` picture.
-pub fn name_tags(game: &LanGame, cam: &omsi_render::Camera, width: f32, height: f32) -> Vec<((f32, f32), String, String, f32)> {
-    let vp = cam.view_proj(width / height.max(1.0), cam.position);
+pub fn name_tags(
+    game: &LanGame,
+    cam: &omsi_render::Camera,
+    width: f32,
+    height: f32,
+    rig: Option<&omsi_render::TripleScreen>,
+) -> Vec<((f32, f32), String, String, f32)> {
+    let views: Vec<_> = if let Some(rig) = rig {
+        rig.views(cam, width as u32, height as u32)
+            .iter()
+            .map(|v| {
+                let vp = v.projection
+                    * glam::Mat4::look_to_rh(glam::Vec3::ZERO, v.camera.forward(), v.camera.up());
+                (vp, v.viewport[0] as f32, v.viewport[2] as f32)
+            })
+            .collect()
+    } else {
+        vec![(
+            cam.view_proj(width / height.max(1.0), cam.position),
+            0.0,
+            width,
+        )]
+    };
     let mut tags = Vec::new();
     for r in game.remotes.values() {
         let v = &r.vehicle;
@@ -1479,15 +1500,23 @@ pub fn name_tags(game: &LanGame, cam: &omsi_render::Camera, width: f32, height: 
         if d > 450.0 {
             continue;
         }
-        let c = vp * (p - cam.position).as_vec3().extend(1.0);
-        if c.w <= 0.1 {
+        let Some((screen_x, y)) = views.iter().find_map(|(vp, offset, panel_width)| {
+            let c = *vp * (p - cam.position).as_vec3().extend(1.0);
+            if c.w <= 0.1 {
+                return None;
+            }
+            let (x, y) = (c.x / c.w, c.y / c.w);
+            let limit = if rig.is_some() { 1.0 } else { 1.2 };
+            (x.abs() <= limit && y.abs() <= 1.2)
+                .then_some((offset + (x + 1.0) * 0.5 * panel_width, y))
+        }) else {
             continue;
-        }
-        let (x, y) = (c.x / c.w, c.y / c.w);
-        if x.abs() > 1.2 || y.abs() > 1.2 {
-            continue;
-        }
-        let name = if r.name.trim().is_empty() { format!("player {}", r.last.id) } else { r.name.trim().to_string() };
+        };
+        let name = if r.name.trim().is_empty() {
+            format!("player {}", r.last.id)
+        } else {
+            r.name.trim().to_string()
+        };
         let pose = &r.last;
         let mut sub = match (pose.line.trim().is_empty(), pose.destination.trim().is_empty()) {
             (false, false) => format!("{} {}", pose.line.trim(), pose.destination.trim()),
@@ -1500,7 +1529,7 @@ pub fn name_tags(game: &LanGame, cam: &omsi_render::Camera, width: f32, height: 
             sub = if sub.is_empty() { dist } else { format!("{sub} · {dist}") };
         }
         let alpha = (1.0 - ((d as f32 - 300.0) / 150.0)).clamp(0.0, 1.0);
-        tags.push((((x + 1.0) * 0.5 * width, (1.0 - y) * 0.5 * height), name, sub, alpha));
+        tags.push(((screen_x, (1.0 - y) * 0.5 * height), name, sub, alpha));
     }
     tags
 }

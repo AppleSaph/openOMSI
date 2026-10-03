@@ -682,9 +682,16 @@ fn camera_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, co
         }
         *dirty = 0.3;
     }
-    let mut fov = get(s, "fov").as_f64().unwrap_or(0.0) as f32;
+    let fov_key = if get(s, "triple_screen").as_bool().unwrap_or(false)
+        && !get(s, "vr").as_bool().unwrap_or(false)
+    {
+        "triple_fov_deg"
+    } else {
+        "fov"
+    };
+    let mut fov = get(s, fov_key).as_f64().unwrap_or(0.0) as f32;
     if ui.slider("s-fov", c.row(), &mut fov, 0.0, 120.0, 1.0, "Field of view", &|v| if v < 20.0 { "Default".to_string() } else { format!("{v:.0}°") }) {
-        s["fov"] = json!(if fov < 20.0 { 0.0 } else { fov.round() });
+        s[fov_key] = json!(if fov < 20.0 { 0.0 } else { fov.round() });
         *dirty = 0.3;
     }
     let mut look = get(s, "look_sens").as_f64().unwrap_or(1.0) as f32;
@@ -713,6 +720,122 @@ fn camera_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, co
     toggle_setting(ui, s, dirty, c.row(), "Driver at the wheel (outside views)", "driver");
     c.section(ui, "Head tracking");
     toggle_setting(ui, s, dirty, c.row(), "Head tracking (TrackIR and others through opentrack, UDP 4242)", "head_tracking");
+    c.section(ui, "Triple screen");
+    toggle_setting(
+        ui,
+        s,
+        dirty,
+        c.row(),
+        "Three screen projections",
+        "triple_screen",
+    );
+    toggle_setting(
+        ui,
+        s,
+        dirty,
+        c.row(),
+        "Span three monitors at startup",
+        "triple_span",
+    );
+    toggle_setting(
+        ui,
+        s,
+        dirty,
+        c.row(),
+        "HUD on centre screen",
+        "triple_hud_center",
+    );
+    if get(s, "triple_screen").as_bool().unwrap_or(false) {
+        ui.label(
+            c.row(),
+            "Three equal screens in a horizontal row. OpenXR takes priority.",
+        );
+        let mut value = get(s, "triple_width_mm").as_f64().unwrap_or(600.0) as f32;
+        if ui.slider(
+            "s-triple-width_mm",
+            c.row(),
+            &mut value,
+            200.0,
+            2000.0,
+            10.0,
+            "Visible width of one panel",
+            &|v| format!("{v:.0} mm"),
+        ) {
+            s["triple_width_mm"] = json!(value);
+            *dirty = 0.3;
+        }
+        let mut value = get(s, "triple_distance_mm").as_f64().unwrap_or(650.0) as f32;
+        if ui.slider(
+            "s-triple-distance_mm",
+            c.row(),
+            &mut value,
+            200.0,
+            3000.0,
+            10.0,
+            "Eye to centre screen",
+            &|v| format!("{v:.0} mm"),
+        ) {
+            s["triple_distance_mm"] = json!(value);
+            s["triple_fov_deg"] = json!(0.0);
+            *dirty = 0.3;
+        }
+        let mut value = get(s, "triple_bezel_mm").as_f64().unwrap_or(0.0) as f32;
+        if ui.slider(
+            "s-triple-bezel_mm",
+            c.row(),
+            &mut value,
+            0.0,
+            100.0,
+            1.0,
+            "Both frames at each join",
+            &|v| format!("{v:.0} mm"),
+        ) {
+            s["triple_bezel_mm"] = json!(value);
+            *dirty = 0.3;
+        }
+        let mut value = get(s, "triple_left_angle_deg").as_f64().unwrap_or(45.0) as f32;
+        if ui.slider(
+            "s-triple-left_angle_deg",
+            c.row(),
+            &mut value,
+            0.0,
+            90.0,
+            1.0,
+            "Left screen inward angle",
+            &|v| format!("{v:.0}°"),
+        ) {
+            s["triple_left_angle_deg"] = json!(value);
+            *dirty = 0.3;
+        }
+        let mut value = get(s, "triple_right_angle_deg").as_f64().unwrap_or(45.0) as f32;
+        if ui.slider(
+            "s-triple-right_angle_deg",
+            c.row(),
+            &mut value,
+            0.0,
+            90.0,
+            1.0,
+            "Right screen inward angle",
+            &|v| format!("{v:.0}°"),
+        ) {
+            s["triple_right_angle_deg"] = json!(value);
+            *dirty = 0.3;
+        }
+        let mut value = get(s, "triple_eye_height_mm").as_f64().unwrap_or(0.0) as f32;
+        if ui.slider(
+            "s-triple-eye_height_mm",
+            c.row(),
+            &mut value,
+            -500.0,
+            500.0,
+            1.0,
+            "Eye above screen centre",
+            &|v| format!("{v:.0} mm"),
+        ) {
+            s["triple_eye_height_mm"] = json!(value);
+            *dirty = 0.3;
+        }
+    }
     if cfg!(windows) {
         c.section(ui, "Virtual reality");
         toggle_setting(ui, s, dirty, c.row(), "Use OpenXR headset", "vr");
@@ -2306,8 +2429,31 @@ mod settings_tests {
             "s-wrange", "s-wlock", "s-pedt", "s-pedb", "set-ff_enabled", "set-ff_invert", "s-wreset", "s-go-pads",
         ];
         let mut camera = vec![
-            "s-seaty", "s-seatz", "s-seatx", "s-seatreset", "s-fov", "s-look-sens", "set-steer_look", "s-steer-look-angle", "s-steer-look-response", "set-head_movement", "set-driverview_smooth", "set-hands_in_cab", "set-alt_view",
-            "set-camera_collision", "set-driver", "set-head_tracking",
+            "s-seaty",
+            "s-seatz",
+            "s-seatx",
+            "s-seatreset",
+            "s-fov",
+            "s-look-sens",
+            "set-steer_look",
+            "s-steer-look-angle",
+            "s-steer-look-response",
+            "set-head_movement",
+            "set-driverview_smooth",
+            "set-hands_in_cab",
+            "set-alt_view",
+            "set-camera_collision",
+            "set-driver",
+            "set-head_tracking",
+            "set-triple_screen",
+            "set-triple_span",
+            "set-triple_hud_center",
+            "s-triple-width_mm",
+            "s-triple-distance_mm",
+            "s-triple-bezel_mm",
+            "s-triple-left_angle_deg",
+            "s-triple-right_angle_deg",
+            "s-triple-eye_height_mm",
         ];
         if cfg!(windows) {
             camera.extend(["set-vr", "s-vr-scale", "s-vr-head-smoothing", "s-vr-mirror-rate", "set-vr_desktop_mirror", "s-go-vr-keys"]);
@@ -2328,6 +2474,7 @@ mod settings_tests {
     /// Settings that show every row: Enhanced (Vanilla hides the shadows and effects), VR on.
     fn all_rows() -> Value {
         let mut s = core::settings_from_text(None);
+        s["triple_screen"] = json!(true);
         s["graphics"] = json!("enhanced");
         s["vr"] = json!(true);
         s

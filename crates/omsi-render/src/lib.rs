@@ -3,6 +3,15 @@
 pub mod atmosphere;
 pub mod clouds;
 mod puddles;
+mod triple;
+pub use triple::{ScreenView, TripleScreen};
+
+#[derive(Default)]
+struct ViewCulling {
+    drawn: Vec<u64>,
+    sizes: hashbrown::HashMap<[u64; 4], f32>,
+    scratch: hashbrown::HashMap<[u64; 4], f32>,
+}
 
 use anyhow::{anyhow, Context, Result};
 use glam::{DVec3, Mat4, Vec3, Vec4};
@@ -1364,6 +1373,8 @@ pub struct Renderer {
     upscale_layout: wgpu::BindGroupLayout,
     upscale_buf: wgpu::Buffer,
     scale_targets: HashMap<(u32, u32), (wgpu::TextureView, wgpu::BindGroup)>,
+    triple_targets: Option<((u32, u32), Vec<(wgpu::TextureView, wgpu::BindGroup)>)>,
+    triple_culling: [ViewCulling; 3],
     /// Full-resolution current scene before rain films, in its original colour format.
     glass_picture: Option<wgpu::TextureView>,
     /// When each size of the size-keyed targets (scale, MSAA, HDR) was last asked for.
@@ -3875,6 +3886,8 @@ impl Renderer {
             upscale_layout,
             upscale_buf,
             scale_targets: HashMap::new(),
+            triple_targets: None,
+            triple_culling: Default::default(),
             glass_picture: None,
             target_use: HashMap::new(),
             dynamic_scale: std::cell::Cell::new(1.0),
@@ -7171,6 +7184,148 @@ impl Renderer {
         self.render_inner(scene, target, width, height, camera, lighting, true, None, None, false);
     }
 
+    /// Three independently culled and shaded physical panels, composited into a
+    /// spanning window. HUD and menu remain in window pixels and are drawn once.
+    pub fn render_triple(
+        &mut self,
+        scene: &mut Scene,
+        target: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        camera: &Camera,
+        lighting: &Lighting,
+        rig: &TripleScreen,
+    ) {
+        if width < 3 || height == 0 {
+            return;
+        }
+        let views = rig.views(camera, width, height);
+        if self.triple_targets.as_ref().map(|t| t.0) != Some((width, height)) {
+            let targets = views
+                .iter()
+                .map(|v| {
+                    let w = v.viewport[2];
+                    let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("triple screen panel"),
+                        size: wgpu::Extent3d {
+                            width: w,
+                            height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: self.format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    });
+                    let view = texture.create_view(&Default::default());
+                    let params = [w as f32, height as f32, 0.0, 0.0];
+                    let buf = buffer_init(
+                        &self.device,
+                        &self.queue,
+                        Some("triple screen composite"),
+                        bytemuck::cast_slice(&params),
+                        wgpu::BufferUsages::UNIFORM,
+                    );
+                    let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("triple screen composite"),
+                        layout: &self.upscale_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: buf.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Sampler(&self.sky_sampler),
+                            },
+                        ],
+                    });
+                    (view, group)
+                })
+                .collect();
+            self.triple_targets = Some(((width, height), targets));
+        }
+        let overlays = std::mem::take(&mut scene.overlays);
+        let env_heading = self.env_heading.replace(Some(camera.yaw));
+        // Centre meters exposure and updates shared lighting once. All panels
+        // then use that same exposure and sun shadow atlas.
+        for (turn, i) in [1, 0, 2].into_iter().enumerate() {
+            let view = self.triple_targets.as_ref().unwrap().1[i].0.clone();
+            self.swap_triple_culling(i);
+            self.render_inner(
+                scene,
+                &view,
+                views[i].viewport[2],
+                height,
+                &views[i].camera,
+                lighting,
+                true,
+                None,
+                Some(views[i].projection),
+                turn != 0,
+            );
+            self.swap_triple_culling(i);
+        }
+        self.env_heading.set(env_heading);
+        scene.overlays = overlays;
+        self.prepare_overlays(scene, width, height);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("triple screen composite"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("triple screen composite"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.upscale_pipeline);
+            for (i, v) in views.iter().enumerate() {
+                let [x, y, w, h] = v.viewport;
+                pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
+                pass.set_scissor_rect(x, y, w, h);
+                pass.set_bind_group(0, &self.triple_targets.as_ref().unwrap().1[i].1, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            pass.set_viewport(0.0, 0.0, width as f32, height as f32, 0.0, 1.0);
+            pass.set_scissor_rect(0, 0, width, height);
+            pass.set_pipeline(&self.overlay_pipeline_1x);
+            for (_, _, group, _) in &scene.overlay_res {
+                pass.set_bind_group(0, group, &[]);
+                pass.draw(0..6, 0..1);
+            }
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+
+    fn swap_triple_culling(&mut self, panel: usize) {
+        // Visibility and LOD hysteresis belong to one projection. A side panel
+        // must not replace the previous centre view's history each frame.
+        let history = &mut self.triple_culling[panel];
+        std::mem::swap(self.cull_drawn.get_mut(), &mut history.drawn);
+        std::mem::swap(self.object_sizes.get_mut(), &mut history.sizes);
+        std::mem::swap(self.object_sizes_scratch.get_mut(), &mut history.scratch);
+    }
+
     /// Render one OpenXR view using the headset's asymmetric projection matrix.
     /// The matrix uses the same reversed depth range as the desktop camera. The
     /// second eye reuses the first eye's shadow atlas when both share an origin.
@@ -7307,6 +7462,63 @@ impl Renderer {
         self.queue.submit(Some(encoder.finish()));
     }
 
+    fn prepare_overlays(&self, scene: &mut Scene, full_w: u32, full_h: u32) {
+        let overlays = &scene.overlays;
+        // the HUD's rect buffers and bind groups live on between frames: making them
+        // anew for every overlay of every frame was a steady stream of GPU allocations
+        scene.overlay_res.truncate(overlays.len());
+        for (k, (tex, r)) in overlays.iter().copied().enumerate() {
+            let r = snap_rect(r);
+            let ndc = [
+                r[0] / full_w as f32 * 2.0 - 1.0,
+                1.0 - r[1] / full_h as f32 * 2.0,
+                r[2] / full_w as f32 * 2.0 - 1.0,
+                1.0 - r[3] / full_h as f32 * 2.0,
+                scene.premultiplied.contains(&tex) as u8 as f32,
+                0.0,
+                0.0,
+                0.0,
+            ];
+            if let Some((_, buf, _, last)) = scene.overlay_res.get_mut(k).filter(|o| o.0 == tex) {
+                if *last != ndc {
+                    self.queue.write_buffer(buf, 0, bytemuck::cast_slice(&ndc));
+                    *last = ndc;
+                }
+                continue;
+            }
+            let buf = buffer_init(
+                &self.device,
+                &self.queue,
+                Some("overlay rect"),
+                bytemuck::cast_slice(&ndc),
+                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            );
+            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("overlay"),
+                layout: &self.overlay_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&scene.textures[tex].view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.sky_sampler),
+                    },
+                ],
+            });
+            if k < scene.overlay_res.len() {
+                scene.overlay_res[k] = (tex, buf, bg, ndc);
+            } else {
+                scene.overlay_res.push((tex, buf, bg, ndc));
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_inner(
         &mut self,
@@ -7426,7 +7638,7 @@ impl Renderer {
         // the plain graphics with Enhanced on); the first eye is the one that moves the
         // exposure, the sky cube and the frame clock on, as the window does without VR.
         let xr_view = projection.is_some();
-        let lead_view = with_overlays || (xr_view && !second_eye);
+        let lead_view = (with_overlays || xr_view) && !second_eye;
         let enhanced_frame = lighting.enhanced && self.hdr_pass.is_some() && omsi_cfg::env::var_os("OMSI_NO_ENHANCED").is_none() && (with_overlays || xr_view || omsi_cfg::env::var_os("OMSI_MIRROR_ENHANCED").is_some());
         // the mirrors are drawn by the same path as the window (their picture graded with
         // the window's exposure, see the post passes)
@@ -7482,55 +7694,8 @@ impl Renderer {
         } else {
             Vec::new()
         };
-        if with_overlays {
-            // the HUD's rect buffers and bind groups live on between frames: making them
-            // anew for every overlay of every frame was a steady stream of GPU allocations
-            scene.overlay_res.truncate(overlays.len());
-            for (k, (tex, r)) in overlays.iter().copied().enumerate() {
-                let r = snap_rect(r);
-                let ndc = [
-                    r[0] / full_w as f32 * 2.0 - 1.0,
-                    1.0 - r[1] / full_h as f32 * 2.0,
-                    r[2] / full_w as f32 * 2.0 - 1.0,
-                    1.0 - r[3] / full_h as f32 * 2.0,
-                    scene.premultiplied.contains(&tex) as u8 as f32,
-                    0.0,
-                    0.0,
-                    0.0,
-                ];
-                if let Some((_, buf, _, last)) = scene.overlay_res.get_mut(k).filter(|o| o.0 == tex)
-                {
-                    if *last != ndc {
-                        self.queue.write_buffer(buf, 0, bytemuck::cast_slice(&ndc));
-                        *last = ndc;
-                    }
-                    continue;
-                }
-                let buf = buffer_init(&self.device, &self.queue, Some("overlay rect"), bytemuck::cast_slice(&ndc), wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
-                let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("overlay"),
-                    layout: &self.overlay_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: buf.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(&scene.textures[tex].view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::Sampler(&self.sky_sampler),
-                        },
-                    ],
-                });
-                if k < scene.overlay_res.len() {
-                    scene.overlay_res[k] = (tex, buf, bg, ndc);
-                } else {
-                    scene.overlay_res.push((tex, buf, bg, ndc));
-                }
-            }
+        if with_overlays && !overlays.is_empty() {
+            self.prepare_overlays(scene, full_w, full_h);
         }
         // sun shadow map: an orthographic box around the camera, looking along the sun
         let sun = lighting.sun_dir.normalize_or_zero();
@@ -8636,8 +8801,9 @@ impl Renderer {
         }
         // --- depth prepass + ambient occlusion (single-sampled, camera projection)
         if prepass_on {
-            let proj =
-                Mat4::perspective_rh(camera.fov_deg.to_radians(), aspect, camera.far, camera.near);
+            let proj = projection.unwrap_or_else(|| {
+                Mat4::perspective_rh(camera.fov_deg.to_radians(), aspect, camera.far, camera.near)
+            });
             let u = SsaoUniform {
                 inv_proj: proj.inverse().to_cols_array_2d(),
                 params: [
@@ -9430,6 +9596,31 @@ impl Renderer {
         camera: &Camera,
         lighting: &Lighting,
     ) -> Result<Vec<u8>> {
+        self.render_image(scene, width, height, camera, lighting, None)
+    }
+
+    /// Capture all three physical screen projections, including the shared HUD.
+    pub fn render_triple_to_image(
+        &mut self,
+        scene: &mut Scene,
+        width: u32,
+        height: u32,
+        camera: &Camera,
+        lighting: &Lighting,
+        rig: &TripleScreen,
+    ) -> Result<Vec<u8>> {
+        self.render_image(scene, width, height, camera, lighting, Some(rig))
+    }
+
+    fn render_image(
+        &mut self,
+        scene: &mut Scene,
+        width: u32,
+        height: u32,
+        camera: &Camera,
+        lighting: &Lighting,
+        rig: Option<&TripleScreen>,
+    ) -> Result<Vec<u8>> {
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen"),
             size: wgpu::Extent3d {
@@ -9447,7 +9638,11 @@ impl Renderer {
         let view = tex.create_view(&Default::default());
         // a picture on its own: the enhanced exposure is where the light puts it at once
         self.instant_exposure = true;
-        self.render(scene, &view, width, height, camera, lighting);
+        if let Some(rig) = rig {
+            self.render_triple(scene, &view, width, height, camera, lighting, rig);
+        } else {
+            self.render(scene, &view, width, height, camera, lighting);
+        }
         self.instant_exposure = false;
         let mut out = self.read_texture(&tex, wgpu::TextureAspect::All)?;
         // BGRA surfaces → swap
