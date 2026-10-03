@@ -74,7 +74,7 @@ pub struct GroundGap {
     ai: Stats,
     /// Last two heights of each body (key: car id, or u64::MAX for the player and the
     /// part index below it for its trailers).
-    heights: HashMap<u64, (f64, f64, usize)>,
+    heights: HashMap<u64, (f64, f64, usize, f32)>,
     radius: f64,
 }
 
@@ -146,7 +146,12 @@ impl GroundGap {
         }
         // the body's height: a step in its vertical speed of more than 0.6 m/s in one frame
         // (a jump of 2 cm at 30 fps against the frame before) is a jolt
-        let e = self.heights.entry(key).or_insert((position.z, position.z, 0));
+        let new_body = !self.heights.contains_key(&key);
+        let e = self.heights.entry(key).or_insert((position.z, position.z, 0, t));
+        // (frames in a row only: a car out of view for a while is measured afresh)
+        if t - e.3 > 0.05 {
+            *e = (position.z, position.z, 0, t);
+        }
         let stats = if ai { &mut self.ai } else { &mut self.player };
         if e.2 >= 2 {
             let acc = (position.z - 2.0 * e.1 + e.0).abs();
@@ -158,14 +163,15 @@ impl GroundGap {
                 stats.small_jumps += 1;
             }
         }
-        if e.2 == 0 {
+        if new_body {
             stats.bodies += 1;
-            log::debug!(target: "omsi::ground_gap", "body {key}: {}", ty.def.path.display());
+        }
+        *e = (e.1, position.z, e.2 + 1, t);
+        if new_body {
             if let Some(f) = self.file.as_mut() {
                 let _ = writeln!(f, "# body {key} {}", ty.def.path.display());
             }
         }
-        *e = (e.1, position.z, e.2 + 1);
     }
 
     pub fn frame(&mut self, world: &World, t: f32, player: Option<&omsi_sim::VehicleInstance>, traffic: Option<&crate::traffic::Traffic>) {
