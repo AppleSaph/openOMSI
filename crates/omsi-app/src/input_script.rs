@@ -1169,6 +1169,25 @@ impl App {
                 }
             }
         }
+        // the map camera (F4): Ctrl+click on the ground puts the bus on the street nearest
+        // that point, as Ctrl+click on the city map does - OMSI's map view moves the vehicle
+        // to a place clicked as well (#1039). A rail vehicle stays on its track.
+        let ctrl = self.keys.contains(&KeyCode::ControlLeft) || self.keys.contains(&KeyCode::ControlRight);
+        if pressed && ctrl && self.view == "free" && self.game_menu.is_none() && self.player.is_some() {
+            if self.player.as_ref().is_some_and(|p| crate::rail_drive::is_rail(&p.vehicle.ty.def)) {
+                self.service_msg = Some(("A rail vehicle cannot be moved off its track".into(), 3.0));
+                return;
+            }
+            let hit = self
+                .cursor_ray_now()
+                .zip(self.world.clone())
+                .and_then(|((o, d, _), w)| crate::placing::ground_hit(&w, o, d.as_dvec3(), 2000.0));
+            match hit {
+                Some(at) => self.place_bus_at(at.truncate()),
+                None => self.service_msg = Some(("Ctrl+click on the ground to move the bus there".into(), 3.0)),
+            }
+            return;
+        }
         // a click on the chat opens its input box (and is the chat's, not the cockpit's)
         if pressed && self.lan.is_some() && self.settings.chat {
             if self.ui.as_ref().map(|u| u.chat.hovered).unwrap_or(false) {
