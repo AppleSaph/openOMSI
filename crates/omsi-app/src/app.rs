@@ -732,10 +732,10 @@ impl App {
                                         d.start_at(k, self.args.duty_first_stop);
                                     }
                                     if self.args.is_resuming() {
-                                        if let Some(stop) = self.args.situation_next_stop {
-                                            d.restore_progress(stop);
-                                        }
-                                        d.restore_host(&mut p.vehicle, parse_time(&self.args.time));
+                                        d.resume(&mut p.vehicle, parse_time(&self.args.time), self.args.situation_next_stop);
+                                        // the IBIS keeps its saved trip; with --autostart
+                                        // the duty's next trips are typed into it again
+                                        p.duty_typed = self.args.autostart;
                                     }
                                     Some(d)
                                 }

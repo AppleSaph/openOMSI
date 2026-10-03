@@ -45,7 +45,9 @@ pub(crate) struct Args {
     /// View: driver, pax, outside, or free; mirror<n> shows what mirror n's camera sees (a check).
     #[arg(long, default_value = "driver")]
     pub(crate) view: String,
-    /// Put the bus into service at the start of the run (the Shift+U auto-start).
+    /// Put the bus into service at the start of the run (the Shift+U auto-start). With
+    /// `--situation` the bus is not started up again (it keeps its saved state and IBIS);
+    /// the flag then only has the duty's next trips typed into the IBIS as they come.
     #[arg(long)]
     pub(crate) autostart: bool,
     /// Start as a pedestrian where the bus would stand (the bus left out): one is placed

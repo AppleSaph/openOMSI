@@ -3219,6 +3219,10 @@ impl App {
         let Ok(exe) = std::env::current_exe() else { return false };
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("--root").arg(&self.args.root).arg("--no-menu").arg("--situation").arg(&file);
+        // (the duty typed by itself goes on being typed: `--autostart` with a situation)
+        if self.player.as_ref().is_some_and(|p| p.duty_typed) {
+            cmd.arg("--autostart");
+        }
         match cmd.spawn() {
             Ok(_) => {
                 log::info!("loading {} in a new game", file.display());
@@ -3630,6 +3634,10 @@ impl App {
         let Ok(exe) = std::env::current_exe() else { return false };
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("--root").arg(&self.args.root).arg("--no-menu").arg("--situation").arg(&file);
+        // (the duty typed by itself goes on being typed: `--autostart` with a situation)
+        if self.player.as_ref().is_some_and(|p| p.duty_typed) {
+            cmd.arg("--autostart");
+        }
         cmd.env("OMSI_SAFE_GPU", (n + 1).to_string());
         // (on Windows the other interface: DirectX 12 after Vulkan, Vulkan after DirectX 12 -
         // an AMD Radeon's DX12 driver lost the device where its Vulkan one did not, #274)

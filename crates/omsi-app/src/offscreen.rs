@@ -101,12 +101,9 @@ pub(crate) fn run_offscreen(
                     d.start_at(k, args.duty_first_stop);
                 }
                 if args.is_resuming() {
-                    if let Some(stop) = args.situation_next_stop {
-                        d.restore_progress(stop);
-                    } else {
-                        d.update(&mut p.vehicle, parse_time(&args.time));
-                    }
-                    d.restore_host(&mut p.vehicle, parse_time(&args.time));
+                    d.resume(&mut p.vehicle, parse_time(&args.time), args.situation_next_stop);
+                    // (as in the window: see `App`)
+                    p.duty_typed = args.autostart;
                 } else {
                     d.update(&mut p.vehicle, parse_time(&args.time));
                 }

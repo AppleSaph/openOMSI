@@ -373,66 +373,6 @@ fn content_relative(path: &str, folder: &str) -> String {
 }
 
 #[cfg(test)]
-pub(crate) fn timetable_test_vehicle() -> omsi_sim::VehicleInstance {
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "omsi_tt_restore_{}_{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let script = dir.join("device.osc");
-    let vars = dir.join("vars.txt");
-    let strings = dir.join("strings.txt");
-    std::fs::write(&vars, "duty\nobserved_stop\nobserved_delay\n").unwrap();
-    std::fs::write(&strings, "destination\nobserved_line\n").unwrap();
-    std::fs::write(
-        &script,
-        r#"
-{frame}
-(L.L.schedule_active) ! (M.V.GetTTBusstopCount) 0 = ||
-{if}
-0 (S.L.duty)
-"" (S.$.destination)
-{endif}
-(M.V.GetTTLineString) (S.$.observed_line)
-(M.V.GetTTBusstopIndex) (S.L.observed_stop)
-(M.V.GetTTDelay) (S.L.observed_delay)
-{end}
-"#,
-    )
-    .unwrap();
-    let program = omsi_script::compile(&omsi_script::CompileInput {
-        scripts: vec![script],
-        varlists: vec![vars],
-        stringvarlists: vec![strings],
-        builtin_vars: vec!["schedule_active".into()],
-        ..Default::default()
-    });
-    assert!(program.errors.is_empty(), "{:?}", program.errors);
-    let ty = Arc::new(omsi_sim::VehicleType {
-        def: Default::default(),
-        model: Default::default(),
-        model_dir: dir.clone(),
-        program: Arc::new(program),
-        meshes: Vec::new(),
-        paint_schemes: Vec::new(),
-        texchanges: Vec::new(),
-        wheel_meshes: Vec::new(),
-        suspension_axles: Vec::new(),
-        missing_packs: Vec::new(),
-        mesh_bounds: Vec::new(),
-        mesh_boxes: Vec::new(),
-    });
-    std::fs::remove_dir_all(dir).unwrap();
-    omsi_sim::VehicleInstance::new(ty, omsi_sim::VehicleHost::new(Default::default()))
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;

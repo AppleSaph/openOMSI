@@ -4367,12 +4367,32 @@ impl PlayerDuty {
     }
 
     /// Resume the saved trip at its saved ordinal, without choosing a fresh starting
-    /// point or asking the device to retype its already restored programming.
-    pub fn restore_progress(&mut self, stop: usize) {
-        self.next_stop = stop.min(self.trip().stops.len().saturating_sub(1));
+    /// point or asking the device to retype its already restored programming. Past the
+    /// first stop the bus is on its way, as if it had left the stop before on time (as
+    /// `place` has it): `catch_up` may then look as far as the last stop and `delay`
+    /// counts from there. Saved at the last stop, the trip is over.
+    pub fn restore_progress(&mut self, stop: usize, pos: glam::DVec3) {
+        let last = self.trip().stops.len().saturating_sub(1);
+        self.next_stop = stop.min(last);
+        self.left_late = (self.next_stop > 0).then_some(0.0);
+        self.done = self.next_stop == last
+            && self.trip().stops[last].position.is_some_and(|p| (p - pos).length() < AT_STOP);
         self.placed = true;
         self.picked = true;
         self.trip_changed = false;
+    }
+
+    /// The duty of a resumed situation: at its saved stop (an older save without one is
+    /// placed by where the bus stands), with the timetable on the host before the first
+    /// script frame.
+    pub fn resume(&mut self, bus: &mut omsi_sim::VehicleInstance, day_time: f64, saved_stop: Option<usize>) {
+        match saved_stop {
+            Some(stop) => self.restore_progress(stop, bus.position),
+            None => {
+                self.update(bus, day_time);
+            }
+        }
+        self.restore_host(bus, day_time);
     }
 
     /// A page sets the stop the duty goes on with (`omsi.setNextStop`), forwards or
@@ -4932,6 +4952,67 @@ mod tests {
         }
     }
 
+    /// A vehicle whose script drops its duty and destination while it has no timetable,
+    /// and shows what the timetable callbacks tell it.
+    fn timetable_test_vehicle() -> omsi_sim::VehicleInstance {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "omsi_tt_restore_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("device.osc");
+        let vars = dir.join("vars.txt");
+        let strings = dir.join("strings.txt");
+        std::fs::write(&vars, "duty\nobserved_stop\nobserved_delay\n").unwrap();
+        std::fs::write(&strings, "destination\nobserved_line\n").unwrap();
+        std::fs::write(
+            &script,
+            r#"
+{frame}
+(L.L.schedule_active) ! (M.V.GetTTBusstopCount) 0 = ||
+{if}
+0 (S.L.duty)
+"" (S.$.destination)
+{endif}
+(M.V.GetTTLineString) (S.$.observed_line)
+(M.V.GetTTBusstopIndex) (S.L.observed_stop)
+(M.V.GetTTDelay) (S.L.observed_delay)
+{end}
+"#,
+        )
+        .unwrap();
+        let program = omsi_script::compile(&omsi_script::CompileInput {
+            scripts: vec![script],
+            varlists: vec![vars],
+            stringvarlists: vec![strings],
+            builtin_vars: vec!["schedule_active".into()],
+            ..Default::default()
+        });
+        assert!(program.errors.is_empty(), "{:?}", program.errors);
+        let ty = Arc::new(omsi_sim::VehicleType {
+            def: Default::default(),
+            model: Default::default(),
+            model_dir: dir.clone(),
+            program: Arc::new(program),
+            meshes: Vec::new(),
+            paint_schemes: Vec::new(),
+            texchanges: Vec::new(),
+            wheel_meshes: Vec::new(),
+            suspension_axles: Vec::new(),
+            missing_packs: Vec::new(),
+            mesh_bounds: Vec::new(),
+            mesh_boxes: Vec::new(),
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+        omsi_sim::VehicleInstance::new(ty, omsi_sim::VehicleHost::new(Default::default()))
+    }
+
     #[test]
     fn resumed_duty_keeps_its_trip_and_stop_before_the_first_script_frame() {
         let trips = vec![
@@ -4969,12 +5050,13 @@ mod tests {
         d.trips[1].stops[0].name = "Central".into();
         d.trips[1].stops[1].name = "Central".into();
         d.start_at(1, 0);
-        d.restore_progress(1);
+        d.restore_progress(1, glam::DVec3::new(-3500.0, 0.0, 0.0));
+        assert_eq!(d.left_late, Some(0.0), "past its first stop the bus is on its way");
         assert!(
             !d.take_trip_change(),
             "resume must not request automatic reprogramming"
         );
-        let mut v = crate::situation::timetable_test_vehicle();
+        let mut v = timetable_test_vehicle();
         // Demonstrate that this device really loses its programming without callbacks.
         let vars = vec![("duty".into(), 65104.0)];
         let strings = vec![("destination".into(), "  Manual destination  ".into())];
@@ -4993,10 +5075,15 @@ mod tests {
         d.update(&mut v, 542.0);
         assert_eq!((d.trip_index, d.next_stop), (1, 1));
         assert_eq!(d.tour, "65104");
-        d.restore_progress(usize::MAX);
+        d.restore_progress(usize::MAX, glam::DVec3::new(-3500.0, 0.0, 0.0));
         assert_eq!(d.next_stop, 2);
-        d.restore_progress(0);
+        assert!(!d.done, "away from the last stop the trip is not over yet");
+        d.restore_progress(2, glam::DVec3::new(1500.0, 0.0, 0.0));
+        assert!(d.done, "saved at the last stop, the trip is over");
+        d.restore_progress(0, glam::DVec3::new(-3500.0, 0.0, 0.0));
         assert_eq!(d.next_stop, 0);
+        assert_eq!(d.left_late, None);
+        assert!(!d.done);
         // Ordinary duty updates retain their existing handling of schedule_active.
         v.host.schedule_active = 0.0;
         v.set_var("schedule_active", 0.0);
