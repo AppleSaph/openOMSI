@@ -5878,7 +5878,26 @@ impl World {
                 // A separate transmap is a mask, not an automatic instruction to make the
                 // whole material transparent. Opaque body panels must stay opaque unless the
                 // model's `[matl_alpha]` or a material override explicitly says otherwise.
-                let alpha = alpha;
+                // A declared blend on a texture without alpha is opaque, as the splines take
+                // it, for a ground-layer object (`[rendertype] surface` / `on_surface`): the
+                // surface phases draw a blend without writing depth, so every spline after
+                // it showed through - the far roads and a bridge over NCCR's apartment
+                // blocks (`[matl_alpha] 2` on a 24-bit BMP), Westcountry's road signs. In
+                // Omsi.exe such a blend writes depth and its alpha is 1 throughout, the same
+                // picture. (Not with a transmap, an `[alphascale]` or a texture with alpha.)
+                let surface_phase = matches!(
+                    ot.sco.render_type,
+                    omsi_scenery::sco::RenderType::Surface | omsi_scenery::sco::RenderType::OnSurface
+                );
+                let faded = slot_ov.iter().any(|o| o.alphascale.as_ref().is_some_and(|v| !v.trim().is_empty()));
+                let alpha = if alpha == AlphaMode::Blend && surface_phase && tex.is_some() && transmap.is_none() && !faded && {
+                    let dirs_ref: Vec<&Path> = dirs.iter().map(|p| p.as_path()).collect();
+                    omsi_texture::find_texture(&m.texture, &dirs_ref).is_some_and(|p| gpu.textures.get(&p).is_some_and(|e| !e.alpha))
+                } {
+                    AlphaMode::Opaque
+                } else {
+                    alpha
+                };
                 // [matl_envmap]: the same reflection rule as on vehicles (factor x mask; a
                 // texture without an alpha channel reads as a full mask)
                 let envmap = match slot_ov.iter().find_map(|o| o.envmap.clone()) {
