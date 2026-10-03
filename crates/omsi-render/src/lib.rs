@@ -115,6 +115,8 @@ struct HdrTargets {
     /// Tone mapping with the adapted exposure in `adapt[k]`.
     tonemap_bg: [wgpu::BindGroup; 2],
     fxaa_bg: wgpu::BindGroup,
+    /// Classic shading is presented directly, without the Enhanced tone curve.
+    classic_bg: wgpu::BindGroup,
     /// Allocated only when wet roads need scene reflections in the main view.
     puddles: Option<puddles::Targets>,
 }
@@ -653,10 +655,6 @@ pub struct GpuTexture {
     gen: u64,
 }
 
-/// Which picture is behind the glass: the Enhanced path's glow level (true) or the plain
-/// graphics' copy (false), for a window picture of this size.
-type GlassKey = (bool, u32, u32);
-
 static TEXTURE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn next_gen() -> u64 {
@@ -1003,10 +1001,8 @@ pub struct Instance {
 pub struct Scene {
     pub meshes: Vec<GpuMesh>,
     pub textures: Vec<GpuTexture>,
-    /// The texture slot the rain films read the picture behind the glass from (last
-    /// frame's, see `Renderer::glass_behind`), and which picture it shows now.
+    /// Texture slot read by procedural rain films.
     glass_slot: Option<TextureId>,
-    glass_key: Option<GlassKey>,
     pub materials: Vec<Material>,
     pub instances: Vec<Instance>,
     /// World position everything is expressed relative to on the GPU (updated per frame).
@@ -1156,6 +1152,8 @@ struct PostPipelines {
 /// The pipelines of the main pass for one colour target format: the swap chain's, and
 /// the high-range one of the enhanced path.
 struct PassPipelines {
+    /// Single-sampled films, drawn after resolving the scene and its reflections.
+    rain_pipelines: Vec<wgpu::RenderPipeline>,
     /// Indexed by `pipe_code`: 4 depth/blend kinds x culled x depth-biased.
     pipelines: Vec<wgpu::RenderPipeline>,
     corona_pipeline: wgpu::RenderPipeline,
@@ -1238,6 +1236,7 @@ pub struct Renderer {
     material_layout: wgpu::BindGroupLayout,
     pass: PassPipelines,
     hdr_pass: Option<PassPipelines>,
+    reflection_pass: Option<PassPipelines>,
     corona_bind_group: wgpu::BindGroup,
     /// The smoke texture (`Texture/rauch.tga`, see [`Renderer::set_smoke_texture`]).
     smoke_bind_group: wgpu::BindGroup,
@@ -1361,14 +1360,12 @@ pub struct Renderer {
     /// Render scale: the pipeline that scales the 3D picture up to the window, its
     /// parameters, and the smaller targets per size (with their bind groups).
     upscale_pipeline: wgpu::RenderPipeline,
+    copy_pipeline: wgpu::RenderPipeline,
     upscale_layout: wgpu::BindGroupLayout,
     upscale_buf: wgpu::Buffer,
     scale_targets: HashMap<(u32, u32), (wgpu::TextureView, wgpu::BindGroup)>,
-    /// The plain graphics' copy of the last picture at half its size, for the rain on the
-    /// glass (the Enhanced path has its glow's first level for that).
-    glass_prev: Option<(wgpu::TextureView, (u32, u32))>,
-    /// The picture behind the glass drawn by the last window frame, for the next one.
-    glass_live: Option<GlassKey>,
+    /// Full-resolution current scene before rain films, in its original colour format.
+    glass_picture: Option<wgpu::TextureView>,
     /// When each size of the size-keyed targets (scale, MSAA, HDR) was last asked for.
     target_use: HashMap<(u32, u32), std::time::Instant>,
     /// The game's frame-rate governor on top of the render scale (1 = none; see
@@ -1532,8 +1529,8 @@ pub const LAMP_CODE_STRIDE: u32 = 64;
 const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// The colour targets of a pipeline drawing into `format`: in the enhanced pass (the only
-/// one drawing into `HDR_FORMAT` with these pipelines) with the screen mask beside it,
+/// The colour targets of a pipeline drawing into `format`: Enhanced and classic puddle
+/// shading draw into `HDR_FORMAT` with the screen mask beside it,
 /// written by the scene's own shader only (`mask`), coverage-blended where the colour is.
 fn color_targets(format: wgpu::TextureFormat, blend: Option<wgpu::BlendState>, write: wgpu::ColorWrites, mask: bool) -> Vec<Option<wgpu::ColorTargetState>> {
     let mut v = vec![Some(wgpu::ColorTargetState { format, blend, write_mask: write })];
@@ -2329,8 +2326,9 @@ impl Renderer {
                     depth_write: bool,
                     cull: bool,
                     bias: i32,
-                    alpha_to_coverage: bool| {
-            let use_alpha_to_coverage = alpha_to_coverage && msaa > 1;
+                    alpha_to_coverage: bool,
+                    samples: u32| {
+            let use_alpha_to_coverage = alpha_to_coverage && samples > 1;
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("omsi"),
                 layout: Some(&layout),
@@ -2360,7 +2358,7 @@ impl Renderer {
                     },
                 }),
                 multisample: wgpu::MultisampleState {
-                    count: msaa,
+                    count: samples,
                     mask: !0,
                     alpha_to_coverage_enabled: use_alpha_to_coverage,
                 },
@@ -2395,7 +2393,7 @@ impl Renderer {
             .and_then(|v| v.parse().ok())
             .unwrap_or(-24);
         // one pipeline per `pipe_code`: the kind decides blending and the depth write
-        let scene_pipelines = |f: wgpu::TextureFormat, fs: &str| -> Vec<wgpu::RenderPipeline> {
+        let scene_pipelines = |f: wgpu::TextureFormat, fs: &str, samples: u32| -> Vec<wgpu::RenderPipeline> {
             let mut out = Vec::with_capacity(PIPE_KINDS as usize * 4);
             for kind in 0..PIPE_KINDS {
                 let blend = (kind == PIPE_BLEND || kind == PIPE_BLEND_NO_WRITE)
@@ -2411,6 +2409,7 @@ impl Renderer {
                             cull,
                             if surface { bias } else { 0 },
                             kind == PIPE_ALPHA_TEST,
+                            samples,
                         ));
                     }
                 }
@@ -2882,7 +2881,8 @@ impl Renderer {
             })
         };
         let pass = PassPipelines {
-            pipelines: scene_pipelines(format, "fs_main"),
+            pipelines: scene_pipelines(format, "fs_main", msaa),
+            rain_pipelines: scene_pipelines(format, "fs_main", 1),
             corona_pipeline: corona_pipeline_for(format, "fs_main", screen),
             smoke_pipeline: corona_pipeline_for(format, "fs_smoke", alpha_blend),
             sky_pipeline: sky_pipeline_for(format, "fs_main"),
@@ -2890,10 +2890,18 @@ impl Renderer {
         // the enhanced path: its own lighting in all three
         let leave_out_enhanced = options.no_enhanced && (cfg!(target_os = "android") || adapter_name.to_ascii_lowercase().contains("opengl") || GL_BACKEND.load(std::sync::atomic::Ordering::Relaxed));
         let hdr_pass = (!leave_out_enhanced).then(|| PassPipelines {
-            pipelines: scene_pipelines(hdr_format, "fs_enhanced"),
+            pipelines: scene_pipelines(hdr_format, "fs_enhanced", msaa),
+            rain_pipelines: scene_pipelines(hdr_format, "fs_enhanced", 1),
             corona_pipeline: corona_pipeline_for(hdr_format, "fs_enhanced", additive),
             smoke_pipeline: corona_pipeline_for(hdr_format, "fs_smoke_enhanced", alpha_blend),
             sky_pipeline: sky_pipeline_for(hdr_format, "fs_enhanced"),
+        });
+        let reflection_pass = (!leave_out_enhanced && !GL_BACKEND.load(std::sync::atomic::Ordering::Relaxed)).then(|| PassPipelines {
+            pipelines: scene_pipelines(hdr_format, "fs_vanilla_reflections", msaa),
+            rain_pipelines: scene_pipelines(hdr_format, "fs_vanilla_reflections", 1),
+            corona_pipeline: corona_pipeline_for(hdr_format, "fs_main", screen),
+            smoke_pipeline: corona_pipeline_for(hdr_format, "fs_smoke", alpha_blend),
+            sky_pipeline: sky_pipeline_for(hdr_format, "fs_main"),
         });
         let sky_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -3818,7 +3826,7 @@ impl Renderer {
             bind_group_layouts: &[Some(&upscale_layout)],
             immediate_size: 0,
         });
-        let upscale_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let upscale_pipeline_for = |entry| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("upscale"),
             layout: Some(&upscale_pl),
             vertex: wgpu::VertexState {
@@ -3836,7 +3844,7 @@ impl Renderer {
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &upscale_shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(entry),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: None,
@@ -3847,6 +3855,8 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let upscale_pipeline = upscale_pipeline_for("fs_main");
+        let copy_pipeline = upscale_pipeline_for("fs_copy");
         let upscale_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("upscale params"),
             size: 16,
@@ -3861,11 +3871,11 @@ impl Renderer {
         Renderer {
             _device_poller: DevicePoller::start(&device),
             upscale_pipeline,
+            copy_pipeline,
             upscale_layout,
             upscale_buf,
             scale_targets: HashMap::new(),
-            glass_prev: None,
-            glass_live: None,
+            glass_picture: None,
             target_use: HashMap::new(),
             dynamic_scale: std::cell::Cell::new(1.0),
             flicker: std::cell::RefCell::new(HashMap::new()),
@@ -3927,6 +3937,7 @@ impl Renderer {
             material_layout,
             pass,
             hdr_pass,
+            reflection_pass,
             corona_bind_group,
             smoke_bind_group,
             corona_textures: Vec::new(),
@@ -3976,6 +3987,12 @@ impl Renderer {
             pending_meshes: Default::default(),
             freed: std::cell::OnceCell::new(),
         }
+    }
+
+    fn main_pass(&self, enhanced: bool, reflections: bool) -> &PassPipelines {
+        if enhanced { self.hdr_pass.as_ref().unwrap() }
+        else if reflections { self.reflection_pass.as_ref().unwrap() }
+        else { &self.pass }
     }
 
     pub fn format(&self) -> wgpu::TextureFormat {
@@ -4039,31 +4056,26 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: self.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = tex.create_view(&Default::default());
-        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("upscale"),
-            layout: &self.upscale_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.upscale_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.post_sampler),
-                },
-            ],
-        });
+        let bg = self.picture_group(&view);
         self.scale_targets
             .insert((w, h), (view.clone(), bg.clone()));
         (view, bg)
+    }
+
+    fn picture_group(&self, view: &wgpu::TextureView) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scene picture"),
+            layout: &self.upscale_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.upscale_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.post_sampler) },
+            ],
+        })
     }
 
     pub fn new_scene(&self) -> Scene {
@@ -4071,7 +4083,6 @@ impl Renderer {
             meshes: Vec::new(),
             textures: Vec::new(),
             glass_slot: None,
-            glass_key: None,
             materials: Vec::new(),
             instances: Vec::new(),
             render_origin: DVec3::ZERO,
@@ -5166,22 +5177,25 @@ impl Renderer {
         id
     }
 
-    /// Point the scene's rain films at picture `key` (after a window frame: its bundles
-    /// are recorded, the next frame's read the new bind groups).
-    fn show_glass_behind(&self, scene: &mut Scene, key: GlassKey) {
+    /// Refraction reads a copy made before drawing films, avoiding rain/wiper feedback.
+    fn prepare_glass_behind(&mut self, scene: &mut Scene, width: u32, height: u32, format: wgpu::TextureFormat) {
         let Some(id) = scene.glass_slot else { return };
-        if scene.glass_key == Some(key) {
-            return;
+        if self.glass_picture.as_ref().is_none_or(|v| v.texture().width() != width || v.texture().height() != height || v.texture().format() != format) {
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("picture behind glass"),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1,
+                dimension: wgpu::TextureDimension::D2, format,
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.glass_picture = Some(tex.create_view(&Default::default()));
         }
-        let view = if key.0 {
-            self.hdr_targets.get(&(key.1, key.2)).and_then(|h| h.down.first()).cloned()
-        } else {
-            self.glass_prev.as_ref().filter(|g| g.1 == (key.1, key.2)).map(|g| g.0.clone())
-        };
-        let Some(view) = view else { return };
-        scene.textures[id] = GpuTexture::showing(self.black_texture.texture.clone(), view, (key.1, key.2));
-        self.rebind_textures(scene, &[id]);
-        scene.glass_key = Some(key);
+        let view = self.glass_picture.as_ref().unwrap();
+        if scene.textures[id].view != *view {
+            scene.textures[id] = GpuTexture::showing(view.texture().clone(), view.clone(), (width, height));
+            self.rebind_textures(scene, &[id]);
+        }
     }
 
     /// The bind group of a material: its textures (or the plain white/black ones), its
@@ -6027,7 +6041,7 @@ impl Renderer {
             let usage = if samples > 1 {
                 wgpu::TextureUsages::RENDER_ATTACHMENT
             } else {
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC
             };
             self.device
                 .create_texture(&wgpu::TextureDescriptor {
@@ -6116,6 +6130,7 @@ impl Renderer {
         ];
         // (FXAA reads the screen mask as its `t_base` and leaves the screens as they are)
         let fxaa_bg = bg(&ldr, &mask, none);
+        let classic_bg = self.picture_group(&view);
         self.hdr_targets.insert(
             (w, h),
             HdrTargets {
@@ -6131,6 +6146,7 @@ impl Renderer {
                 meter_bg,
                 tonemap_bg,
                 fxaa_bg,
+                classic_bg,
                 puddles: None,
             },
         );
@@ -7385,17 +7401,13 @@ impl Renderer {
             && self.options.msaa <= 1
             && !(lighting.enhanced && self.hdr_pass.is_some() && omsi_cfg::env::var_os("OMSI_NO_ENHANCED").is_none())
             && omsi_cfg::env::var_os("OMSI_NO_FXAA").is_none();
-        // The rain on the glass shows last frame's picture through its drops: the Enhanced
-        // path keeps it anyway (its glow's first level), the plain graphics draw into a
-        // texture while it rains and keep a copy at half the size (see `glass_prev`).
+        // Rain films are drawn after copying the clean current-frame scene. Classic
+        // graphics need a sampleable scene target too, even without puddles or scaling.
         let enhanced_view = lighting.enhanced && self.hdr_pass.is_some() && omsi_cfg::env::var_os("OMSI_NO_ENHANCED").is_none();
         let glass_on = with_overlays
             && scene.glass_slot.is_some()
             && (lighting.rain > 0.001 || lighting.wetness > 0.02)
             && omsi_cfg::env::var_os("OMSI_NO_GLASS_PICTURE").is_none();
-        let glass_key: Option<GlassKey> = glass_on.then_some((enhanced_view, width, height));
-        // (what the films may read this frame: the picture the last window frame left)
-        let glass_ok = with_overlays && self.glass_live.take().is_some_and(|k| Some(k) == scene.glass_key && Some(k) == glass_key);
         let scaled = (width, height) != (full_w, full_h) || vanilla_fxaa || (glass_on && !enhanced_view);
         let scene_target: Option<(wgpu::TextureView, wgpu::BindGroup)> = if scaled {
             Some(self.scale_target(width, height))
@@ -7419,6 +7431,17 @@ impl Renderer {
         // the mirrors are drawn by the same path as the window (their picture graded with
         // the window's exposure, see the post passes)
         let enhanced = enhanced_frame;
+        // Rain reflections belong to all graphics modes. Classic shading uses the same
+        // scene/mask targets, then presents their linear colour without Enhanced grading.
+        let puddles_wanted = with_overlays
+            && self.puddles.is_some()
+            && self.options.reflections
+            && lighting.wetness * (1.0 - lighting.snow.clamp(0.0, 1.0)) > 0.05
+            && scene.materials.iter().any(|m| m.uniform.params2[2] > 0.0)
+            && debug_view() == 0.0
+            && omsi_cfg::env::var_os("OMSI_NO_PUDDLE_REFLECTIONS").is_none();
+        let reflection_frame = !enhanced && puddles_wanted && self.reflection_pass.is_some();
+        let masked_frame = enhanced || reflection_frame;
         let grid = self.prepare_lights(scene, cam_rel, enhanced_frame);
         self.prepare_coronas(scene, lighting.night, lighting.inside.as_ref().filter(|v| point_in_vehicle_box(camera.position, v)));
         self.prepare_smoke(scene, camera.position);
@@ -7426,15 +7449,18 @@ impl Renderer {
         let ao_on = with_overlays && self.options.ssao && self.ssao_pipeline.is_some() && omsi_cfg::env::var_os("OMSI_NO_AO").is_none();
         // the enhanced path's shading is costly: the depth prepass keeps it to the visible
         // surface (without multisampling, see `share_depth`)
-        let prepass_on = ao_on || (enhanced && (with_overlays || xr_view));
+        let prepass_on = ao_on || puddles_wanted || glass_on || (enhanced && (with_overlays || xr_view));
         if prepass_on && self.ensure_ao(width, height) {
             // a new AO texture: the camera bind group must point at it
             scene.dirty = true;
             scene.model_buf = None;
             self.hdr_targets.clear();
         }
-        if enhanced {
+        if masked_frame {
             self.hdr_targets(width, height);
+        }
+        if glass_on {
+            self.prepare_glass_behind(scene, width, height, if masked_frame { HDR_FORMAT } else { self.format });
         }
         let dt = {
             let now = std::time::Instant::now();
@@ -7710,9 +7736,9 @@ impl Renderer {
             flags: [
                 if lighting.detail { 1.0 } else { 0.0 },
                 if enhanced { 1.0 } else { 0.0 },
-                // (below zero: the rain films have last frame's picture to look through,
+                // (below zero: the rain films have the clean current picture to look through,
                 // see `rain_behind`; above zero is an old branch never taken)
-                if glass_ok { -1.0 } else { 0.0 },
+                if glass_on { -1.0 } else { 0.0 },
                 if shadows { SHADOW_RANGE_CLOSE } else { 0.0 },
             ],
             light_view_proj_close: light_view_proj_close.to_cols_array_2d(),
@@ -7725,12 +7751,6 @@ impl Renderer {
         let probe_redraw = enhanced
             && (lead_view || self.sky_state.is_none())
             && self.prepare_enhanced(lighting, cam_rel, ro, dt);
-        let puddles_wanted = enhanced
-            && with_overlays
-            && self.options.reflections
-            && lighting.wetness * (1.0 - lighting.snow.clamp(0.0, 1.0)) > 0.05
-            && debug_view() == 0.0
-            && omsi_cfg::env::var_os("OMSI_NO_PUDDLE_REFLECTIONS").is_none();
         // --- what every pass draws, as batches over one draw list (see `Batch`): the shadow
         // casters of each cascade, the depth prepass and the main pass. The list is built
         // and uploaded before any pass is encoded.
@@ -8509,6 +8529,12 @@ impl Renderer {
             }
         }
         stage(self, "items", "mirror.items");
+        let mut rain_batches = Vec::new();
+        if glass_on {
+            let (rain, main): (Vec<_>, Vec<_>) = main_batches.into_iter().partition(|b| scene.materials[b.material as usize].uniform.emissive[3] > 1.5);
+            rain_batches = rain;
+            main_batches = main;
+        }
         self.upload_draw_list(scene, &list);
         stage(self, "upload", "mirror.upload");
         // OMSI_NO_BUNDLES=1 records the main pass directly, for comparison. (Splitting the
@@ -8516,11 +8542,8 @@ impl Renderer {
         // has to load the first one's targets back into the GPU's tile memory, which cost
         // more GPU time than it saved on the CPU.)
         let main_bundles = if omsi_cfg::env::var_os("OMSI_NO_BUNDLES").is_none() {
-            let (pp, format) = if enhanced {
-                (self.hdr_pass.as_ref().expect("enhanced pipelines"), wgpu::TextureFormat::Rgba16Float)
-            } else {
-                (&self.pass, self.format)
-            };
+            let pp = self.main_pass(enhanced, reflection_frame);
+            let format = if masked_frame { HDR_FORMAT } else { self.format };
             record_bundles(
                 &self.device,
                 self.encoding_pool.as_ref(),
@@ -8789,7 +8812,8 @@ impl Renderer {
         // A presurface must colour its below-ground faces before its invisible cover
         // seals them. Reusing prepass depth would reject those faces (or let terrain
         // reject them first). The prepass still supplies AO; colour rebuilds its depth.
-        let share_depth = prepass_on && single && self.ao.is_some() && !has_presurface;
+        // A depth-writing window in the colour pass must not replace the road receiver.
+        let share_depth = prepass_on && single && self.ao.is_some() && !has_presurface && !puddles_wanted;
         let targets = if share_depth {
             None
         } else {
@@ -8855,14 +8879,14 @@ impl Renderer {
             // (unscaled - multiplying it by the enhanced exposure blew a night sky's dim clear
             // colour out to white instead) keeps a real gap from ever reading as a rendering
             // bug of its own.
-            let sky = lighting.sky_color;
+            let sky = if lighting.classic && !enhanced { lighting.sky_color.map(|v| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }) } else { lighting.sky_color };
             let msaa_color = targets.as_ref().map(|t| &t.0);
             let depth_view: &wgpu::TextureView = match &targets {
                 Some(t) => &t.1,
                 None => &self.ao.as_ref().unwrap().depth_view,
             };
             // the enhanced path draws into a high-range picture the post pass then grades
-            let hdr = if enhanced {
+            let hdr = if masked_frame {
                 self.hdr_targets.get(&(width, height))
             } else {
                 None
@@ -8881,7 +8905,7 @@ impl Renderer {
                         }
                     }
                 };
-            let pp = if enhanced { self.hdr_pass.as_ref().expect("enhanced pipelines") } else { &self.pass };
+            let pp = self.main_pass(enhanced, reflection_frame);
             // the enhanced pass's screen mask beside the picture (see `MASK_FORMAT`)
             let mask_attachment = hdr.map(|h| wgpu::RenderPassColorAttachment {
                 view: h.mask_msaa.as_ref().unwrap_or(&h.mask),
@@ -9034,7 +9058,7 @@ impl Renderer {
             }
             // HUD overlays (on the vanilla path at full size; the enhanced path draws them
             // after grading, a scaled picture after scaling it up)
-            if !overlays.is_empty() && !enhanced && !scaled {
+            if !overlays.is_empty() && !masked_frame && !scaled {
                 pass.set_pipeline(&self.overlay_pipeline);
                 for (k, _) in overlays.iter().enumerate() {
                     if let Some((_, _, bg, _)) = scene.overlay_res.get(k) {
@@ -9059,6 +9083,64 @@ impl Renderer {
                 &all
             };
             self.encode_puddle_reflections(&mut encoder, width, height, scene, batches, &list, lighting, camera, tset.as_ref(), &mut timed);
+        }
+        if glass_on {
+            let hdr = masked_frame.then(|| &self.hdr_targets[&(width, height)]);
+            let view = hdr.map_or(scene_view, |h| h.puddles.as_ref().filter(|_| puddles_on).map_or(&h.view, |p| &p.view));
+            let behind = self.glass_picture.as_ref().unwrap();
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo { texture: view.texture(), mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo { texture: behind.texture(), mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            );
+            let colours = [
+                Some(wgpu::RenderPassColorAttachment {
+                    view, depth_slice: None, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                }),
+                hdr.map(|h| wgpu::RenderPassColorAttachment {
+                    view: &h.mask, depth_slice: None, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                }),
+            ];
+            let pipes = &self.main_pass(enhanced, reflection_frame).rain_pipelines;
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("rain on current scene"),
+                color_attachments: &colours[..if hdr.is_some() { 2 } else { 1 }],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.ao.as_ref().unwrap().depth_view,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+            });
+            pass.set_bind_group(0, scene.camera_bind_group.as_ref().unwrap(), &[]);
+            encode_batches(&mut pass, scene, &rain_batches, |pipe| &pipes[pipe as usize]);
+        }
+        if reflection_frame {
+            let h = &self.hdr_targets[&(width, height)];
+            let bg = h.puddles.as_ref().filter(|_| puddles_on).map_or(&h.classic_bg, |p| &p.classic_bg);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("classic reflections present"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: scene_view, depth_slice: None, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None, timestamp_writes: None,
+                occlusion_query_set: None, multiview_mask: None,
+            });
+            pass.set_pipeline(&self.copy_pipeline);
+            pass.set_bind_group(0, bg, &[]);
+            pass.draw(0..3, 0..1);
+            if !overlays.is_empty() && !scaled {
+                pass.set_pipeline(&self.overlay_pipeline_1x);
+                for (k, _) in overlays.iter().enumerate() {
+                    if let Some((_, _, bg, _)) = scene.overlay_res.get(k) {
+                        pass.set_bind_group(0, bg, &[]);
+                        pass.draw(0..6, 0..1);
+                    }
+                }
+            }
         }
         if enhanced {
             // --- the post passes: glow, metering and adaptation, tone curve, FXAA
@@ -9215,39 +9297,6 @@ impl Renderer {
                 0,
                 bytemuck::cast_slice(&[width as f32, height as f32, sharpen.clamp(0.0, 0.8), if vanilla_fxaa { 1.0 } else { 0.0 }]),
             );
-            // the picture at half its size for the rain on the glass next frame
-            if glass_key.is_some_and(|k| !k.0) {
-                if self.glass_prev.as_ref().map(|g| g.1) != Some((width, height)) {
-                    let tex = self.device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some("picture behind the glass"),
-                        size: wgpu::Extent3d { width: (width / 2).max(1), height: (height / 2).max(1), depth_or_array_layers: 1 },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: self.format,
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                        view_formats: &[],
-                    });
-                    self.glass_prev = Some((tex.create_view(&Default::default()), (width, height)));
-                }
-                let view = &self.glass_prev.as_ref().unwrap().0;
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("picture behind the glass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_pipeline(&self.upscale_pipeline);
-                pass.set_bind_group(0, bg, &[]);
-                pass.draw(0..3, 0..1);
-            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("upscale"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -9276,10 +9325,6 @@ impl Renderer {
                     }
                 }
             }
-        }
-        if let Some(k) = glass_key {
-            self.glass_live = Some(k);
-            self.show_glass_behind(scene, k);
         }
         stage(self, "encode", "mirror.encode");
         // Turning the recorded passes into Metal commands is the costliest CPU step of a
@@ -9404,7 +9449,23 @@ impl Renderer {
         self.instant_exposure = true;
         self.render(scene, &view, width, height, camera, lighting);
         self.instant_exposure = false;
-        let bpr = (width * 4).div_ceil(256) * 256;
+        let mut out = self.read_texture(&tex, wgpu::TextureAspect::All)?;
+        // BGRA surfaces → swap
+        if matches!(
+            self.format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        ) {
+            for px in out.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+        }
+        Ok(out)
+    }
+
+    fn read_texture(&self, texture: &wgpu::Texture, aspect: wgpu::TextureAspect) -> Result<Vec<u8>> {
+        let (width, height) = (texture.width(), texture.height());
+        let row_bytes = width * texture.format().block_copy_size(Some(aspect)).context("unsupported readback format")?;
+        let bpr = row_bytes.div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
             size: (bpr * height) as u64,
@@ -9414,10 +9475,10 @@ impl Renderer {
         let mut enc = self.device.create_command_encoder(&Default::default());
         enc.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &tex,
+                texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
+                aspect,
             },
             wgpu::TexelCopyBufferInfo {
                 buffer: &buf,
@@ -9444,22 +9505,13 @@ impl Renderer {
             .context("map")?
             .map_err(|e| anyhow!("map: {e:?}"))?;
         let data = slice.get_mapped_range();
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        let mut out = Vec::with_capacity((row_bytes * height) as usize);
         for row in 0..height {
             let start = (row * bpr) as usize;
-            out.extend_from_slice(&data[start..start + (width * 4) as usize]);
+            out.extend_from_slice(&data[start..start + row_bytes as usize]);
         }
         drop(data);
         buf.unmap();
-        // BGRA surfaces → swap
-        if matches!(
-            self.format,
-            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
-        ) {
-            for px in out.chunks_exact_mut(4) {
-                px.swap(0, 2);
-            }
-        }
         Ok(out)
     }
 }
@@ -9834,6 +9886,7 @@ fn sky_input_differs(a: &atmosphere::SkyInput, b: &atmosphere::SkyInput) -> bool
 /// samplers fails the whole module ("Conflicting samplers").
 fn scene_shader_source(gl: bool) -> String {
     let src = [
+        include_str!("colour.wgsl"),
         include_str!("shader.wgsl"),
         include_str!("enhanced_common.wgsl"),
         include_str!("puddle_common.wgsl"),
@@ -9908,6 +9961,7 @@ fn cloud_noise_textures(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::Te
 /// The sky dome (both paths) and the enhanced reflection probe.
 fn sky_shader_source() -> String {
     [
+        include_str!("colour.wgsl"),
         include_str!("sky.wgsl"),
         include_str!("enhanced_common.wgsl"),
         include_str!("sky_enhanced.wgsl"),
@@ -9924,7 +9978,7 @@ fn corona_shader_source() -> String {
     .join("\n")
 }
 
-/// One full-screen post pass of the enhanced path.
+/// One single-sampled full-screen pass.
 fn post_pass(
     encoder: &mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
