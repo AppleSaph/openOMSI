@@ -7304,6 +7304,10 @@ impl Renderer {
         camera: &Camera,
         lighting: &Lighting,
     ) {
+        // (the triple screen's panels are not kept once it is turned off)
+        if self.triple_targets.take().is_some() {
+            self.triple_culling = Default::default();
+        }
         self.render_inner(scene, target, width, height, camera, lighting, true, None, None, false);
     }
 
@@ -7319,7 +7323,7 @@ impl Renderer {
         lighting: &Lighting,
         rig: &TripleScreen,
     ) {
-        if width < 3 || height == 0 {
+        if width < 3 || height == 0 || self.device_lost().is_some() {
             return;
         }
         let views = rig.views(camera, width, height);
@@ -7378,7 +7382,10 @@ impl Renderer {
                 .collect();
             self.triple_targets = Some(((width, height), targets));
         }
+        // the HUD is drawn once over the whole window, after the panels: they draw none
+        // (its rect buffers are kept aside, not rebuilt each frame)
         let overlays = std::mem::take(&mut scene.overlays);
+        let overlay_res = std::mem::take(&mut scene.overlay_res);
         let env_heading = self.env_heading.replace(Some(camera.yaw));
         // Centre meters exposure and updates shared lighting once. All panels
         // then use that same exposure and sun shadow atlas.
@@ -7401,6 +7408,7 @@ impl Renderer {
         }
         self.env_heading.set(env_heading);
         scene.overlays = overlays;
+        scene.overlay_res = overlay_res;
         self.prepare_overlays(scene, width, height);
         let mut encoder = self
             .device
@@ -7821,7 +7829,7 @@ impl Renderer {
         } else {
             Vec::new()
         };
-        if with_overlays && !overlays.is_empty() {
+        if with_overlays {
             self.prepare_overlays(scene, full_w, full_h);
         }
         // sun shadow map: an orthographic box around the camera, looking along the sun
