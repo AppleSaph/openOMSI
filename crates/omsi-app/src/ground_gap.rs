@@ -28,6 +28,7 @@ struct Stats {
     /// (gap, where, frame time)
     worst: Vec<(f64, DVec3, f32)>,
     jumps: usize,
+    small_jumps: usize,
     max_jump: f64,
     bodies: usize,
 }
@@ -153,6 +154,9 @@ impl GroundGap {
             if acc > 0.02 {
                 stats.jumps += 1;
             }
+            if acc > 0.005 {
+                stats.small_jumps += 1;
+            }
         }
         if e.2 == 0 {
             stats.bodies += 1;
@@ -194,8 +198,8 @@ impl GroundGap {
                 continue;
             }
             log::info!(
-                "ground gap {name}: {} wheel-frames on {} bodies, mean {:+.3} m, mean |gap| {:.3} m, max over {:+.3} m, max under {:+.3} m, {} over +5 cm ({:.1}%), {} under -5 cm ({:.1}%), {} without ground; body jolts (|d2z| > 2 cm/frame) {}, worst {:.3} m",
-                s.n, s.bodies, s.sum / s.n as f64, s.sum_abs / s.n as f64, s.max_over, s.max_under, s.over5, s.over5 as f64 * 100.0 / s.n as f64, s.under5, s.under5 as f64 * 100.0 / s.n as f64, s.no_ground, s.jumps, s.max_jump
+                "ground gap {name}: {} wheel-frames on {} bodies, mean {:+.3} m, mean |gap| {:.3} m, max over {:+.3} m, max under {:+.3} m, {} over +5 cm ({:.1}%), {} under -5 cm ({:.1}%), {} without ground; body jolts (|d2z| > 2 cm/frame) {}, (> 0.5 cm) {}, worst {:.3} m",
+                s.n, s.bodies, s.sum / s.n as f64, s.sum_abs / s.n as f64, s.max_over, s.max_under, s.over5, s.over5 as f64 * 100.0 / s.n as f64, s.under5, s.under5 as f64 * 100.0 / s.n as f64, s.no_ground, s.jumps, s.small_jumps, s.max_jump
             );
             for (g, p, t) in s.worst.iter().take(15) {
                 log::info!("  {name} tyre {g:+.3} m at ({:.1}, {:.1}, {:.2}) t={t:.1}", p.x, p.y, p.z);
@@ -215,6 +219,8 @@ pub fn check_lanes(world: &World, traffic: &crate::traffic::Traffic) {
     let edges = [-1.0, -0.3, -0.1, -0.05, -0.02, 0.02, 0.05, 0.1, 0.3, 0.6, 1.0];
     let (mut n, mut none) = (0usize, 0usize);
     let mut places: Vec<(f64, DVec3)> = Vec::new();
+    let mut wheel_hist = [0usize; 12];
+    let mut wheel_places: Vec<(f64, DVec3)> = Vec::new();
     for l in traffic.net.lanes.iter().filter(|l| l.kind == omsi_sim::traffic::LaneKind::Street && !l.invisible) {
         let len = l.length();
         let mut s = 0.5f32;
@@ -226,6 +232,17 @@ pub fn check_lanes(world: &World, traffic: &crate::traffic::Traffic) {
                 continue;
             };
             n += 1;
+            // and what the wheels stand on there (the faces under 3 m over the lane, as
+            // Omsi.exe asks), against the window an AI car looks in (0.6 m over its lane,
+            // 0.1 m under it)
+            if let Some(w) = crate::scene::drive_probe(&world.terrains, &world.surfaces, p.x, p.y, p.z + 3.0).below {
+                let off = w - p.z;
+                let k = edges.iter().position(|e| off < *e).unwrap_or(edges.len());
+                wheel_hist[k] += 1;
+                if !(-0.1..=0.6).contains(&off) && !wheel_places.iter().any(|q: &(f64, DVec3)| (q.1 - p).truncate().length() < 15.0) && wheel_places.len() < 400 {
+                    wheel_places.push((off, p));
+                }
+            }
             let off = d - p.z;
             let k = edges.iter().position(|e| off < *e).unwrap_or(edges.len());
             hist[k] += 1;
@@ -235,6 +252,37 @@ pub fn check_lanes(world: &World, traffic: &crate::traffic::Traffic) {
         }
     }
     log::info!("lane ground: {n} lane points with drawn ground, {none} without; drawn minus lane height by bins <-1, -1..-0.3, -0.3..-0.1, -0.1..-0.05, -0.05..-0.02, -0.02..0.02, 0.02..0.05, 0.05..0.1, 0.1..0.3, 0.3..0.6, 0.6..1, >1: {hist:?}");
+    // where lanes run over each other (a bridge, a viaduct): 5 m cells with lane points
+    // more than 3 m apart in height
+    let mut cells: HashMap<(i64, i64), (f64, f64)> = HashMap::new();
+    for l in traffic.net.lanes.iter().filter(|l| l.kind == omsi_sim::traffic::LaneKind::Street && !l.invisible) {
+        let len = l.length();
+        let mut s = 0.0f32;
+        while s < len {
+            let (p, _) = l.at(s);
+            s += 2.0;
+            let e = cells.entry(((p.x / 5.0).floor() as i64, (p.y / 5.0).floor() as i64)).or_insert((p.z, p.z));
+            e.0 = e.0.min(p.z);
+            e.1 = e.1.max(p.z);
+        }
+    }
+    let mut levels: Vec<(DVec3, f64)> = Vec::new();
+    for (k, (lo, hi)) in &cells {
+        if hi - lo > 3.0 {
+            let p = DVec3::new(k.0 as f64 * 5.0 + 2.5, k.1 as f64 * 5.0 + 2.5, *hi);
+            if !levels.iter().any(|q| (q.0 - p).truncate().length() < 60.0) {
+                levels.push((p, hi - lo));
+            }
+        }
+    }
+    for (p, d) in &levels {
+        log::info!("  lanes over lanes at ({:.0}, {:.0}): upper at {:.1} m, {d:.1} m over the lower", p.x, p.y, p.z);
+    }
+    log::info!("lane wheels: the wheels' ground (from 3 m over the lane) minus lane height, same bins: {wheel_hist:?}");
+    wheel_places.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
+    for (off, p) in wheel_places.iter().take(25) {
+        log::info!("  lane wheels at ({:.1}, {:.1}, {:.2}): {off:+.2} m", p.x, p.y, p.z);
+    }
     places.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
     for (off, p) in places.iter().take(25) {
         log::info!("  lane at ({:.1}, {:.1}, {:.2}): drawn ground {off:+.2} m", p.x, p.y, p.z);
