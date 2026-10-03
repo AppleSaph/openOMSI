@@ -283,16 +283,30 @@ impl Launcher {
     app
     }
 
+    /// Everything made on the graphics device goes with it: the interface's textures and every
+    /// number kept for one of them - the bus preview, the map picture (and the map's own
+    /// drawing), the servers' icons. A number kept over a device made anew pointed past the
+    /// new device's textures, and the map was drawn with the font atlas instead: the Drive
+    /// page's map full of the interface's words after a game (the launcher gives its device
+    /// up while one runs) or a lost device.
+    fn drop_gpu(&mut self) {
+        self.gpu = None;
+        self.preview_tex = None;
+        self.showroom = showroom::Showroom::new();
+        self.preview_gen = 0;
+        self.map_tex = None;
+        self.map_gen = 0;
+        self.mapview.drop_gpu();
+        self.icons.clear();
+    }
+
     /// The window, its surface and the renderer, given up for the game (a phone plays in the
     /// launcher's window).
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     pub fn release_window(&mut self) -> Option<Arc<Window>> {
         self.pages.pads.cancel_feedback_test();
         self.surface = None;
-        self.gpu = None;
-        self.preview_tex = None;
-        self.showroom = showroom::Showroom::new();
-        self.preview_gen = 0;
+        self.drop_gpu();
         self.renderer = None;
         self.ime = false;
         self.window.take()
@@ -625,10 +639,7 @@ impl Launcher {
             self.state.settings_dirty = 0.3;
         }
         self.surface = None;
-        self.gpu = None;
-        self.preview_tex = None;
-        self.showroom = showroom::Showroom::new();
-        self.preview_gen = 0;
+        self.drop_gpu();
         self.renderer = None;
         self.make_surface();
         true
@@ -753,10 +764,7 @@ impl Launcher {
         {
             log::info!("launcher: a game starts or runs, the graphics device is given up until it ends");
             self.surface = None;
-            self.gpu = None;
-            self.preview_tex = None;
-            self.showroom = showroom::Showroom::new();
-            self.preview_gen = 0;
+            self.drop_gpu();
             self.renderer = None;
         }
         if let Some(d) = presence_released.then(|| self.state.queued_launch.take()).flatten() {

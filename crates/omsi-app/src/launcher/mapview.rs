@@ -535,6 +535,15 @@ impl MapView {
         (self.mpp * 0.5).clamp(0.05, 24.0) as f32
     }
 
+    /// The device it was drawn on is gone: the picture, the plan's buffers and the drawing
+    /// pipeline are made again on the next one (the interface binds the new picture anew).
+    pub fn drop_gpu(&mut self) {
+        self.gpu = None;
+        self.target = None;
+        self.plan = None;
+        self.generation += 1;
+    }
+
     /// The picture, drawn again when what it shows or how coarse it is changed.
     pub fn picture(&mut self, renderer: &Renderer) -> Option<wgpu::TextureView> {
         let (w, h) = self.size();
