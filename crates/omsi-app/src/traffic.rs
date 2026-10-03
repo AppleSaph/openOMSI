@@ -120,6 +120,14 @@ fn pass_time(dist: f32, creep: f32, st: &AiState, v_cap: f32) -> f32 {
 const ONCOMING_ROOM: f32 = 1.15;
 /// The player's box as `player_in_way` sees it is this much longer at each end (m).
 const PLAYER_BOX_MARGIN: f32 = 0.5;
+/// Somebody on foot more than this far above or below a car's way is not in it (m).
+const PEOPLE_LEVEL: f64 = 2.5;
+/// A car that gave up and has stood this long (s) held by nothing anybody can see goes even
+/// in view (see `Traffic::populate_seen`).
+const PHANTOM_WAIT: f32 = 90.0;
+/// Another vehicle more than this far above or below a car's way (where the way passes it)
+/// is not in it (m): the road under a bridge is some 4.5 m below the deck.
+const BODY_LEVEL: f64 = 3.0;
 
 /// What makes a new car a timetable bus (`Traffic::create_car`).
 pub struct BusSetup {
@@ -155,6 +163,10 @@ pub struct AiCar {
     /// Seconds it has crept along below 1 m/s (a claim of one that crawls in a jam of its
     /// own is no car about to come either).
     pub crawl: f32,
+    /// The odometer when it last got two metres further, and the seconds since: a car
+    /// that creeps against something it never gets past stands as much as one that stops
+    /// (`stopped` starts afresh with every centimetre it creeps).
+    pub progress: (f32, f32),
     /// A timetable bus: its trip's stops, the doors, the layover, the people aboard (see
     /// `bus_service`). Everything else about it is this car's.
     pub bus: Option<Box<BusService>>,
@@ -593,7 +605,7 @@ pub struct Traffic {
     /// Everybody on foot on the ground: position, velocity and whether they are waiting
     /// at a stop (set every frame) - the cars stop for anybody in their way, not only on
     /// a crossing.
-    pub people: Vec<(DVec2, DVec2, bool)>,
+    pub people: Vec<(DVec3, DVec2, bool)>,
     /// No car has been placed yet: the first population may fill the view.
     initial: bool,
     /// Seconds of the last tick (the lamp scripts run in `sync`).
@@ -2051,8 +2063,15 @@ impl Traffic {
                 // close by (the mirrors, a turn of the head) it stays in any case
                 // (one that gave up in a gridlock goes after four minutes even in view,
                 // unless right beside the viewer: kept until nobody saw it, a jam at a
-                // junction the player watched never cleared)
-                (dist > VISIBLE_RANGE * 1.3 && from_eye > NEAR_HIDE) || self.hidden(world, p, r) || (c.gone && c.stopped > 240.0 && from_eye > 40.0)
+                // junction the player watched never cleared; and one held for a minute and
+                // a half by nothing anybody can see - no car, bus or light in front of it,
+                // nobody it gives way to - goes then: whatever held it, it stood against
+                // an invisible wall with the traffic queued up behind it for as long as the
+                // player looked)
+                (dist > VISIBLE_RANGE * 1.3 && from_eye > NEAR_HIDE)
+                    || self.hidden(world, p, r)
+                    || (c.gone && c.stopped > 240.0 && from_eye > 40.0)
+                    || (c.gone && c.progress.1 > PHANTOM_WAIT && matches!(c.why.0, "" | "parked" | "people") && from_eye > 25.0)
             } else {
                 false
             };
@@ -2859,6 +2878,7 @@ impl Traffic {
             lead_car: None,
             ignore_lead: None,
             crawl: 0.0,
+            progress: (0.0, 0.0),
             bus: bus.map(|b| Box::new(BusService::new(b.stops))),
             sounds: None,
             half_width,
@@ -4098,10 +4118,10 @@ impl Traffic {
         // as far as the car needs to stop without a jolt, and never less than a car length
         let reach = (v * v / 5.0 + v + 6.0).clamp(8.0, 45.0);
         let origin = car.vehicle.position.truncate();
-        let near: Vec<&(DVec2, DVec2, bool)> = self
+        let near: Vec<&(DVec3, DVec2, bool)> = self
             .people
             .iter()
-            .filter(|(p, _, _)| (*p - origin).length() < (st.front + reach) as f64 + 6.0)
+            .filter(|(p, _, _)| (p.truncate() - origin).length() < (st.front + reach) as f64 + 6.0)
             .collect();
         if near.is_empty() {
             return None;
@@ -4127,15 +4147,21 @@ impl Traffic {
                 // when the car's front gets here, at most two seconds on
                 let t = (((d - st.front).max(0.0)) / v.max(1.0)).min(2.0) as f64;
                 for (p, pv, waiting) in &near {
+                    // on the same level only: somebody on a footbridge over the road, in a
+                    // subway under it or on a platform above it is in nobody's way here (a
+                    // car would stand in front of nothing anybody could see)
+                    if (p.z - q.z).abs() > PEOPLE_LEVEL {
+                        continue;
+                    }
                     let half = if *waiting && car.is_bus() {
                         car.half_width as f64 - 0.3
                     } else {
                         car.half_width as f64 + 0.3
                     };
-                    for at in [*p, *p + *pv * t] {
+                    for at in [p.truncate(), p.truncate() + *pv * t] {
                         let rel = at - c;
                         if rel.dot(fwd).abs() <= 0.55 && rel.dot(right).abs() < half {
-                            return Some((d - 1.5, *p));
+                            return Some((d - 1.5, p.truncate()));
                         }
                     }
                 }
@@ -4848,7 +4874,7 @@ impl Traffic {
         let me = car.id;
         let near: Vec<&Footprint> = feet
             .iter()
-            .filter(|f| f.car != i && !rounding.contains(&f.car) && (f.z - z).abs() < 4.0)
+            .filter(|f| f.car != i && !rounding.contains(&f.car) && (f.z - z).abs() < BODY_LEVEL + 6.0)
             .filter(|f| (f.center - pos).length() < reach as f64 + f.half_len + f.half_w + 2.0)
             .filter(|f| {
                 let o = &self.cars[f.car];
@@ -4865,14 +4891,21 @@ impl Traffic {
         }
         let hw = car.half_width as f64;
         let mut d = st.front + 0.2;
-        let mut p = st.way_point(&self.net, d).truncate();
+        let mut p3 = st.way_point(&self.net, d);
         while d <= reach {
             // (finer close by, where the gap matters)
             let step = if d < st.front + 20.0 { 0.75 } else { 1.5 };
-            let q = st.way_point(&self.net, d + step).truncate();
+            let q3 = st.way_point(&self.net, d + step);
+            let (p, q) = (p3.truncate(), q3.truncate());
             let dir = (q - p).normalize_or_zero();
             let across = DVec2::new(dir.y, -dir.x);
             for f in &near {
+                // on the level of the way there, not of the car now: by the car's own
+                // height a car on a bridge counted as in the way of one on the ramp down to
+                // the road under it (they differed by under 4 m until right below it)
+                if (f.z - p3.z).abs() > BODY_LEVEL {
+                    continue;
+                }
                 let rel = p - f.center;
                 // the footprint grown by this car's half width across its way, less a
                 // little so that a car on the lane beside does not count (10 cm: at 20 cm
@@ -4897,7 +4930,7 @@ impl Traffic {
                     ));
                 }
             }
-            p = q;
+            p3 = q3;
             d += step;
         }
         None
@@ -5958,10 +5991,16 @@ impl Traffic {
             } else {
                 car.crawl = 0.0;
             }
+            if (car.state.odometer - car.progress.0).abs() > 2.0 || car.at_stop() {
+                car.progress = (car.state.odometer, 0.0);
+            } else {
+                car.progress.1 += dt;
+            }
+            let stood = car.stopped.max(car.progress.1);
             // a random car that has stood for a minute without a light or a junction
             // holding it has given up: it leaves as soon as nobody sees it
             // (one yielding for minutes is in a gridlock nobody else will end)
-            if (car.stopped > 60.0 && !car.yielding || car.stopped > 150.0) && !car.is_bus() && !car.light_hold && !car.gone
+            if (stood > 60.0 && !car.yielding || stood > 150.0) && !car.is_bus() && !car.light_hold && !car.gone
             {
                 car.gone = true;
                 if debug {
@@ -5969,7 +6008,7 @@ impl Traffic {
                         "t={:.1}: car {} stood for {:.0} s: taken off once out of sight",
                         self.time,
                         car.id,
-                        car.stopped
+                        stood
                     );
                 }
             }
@@ -7377,6 +7416,7 @@ impl Traffic {
             lead_car: None,
             ignore_lead: None,
             crawl: 0.0,
+            progress: (0.0, 0.0),
             bus: scheduled.then(|| Box::new(BusService::new(Vec::new()))),
             sounds: None,
             half_width,

@@ -1946,13 +1946,13 @@ impl Humans {
     /// for them.
     /// Everybody on foot on the ground, for the traffic to stop for: position, velocity
     /// and whether they wait at a stop (a bus pulls up right beside those).
-    pub fn on_foot(&self) -> Vec<(DVec2, DVec2, bool)> {
+    pub fn on_foot(&self) -> Vec<(DVec3, DVec2, bool)> {
         self.people
             .iter()
             .filter(|p| p.place == Place::Ground)
             .map(|p| {
                 let waiting = matches!(&p.state, State::Pax(x) if x.inside.is_none());
-                (p.position.truncate(), p.vel, waiting)
+                (p.position, p.vel, waiting)
             })
             .collect()
     }
