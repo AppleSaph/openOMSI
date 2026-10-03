@@ -569,22 +569,6 @@ struct StagedSpline {
 /// terrain does not - a caster in one plane with what it falls on paints dark patches into
 /// it (the sun shadow's bias is 6 cm). Splines are surfaces and cast nothing otherwise.
 const SPLINE_SHADOW_CLEARANCE: f32 = 0.75;
-/// OMSI's metric separation for a spline or `[surface]` object's vertices.
-const OMSI_SURFACE_LIFT: f32 = 0.08;
-
-fn scenery_draw_position(authored: DVec3, surface: bool) -> DVec3 {
-    authored + if surface { DVec3::Z * OMSI_SURFACE_LIFT as f64 } else { DVec3::ZERO }
-}
-
-/// Whether a scenery object is drawn with the roads' `OMSI_SURFACE_LIFT`: a `[surface]`
-/// object, and whatever is drawn in the surfaces' phases on them - a `[rendertype] surface`
-/// plate and an `on_surface` marking. A road arrow or a zebra laid a few centimetres over
-/// the authored road went under the road drawn 8 cm higher (every turn arrow of Spandau's
-/// Falkenseer Chaussee, the zebra crossings of many maps, #871).
-fn drawn_on_surfaces(sco: &SceneryObject) -> bool {
-    use omsi_scenery::sco::RenderType;
-    sco.surface || matches!(sco.render_type, RenderType::Surface | RenderType::OnSurface)
-}
 /// A spline whose profiles all hang this far (m) over its line - wires, catenaries, a
 /// canopy - is no ground surface: it neither cuts the terrain nor carries anything.
 const SPLINE_OVERHEAD: f32 = 2.0;
@@ -2513,8 +2497,8 @@ impl World {
         drive_probe(&self.terrains, &self.surfaces, x, y, top).below
     }
 
-    /// Local visible road plane under a vehicle. Exact faces include the same draw lift
-    /// as the road; raster heights do not. Choose the nearby deck, never a roof above it.
+    /// Local visible road plane under a vehicle: the exact faces where there are any (raster
+    /// heights are coarser). Choose the nearby deck, never a roof above it.
     pub fn puddle_surface(&self, position: DVec3) -> Option<(f64, glam::Vec3)> {
         let height = self.camera_ground(position.x, position.y, position.z + 0.35)?;
         let key = tile_key(position.x, position.y);
@@ -5136,7 +5120,7 @@ impl World {
                         if !outside(b) {
                             ts.add_height_profiles(
                                 hp,
-                                scenery_draw_position(q.origin, true),
+                                q.origin,
                                 tx,
                                 ty,
                             );
@@ -5228,7 +5212,7 @@ impl World {
                                 ts.add_drive_mesh(
                                     mesh,
                                     &pose.rot,
-                                    scenery_draw_position(pose.pos, true),
+                                    pose.pos,
                                     tx,
                                     ty,
                                 );
@@ -6424,10 +6408,9 @@ impl World {
                         scene.meshes[id].source = Some("terrain-mapped spline cells".to_string());
                         tg.meshes.push(id);
                         if let Some(mat) = pl.terrain_mapping_mat {
-                            let si = instance!(renderer.add_surface_instance(scene, id, p.origin, Mat4::from_translation(glam::Vec3::Z * OMSI_SURFACE_LIFT), vec![mat]));
+                            let si = instance!(renderer.add_surface_instance(scene, id, p.origin, Mat4::IDENTITY, vec![mat]));
                             if let Some(inst) = scene.instances.get_mut(si) {
                                 inst.render_phase = RenderPhase::Spline;
-                                inst.surface_bias = false;
                             }
                         }
                         done_some = true;
@@ -6536,12 +6519,11 @@ impl World {
                                 scene,
                                 gid,
                                 p.origin,
-                                Mat4::from_translation(glam::Vec3::Z * OMSI_SURFACE_LIFT),
+                                Mat4::IDENTITY,
                                 vec![mat],
                             ));
                             if let Some(inst) = scene.instances.get_mut(terrain_instance) {
                                 inst.render_phase = RenderPhase::Spline;
-                                inst.surface_bias = false;
                                 inst.blend_sort_origin = Some(*sort_origin);
                             }
                         }
@@ -6549,16 +6531,20 @@ impl World {
                     };
                     tg.meshes.push(id);
                     scene.meshes[id].source = Some(st.def.path.display().to_string());
+                    // Drawn where the map puts it and drawn over the ground by the surfaces'
+                    // depth bias, as a road wins over flush ground in Omsi.exe. Lifted 8 cm
+                    // instead, it stood over the ground the editor had aligned to it (the
+                    // footways of Spandau's Hansastr. lie at the ground's height), and under
+                    // every kerb and footway edge one saw into the hole cut beneath it (#823).
                     let si = instance!(renderer.add_surface_instance(
                         scene,
                         id,
                         p.origin,
-                        Mat4::from_translation(glam::Vec3::Z * OMSI_SURFACE_LIFT),
+                        Mat4::IDENTITY,
                         mats
                     ));
                     if let Some(inst) = scene.instances.get_mut(si) {
                         inst.render_phase = RenderPhase::Spline;
-                        inst.surface_bias = false;
                         inst.blend_sort_origin = Some(*sort_origin);
                     }
                     // a bridge deck or an elevated railway casts a sun shadow (see
@@ -6660,7 +6646,6 @@ impl World {
                         !matches!(ot.sco.render_type, omsi_scenery::sco::RenderType::Normal)
                             || ot.sco.surface;
                     let render_phase = scenery_render_phase(ot.sco.render_type);
-                    let draw_pos = scenery_draw_position(pos, drawn_on_surfaces(&ot.sco));
                     let has_lower = !type_lods.is_empty();
                     let mut lamp_instances = Vec::new();
                     let mut lamp_slots = Vec::new();
@@ -6793,23 +6778,22 @@ impl World {
                             let i = instance!(renderer.add_surface_instance(
                                 scene,
                                 *mesh_id,
-                                draw_pos,
+                                pos,
                                 xf,
                                 mats.clone()
                             ));
                             i
                         } else {
-                            let i = instance!(renderer.add_instance(scene, *mesh_id, draw_pos, xf, mats.clone()));
+                            let i = instance!(renderer.add_instance(scene, *mesh_id, pos, xf, mats.clone()));
                             renderer.set_omsi_caster(scene, i, ot.mesh_casts.get(mi).copied().unwrap_or(false));
                             i
                         };
                         if let Some(inst) = scene.instances.get_mut(inst) {
                             inst.render_phase = render_phase;
                             if surface {
-                                // The authored OMSI phase and fixed `[surface]` lift replace
-                                // camera-angle-sensitive bias for these road-layer meshes.
+                                // an object lying on the road (a crossing, markings, a zebra)
+                                // goes over the splines it overlaps
                                 inst.decal = true;
-                                inst.surface_bias = false;
                             }
                         }
                         // Scenery signs use [matl_freetex] with a string from the map
@@ -7026,16 +7010,13 @@ impl World {
                         // author painted asphalt or another layer on the terrain below it.
                         if let Some(mat) = pl.terrain_mapping_mat {
                             let inst = if surface {
-                                instance!(renderer.add_surface_instance(scene, ground_id, draw_pos, xf, vec![mat]))
+                                instance!(renderer.add_surface_instance(scene, ground_id, pos, xf, vec![mat]))
                             } else {
-                                instance!(renderer.add_instance(scene, ground_id, draw_pos, xf, vec![mat]))
+                                instance!(renderer.add_instance(scene, ground_id, pos, xf, vec![mat]))
                             };
                             if let Some(x) = scene.instances.get_mut(inst) {
                                 x.decal = surface;
                                 x.render_phase = render_phase;
-                                if surface {
-                                    x.surface_bias = false;
-                                }
                             }
                             if let Some((lo, hi)) = range {
                                 renderer.set_lod_range(scene, inst, lo, hi);
@@ -9069,9 +9050,7 @@ impl World {
                 texture_updates.push((o.ty.clone(), selection, o.instances.clone(), switches));
             }
             for ((inst, xf), &visible) in o.instances.iter().zip(&o.inst.mesh_transforms).zip(&o.inst.mesh_visible) {
-                // Scripted tram switches keep the same world-space lift as on upload.
-                // `o.pos` is the authored pose used by scripts/physics, not the draw pose.
-                renderer.set_transform(scene, *inst, scenery_draw_position(o.pos, drawn_on_surfaces(&o.ty.sco)), o.xf * *xf);
+                renderer.set_transform(scene, *inst, o.pos, o.xf * *xf);
                 let p = &mut scene.instances[*inst];
                 if p.visible != visible {
                     renderer.set_params(scene, *inst, &[], visible, &[]);
@@ -12707,36 +12686,6 @@ mod tests {
             assert!((at(0, x, 1) - expect(x)).abs() <= 1.0, "row {x}");
         }
         assert!((0..n * n).all(|i| own.rgba[i * 4 + 2] == 0));
-    }
-
-    #[test]
-    fn surface_contact_height_matches_the_visible_surface_lift() {
-        let authored = DVec3::new(12.0, 18.0, 3.5);
-        let contact = scenery_draw_position(authored, true);
-        assert!((contact.z - authored.z - OMSI_SURFACE_LIFT as f64).abs() < 1e-8);
-    }
-
-    #[test]
-    fn road_markings_are_lifted_with_the_road_they_lie_on() {
-        let sco = |text: &str| SceneryObject::parse(&omsi_cfg::CfgFile::from_str("x.sco", text));
-        // Spandau's VZ_surfmark_arrow_L: a terrain-relative object drawn on the surfaces
-        assert!(drawn_on_surfaces(&sco("[rendertype]\non_surface\n[mesh]\narrow.o3d\n")));
-        assert!(drawn_on_surfaces(&sco("[rendertype]\nsurface\n[mesh]\nplate.o3d\n")));
-        assert!(drawn_on_surfaces(&sco("[surface]\n[mesh]\nplate.o3d\n")));
-        assert!(!drawn_on_surfaces(&sco("[mesh]\nhouse.o3d\n")));
-        assert!(!drawn_on_surfaces(&sco("[rendertype]\npresurface\n[mesh]\nground.o3d\n")));
-    }
-
-    #[test]
-    fn scripted_surface_draw_pose_keeps_the_upload_lift() {
-        let authored = DVec3::new(-2165.1, -2368.8, -0.068);
-        let uploaded = scenery_draw_position(authored, true);
-        for _frame in 0..8 {
-            assert_eq!(scenery_draw_position(authored, true), uploaded);
-        }
-        assert_eq!(scenery_draw_position(authored, false), authored);
-        assert_eq!(uploaded.truncate(), authored.truncate());
-        assert!((uploaded.z - authored.z - 0.08).abs() < 1e-8);
     }
 
     #[test]
