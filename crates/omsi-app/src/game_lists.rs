@@ -1901,7 +1901,7 @@ fn options_pages(app: &App) -> Vec<Page> {
         .into_iter()
         .flatten()
         .collect();
-    let display: Vec<(String, String)> = vec![
+    let mut display = vec![
         switch_row(app, "fullscreen", "Fullscreen", "Switches the window between windowed and fullscreen"),
         pick("resolution", "Window size", later),
         switch_row(
@@ -1910,6 +1910,9 @@ fn options_pages(app: &App) -> Vec<Page> {
             "Triple screen",
             "Three physical screen projections; OpenXR takes priority",
         ),
+    ];
+    // (the rig's own settings only while it is on)
+    let triple = vec![
         switch_row(
             app,
             "triple_hud_center",
@@ -1964,6 +1967,11 @@ fn options_pages(app: &App) -> Vec<Page> {
             "Vertical eye offset",
             &|v| format!("{v:.0} mm"),
         ),
+    ];
+    if app.settings.triple.enabled {
+        display.extend(triple);
+    }
+    let display: Vec<(String, String)> = display.into_iter().chain([
         switch_row(app, "vsync", "V-sync", "Waits for the screen's refresh"),
         pick("max_fps", "Frame limit", "Frames a second at most"),
         switch_row(app, "fps", "Frame rate", "Show the frames per second in the top right corner"),
@@ -1974,8 +1982,7 @@ fn options_pages(app: &App) -> Vec<Page> {
         pick("texture_memory", "Texture memory", later),
         switch_row(app, "texture_compression", "Compress textures on loading", later),
         (!omsi_launcher_lib::graphics_profiles().is_empty()).then(|| opens("Load graphics profile", "Applies a graphics profile saved in the launcher", "gfxprofile")),
-    ]
-        .into_iter()
+    ])
         .flatten()
         .collect();
     let sound: Vec<(String, String)> = vec![
