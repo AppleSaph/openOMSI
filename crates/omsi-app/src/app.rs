@@ -561,7 +561,7 @@ impl App {
                             p.load_sounds(&audio);
                             p.ibis_background = true;
                             // --autostart applies in the window too, not only offscreen
-                            if self.args.autostart {
+                            if self.args.autostart && !self.args.is_resuming() {
                                 let msg = p.start_up();
                                 self.service_msg = Some((msg, 6.0));
                             }
@@ -604,6 +604,7 @@ impl App {
                         tour: None,
                         trip: None,
                         autostart: false,
+                        situation_next_stop: None,
                         ..self.args.clone()
                     };
                     match spawn_player(&one, &w, &renderer, &mut scene) {
@@ -700,6 +701,12 @@ impl App {
                                     if let Some(k) = self.args.duty_trip {
                                         d.start_at(k, self.args.duty_first_stop);
                                     }
+                                    if self.args.is_resuming() {
+                                        if let Some(stop) = self.args.situation_next_stop {
+                                            d.restore_progress(stop);
+                                        }
+                                        d.restore_host(&mut p.vehicle, parse_time(&self.args.time));
+                                    }
                                     Some(d)
                                 }
                                 Err(e) => {
@@ -711,7 +718,10 @@ impl App {
                             // --autostart in the window puts the duty on the IBIS as well
                             // (it only ever did offscreen: the duty did not exist yet when
                             // the start-up began, and the displays stayed dark)
-                            if let (true, Some(d)) = (self.args.autostart, self.duty.as_mut()) {
+                            if let (true, Some(d)) = (
+                                self.args.autostart && !self.args.is_resuming(),
+                                self.duty.as_mut(),
+                            ) {
                                 d.update(&mut p.vehicle, parse_time(&self.args.time));
                                 let (trip, stop) = d.trip_for_ibis();
                                 p.set_duty_destination(trip, stop);

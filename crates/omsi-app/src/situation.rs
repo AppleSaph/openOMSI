@@ -133,9 +133,11 @@ pub(crate) fn apply_situation_parsed(sit: &omsi_content::situation::Situation, a
         if !v.paint.trim().is_empty() {
             args.hof = Some(v.paint.clone());
         }
+        args.situation_next_stop = None;
         if v.timetable.len() >= 2 {
             args.line = Some(v.timetable[0].clone());
             args.tour = Some(v.timetable[1].clone());
+            args.situation_next_stop = v.timetable.get(3).and_then(|s| s.trim().parse().ok());
             // the third value is the trip of the tour under way (0 = the first); the duty
             // goes on from there with the rest of the tour, as it was driven (taken as a
             // picked trip, it was the whole duty, and the next save wrote it as trip 0 of
@@ -371,6 +373,67 @@ fn content_relative(path: &str, folder: &str) -> String {
 }
 
 #[cfg(test)]
+pub(crate) fn timetable_test_vehicle() -> omsi_sim::VehicleInstance {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "omsi_tt_restore_{}_{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("device.osc");
+    let vars = dir.join("vars.txt");
+    let strings = dir.join("strings.txt");
+    std::fs::write(&vars, "duty\nobserved_stop\nobserved_delay\n").unwrap();
+    std::fs::write(&strings, "destination\nobserved_line\n").unwrap();
+    std::fs::write(
+        &script,
+        r#"
+{frame}
+(L.L.schedule_active) ! (M.V.GetTTBusstopCount) 0 = ||
+{if}
+0 (S.L.duty)
+"" (S.$.destination)
+{endif}
+(M.V.GetTTLineString) (S.$.observed_line)
+(M.V.GetTTBusstopIndex) (S.L.observed_stop)
+(M.V.GetTTDelay) (S.L.observed_delay)
+{end}
+"#,
+    )
+    .unwrap();
+    let program = omsi_script::compile(&omsi_script::CompileInput {
+        scripts: vec![script],
+        varlists: vec![vars],
+        stringvarlists: vec![strings],
+        builtin_vars: vec!["schedule_active".into()],
+        ..Default::default()
+    });
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let ty = Arc::new(omsi_sim::VehicleType {
+        def: Default::default(),
+        model: Default::default(),
+        model_dir: dir.clone(),
+        program: Arc::new(program),
+        meshes: Vec::new(),
+        keep_winding: false,
+        paint_schemes: Vec::new(),
+        texchanges: Vec::new(),
+        wheel_meshes: Vec::new(),
+        suspension_axles: Vec::new(),
+        missing_packs: Vec::new(),
+        mesh_bounds: Vec::new(),
+        mesh_boxes: Vec::new(),
+    });
+    std::fs::remove_dir_all(dir).unwrap();
+    omsi_sim::VehicleInstance::new(ty, omsi_sim::VehicleHost::new(Default::default()))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
@@ -390,6 +453,7 @@ mod tests {
                     file: "Vehicles/MAN_NL_NG/MAN_EN92.bus".into(),
                     is_my_vehicle: false,
                     vars: vec![("Colorscheme".into(), 4.0)],
+                    string_vars: vec![("destination".into(), "  Manual destination  ".into())],
                     ..Default::default()
                 },
             ],
@@ -400,6 +464,10 @@ mod tests {
         assert_eq!(args.paint.as_deref(), Some("1"));
         assert_eq!(args.situation_others.len(), 1);
         assert_eq!(args.situation_others[0].paint.as_deref(), Some("4"));
+        assert_eq!(
+            args.situation_others[0].strvars,
+            vec![("destination".into(), "  Manual destination  ".into())]
+        );
     }
 
     /// #653: a saved duty goes on at the trip of the tour it was saved on, with the rest of
@@ -420,5 +488,38 @@ mod tests {
         apply_situation_parsed(&sit, &mut args);
         assert_eq!((args.line.as_deref(), args.tour.as_deref(), args.trip.as_deref()), (Some("137"), Some("4"), Some("4")));
         assert!(args.whole_tour);
+        assert_eq!(args.situation_next_stop, Some(2));
+    }
+
+    #[test]
+    fn legacy_and_invalid_saved_stop_fields_keep_legacy_selection() {
+        let mut args = crate::cli::Args::parse_from(["openomsi"]);
+        for fields in [
+            vec!["109", "65104", "16"],
+            vec!["109", "65104", "16", "-1"],
+            vec!["109", "65104", "16", "invalid"],
+            vec![],
+        ] {
+            args.situation_next_stop = Some(9);
+            let sit = omsi_content::situation::Situation {
+                vehicles: vec![omsi_content::situation::SituationVehicle {
+                    is_my_vehicle: true,
+                    timetable: fields.into_iter().map(String::from).collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            apply_situation_parsed(&sit, &mut args);
+            assert_eq!(args.situation_next_stop, None);
+        }
+    }
+
+    #[test]
+    fn a_string_only_snapshot_is_a_resume() {
+        let mut args = crate::cli::Args::parse_from(["openomsi"]);
+        assert!(!args.is_resuming());
+        args.situation_strvars
+            .push(("destination".into(), "Manual".into()));
+        assert!(args.is_resuming());
     }
 }

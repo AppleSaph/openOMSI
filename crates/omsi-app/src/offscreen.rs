@@ -100,7 +100,16 @@ pub(crate) fn run_offscreen(
                 if let Some(k) = args.duty_trip {
                     d.start_at(k, args.duty_first_stop);
                 }
-                d.update(&mut p.vehicle, parse_time(&args.time));
+                if args.is_resuming() {
+                    if let Some(stop) = args.situation_next_stop {
+                        d.restore_progress(stop);
+                    } else {
+                        d.update(&mut p.vehicle, parse_time(&args.time));
+                    }
+                    d.restore_host(&mut p.vehicle, parse_time(&args.time));
+                } else {
+                    d.update(&mut p.vehicle, parse_time(&args.time));
+                }
                 let mut fonts = world.fonts.lock();
                 if let Err(e) = crate::schedule_paper::update_vehicle(
                     &mut p.vehicle,
@@ -266,7 +275,7 @@ pub(crate) fn run_offscreen(
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.0);
     let mut last_reasons: Vec<String> = Vec::new();
-    if args.autostart {
+    if args.autostart && !args.is_resuming() {
         if let Some(p) = player.as_mut() {
             log::info!("{}", p.start_up());
             if let Some(d) = duty.as_ref() {
