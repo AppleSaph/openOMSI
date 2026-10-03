@@ -1383,7 +1383,9 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
         }
         "fullscreen" => {
             app.settings.fullscreen = on;
-            if let Some(w) = app.window.as_ref() {
+            if app.spanned {
+                log::info!("triple screen: the window spans three monitors, fullscreen is left alone");
+            } else if let Some(w) = app.window.as_ref() {
                 w.set_fullscreen(on.then_some(winit::window::Fullscreen::Borderless(None)));
             }
             Some(("fullscreen", bit))

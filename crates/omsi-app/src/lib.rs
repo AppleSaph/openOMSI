@@ -447,6 +447,7 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         navigator: None,
         vr_nav_profiles: crate::vr_navigator::Profiles::load(),
         vr_nav_edit: None,
+        spanned: false,
         ui: ui::Ui::new(),
         fps: 0.0,
         rain: rain::Rain::new(),

@@ -205,7 +205,9 @@ impl App {
             }
             // Alt+Enter: full screen on and off
             if pressed && !repeat && matches!(code, KeyCode::Enter | KeyCode::NumpadEnter) && (self.keys.contains(&KeyCode::AltLeft) || self.keys.contains(&KeyCode::AltRight)) {
-                if let Some(win) = self.window.as_ref() {
+                if self.spanned {
+                    log::info!("triple screen: the window spans three monitors, Alt+Enter is left alone");
+                } else if let Some(win) = self.window.as_ref() {
                     win.set_fullscreen(if win.fullscreen().is_some() { None } else { Some(winit::window::Fullscreen::Borderless(None)) });
                 }
                 return;

@@ -46,6 +46,8 @@ pub(crate) struct App {
     pub(crate) navigator: Option<navigator::Navigator>,
     pub(crate) vr_nav_profiles: crate::vr_navigator::Profiles,
     pub(crate) vr_nav_edit: Option<crate::vr_navigator::Editing>,
+    /// The window spans the triple screen's three monitors: fullscreen would shrink it to one.
+    pub(crate) spanned: bool,
     /// Chat, mouse-over names and name tags (Roboto).
     pub(crate) ui: Option<ui::Ui>,
     pub(crate) fps: f32,
@@ -419,6 +421,10 @@ impl App {
             });
             if let Some(row) = row {
                 let size = row[0].size();
+                if self.settings.fullscreen || gamescope || resolution.is_some() || self.args.size != crate::cli::DEFAULT_SIZE {
+                    log::info!("triple screen: spanning three monitors instead of the fullscreen / window size settings");
+                }
+                self.spanned = true;
                 attrs = attrs
                     .with_fullscreen(None)
                     .with_decorations(false)
