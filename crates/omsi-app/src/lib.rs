@@ -475,6 +475,8 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         vr_cursor_physical: None,
         vr_cursor_warp_pending: None,
         window_focused: false,
+        input_away: false,
+        window_hidden: false,
         keys: Default::default(),
         door_key_triggers: Default::default(),
         last: Instant::now(),

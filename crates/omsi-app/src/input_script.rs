@@ -1521,6 +1521,18 @@ impl App {
                     let (dx, dy) = xy();
                     self.look_by(dx, dy);
                 }
+                // `focus 0|1`, `minimize`, `restore`: the window losing and getting back the
+                // keyboard and the mouse, as the window's own events do it
+                "focus" if arg == "0" => self.input_lost(),
+                "focus" => self.input_back(),
+                "minimize" => {
+                    self.window_hidden = true;
+                    self.input_lost();
+                }
+                "restore" => {
+                    self.window_hidden = false;
+                    self.input_back();
+                }
                 "key" | "keydown" | "keyup" => {
                     let Some(code) = Self::script_key(arg) else {
                         log::warn!("input script: unknown key {arg}");
@@ -1634,6 +1646,20 @@ impl App {
         // the menu takes the keys, their key-ups too: what is held now is let go here, or a
         // steering key let go in the menu went on turning the wheel to full lock once the
         // menu closed (a throttle key went on accelerating, a door button stayed pressed)
+        self.release_vehicle_keys();
+        if self.lan.is_none() {
+            self.paused = true;
+        }
+        self.game_menu = Some(0);
+        self.menu_top = None;
+        self.menu_kbd = true;
+        self.menu_drag = None;
+    }
+
+    /// Let go of every key the vehicle holds: the keyboard's driving keys and pedals, the
+    /// vehicle keys of `Inputs/keyboard.cfg` (their `<trigger>_off` fires) and the
+    /// Shift+number door buttons.
+    pub(crate) fn release_vehicle_keys(&mut self) {
         if let Some(p) = self.player.as_mut() {
             let held: Vec<_> = p.held_keys.keys().copied().collect();
             for scan in held {
@@ -1644,13 +1670,40 @@ impl App {
                 p.door_key_off(&fired);
             }
         }
-        if self.lan.is_none() {
-            self.paused = true;
+        self.door_key_triggers.clear();
+    }
+
+    /// The window lost the keyboard and the mouse (focus gone to another window, minimised,
+    /// hidden, a phone sending the app to the background): no key-up or button-up comes for
+    /// what is held now, so all of it is let go here - the vehicle's keys, a switch held
+    /// with the mouse, looking round, the mouse's zoom - and the mouse steering holds the
+    /// wheel and the brake where they are with its throttle off. Until the window has the
+    /// focus again the mouse and the keyboard work nothing (see `input_away`). A game
+    /// controller's axes stay theirs.
+    pub(crate) fn input_lost(&mut self) {
+        self.input_away = true;
+        self.release_vehicle_keys();
+        self.keys.clear();
+        if let Some(p) = self.player.as_mut() {
+            p.release();
         }
-        self.game_menu = Some(0);
-        self.menu_top = None;
-        self.menu_kbd = true;
-        self.menu_drag = None;
+        self.dragging = false;
+        self.buttons_held = (false, false);
+        self.both_drag = None;
+        self.mouse_look = false;
+        self.steer_cursor = None;
+        self.mouse_pedals.0 = 0.0;
+    }
+
+    /// The window has the focus again: the mouse steering eases from where the wheel stands
+    /// to the cursor (as when it is switched on) instead of jumping there. A key still held
+    /// from before counts only once it is pressed again.
+    pub(crate) fn input_back(&mut self) {
+        if !self.input_away {
+            return;
+        }
+        self.input_away = false;
+        self.mouse_steer = (self.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
     }
 
     pub(crate) fn close_game_menu(&mut self) {

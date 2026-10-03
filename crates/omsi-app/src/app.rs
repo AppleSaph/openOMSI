@@ -90,6 +90,11 @@ pub(crate) struct App {
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) vr_cursor_warp_pending: Option<(f32, f32)>,
     pub(crate) window_focused: bool,
+    /// The window lost the focus or was minimised or hidden: the keyboard and the mouse
+    /// work nothing until it has the focus again (`App::input_lost` / `input_back`).
+    pub(crate) input_away: bool,
+    /// The window is minimised or out of sight, as its events last said.
+    pub(crate) window_hidden: bool,
     pub(crate) keys: hashbrown::HashSet<KeyCode>,
     /// Door trigger groups currently held by the Shift+number shortcut. Keeping the
     /// release until physical key-up prevents latched button states and door chatter.

@@ -60,10 +60,7 @@ impl ApplicationHandler for App {
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         self.surface = None;
         self.touch.drop_gpu();
-        self.keys.clear();
-        if let Some(p) = self.player.as_mut() {
-            p.axes.release_all();
-        }
+        self.input_lost();
         self.save_last_situation();
     }
 
@@ -78,12 +75,22 @@ impl ApplicationHandler for App {
                 if let (Some(s), Some(r)) = (self.surface.as_mut(), self.renderer.as_ref()) {
                     s.resize(r, size.width, size.height);
                 }
+                // (minimised, Windows makes the window 0 x 0)
+                let hidden = size.width == 0 || size.height == 0;
+                if hidden && !self.window_hidden {
+                    self.input_lost();
+                }
+                self.window_hidden = hidden;
             }
+            // (minimised or covered entirely, macOS and Wayland: the focus goes with it, and a
+            // window merely covered by another may still be the one the player drives with)
+            WindowEvent::Occluded(hidden) => self.window_hidden = hidden,
             WindowEvent::Focused(true) => {
                 self.window_focused = true;
                 if let Some(ctl) = self.controllers.as_mut() {
                     ctl.set_focus(true);
                 }
+                self.input_back();
             }
             WindowEvent::Focused(false) => {
                 self.finish_vr_nav_edit();
@@ -101,12 +108,17 @@ impl ApplicationHandler for App {
                 // modifier got "stuck" and made the next plain key press look like it was
                 // held with that modifier - Shift got stuck this way once, and a plain `W`
                 // (throttle in the wasd preset) was then read as Shift+W, OMSI's own wiper
-                // key, toggling the wipers on every press instead of driving.
-                self.keys.clear();
-                if let Some(p) = self.player.as_mut() {
-                    p.axes.release_all();
-                }
+                // key, toggling the wipers on every press instead of driving. The vehicle's
+                // own keys, a door button, a switch held with the mouse and the mouse
+                // steering's throttle went on as well, with the window minimised.
+                self.input_lost();
             }
+            // nothing the keyboard or the mouse does reaches the game while the window is
+            // in the background (a wheel turned over a window behind another one zoomed;
+            // the keys a system sends again for what is still held when the focus comes
+            // back count only when pressed anew)
+            WindowEvent::KeyboardInput { is_synthetic, ref event, .. } if self.input_away || (is_synthetic && event.state == ElementState::Pressed) => {}
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } if self.input_away => {}
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed && self.menu_edit_icao {
                     if let Some(text)=event.text.as_deref(){ self.icao_edit_text(text); }
@@ -740,7 +752,7 @@ impl ApplicationHandler for App {
                 // mouse steering asks only for a player's vehicle, 0x6f4257; not on foot,
                 // #516)
                 let bus_view = self.mouse_steers_in_view();
-                if let (true, Some(s)) = (self.mouse_drive && bus_view && !self.mouse_look
+                if let (true, Some(s)) = (self.mouse_drive && bus_view && !self.mouse_look && !self.input_away
                                               && self.game_menu.is_none(), self.surface.as_ref()) {
                     let (w, h) = (s.config.width as f32, s.config.height as f32);
                     if std::mem::take(&mut self.center_cursor) {
@@ -801,11 +813,13 @@ impl ApplicationHandler for App {
                     }
                     analog.throttle = Some(self.mouse_pedals.0);
                     analog.brake = Some(self.mouse_pedals.1);
-                } else if self.mouse_drive && bus_view && self.mouse_look
+                } else if self.mouse_drive && bus_view && (self.mouse_look || self.input_away)
                     && self.game_menu.is_none() {
                     // looking round with the right button: the wheel and the pedals stay where
                     // the mouse left them, as in OMSI (they went slack until the button was let
-                    // go - no quick look round while driving)
+                    // go - no quick look round while driving). With the window in the
+                    // background the same, its throttle let go (`App::input_lost`): the
+                    // cursor wandering over other windows steered and drove the bus.
                     analog.steering = Some(self.mouse_steer.0);
                     analog.throttle = Some(self.mouse_pedals.0);
                     analog.brake = Some(self.mouse_pedals.1);
