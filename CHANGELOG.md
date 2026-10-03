@@ -4,6 +4,28 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.1.1196 - 2026-10-03
+
+### Roads and driving
+- Roads are drawn at their own height again and win over the ground by the surfaces' depth bias,
+  as in Omsi.exe; the 8 cm lift is gone, so footways no longer stand over the ground aligned to
+  them and markings no longer sink under the road. [#1077](https://github.com/openOMSI-Project/openOMSI/pull/1077)
+- The bumps of a road texture's `.surf` map (cobbles, slabs, broken asphalt) are felt under the
+  wheels, on splines and on junction objects alike (`OMSI_NO_SURF=1` for an A/B). [#1056](https://github.com/openOMSI-Project/openOMSI/pull/1056)
+- Train cars stand end to end by their model bodies, not by their declared coupling points
+  (a CR200J's second car no longer sits 2.6 m inside the first). [#1016](https://github.com/openOMSI-Project/openOMSI/pull/1016)
+
+### Graphics
+- Wet-road reflections work in Vanilla and Vanilla+ as well as Enhanced, also seen through the
+  bus's own windows; rain films no longer feed the previous frame back into themselves. [#970](https://github.com/openOMSI-Project/openOMSI/pull/970)
+- The texture fallback index looks into archives and content installed while the game runs. [#1029](https://github.com/openOMSI-Project/openOMSI/pull/1029)
+
+### Maps and launcher
+- On the navigator and city map, trolleybuses, buses and trams have their own colours and show
+  their line. [#992](https://github.com/openOMSI-Project/openOMSI/pull/992)
+- The Drive page shows the map itself: its roads, entry points and the chosen line's route. [#943](https://github.com/openOMSI-Project/openOMSI/pull/943)
+- A server whose map is not installed here can be joined: the map comes with the server's mods. [#1076](https://github.com/openOMSI-Project/openOMSI/pull/1076)
+
 ## 0.1.1166 - 2026-10-02
 
 ### Graphics
