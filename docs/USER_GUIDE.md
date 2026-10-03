@@ -452,6 +452,7 @@ Environment variables, all off unless set. The useful ones:
 | `OMSI_NO_LAN_MODS=1` | a LAN host serves no mods and a joining game fetches none |
 | `OMSI_BACKEND=vulkan\|dx12\|gl` | the graphics interface to ask first (the log lists every adapter each one offers) |
 | `OMSI_GPU_LIMITS=default\|downlevel` | pretend the graphics card can only do this much (tests of old cards) |
+| `OMSI_GPU_ARRAYS=textures\|nostorage` | read the scene's arrays from textures, as on OpenGL chips without storage buffers in the vertex shader (or without any: no per-pixel lamp light) - tests of old cards |
 | `OMSI_RENDER_OCCLUDED=1` | draw even while the window is hidden (tests) |
 | `OMSI_CHECK_OBSTACLES=1` | offscreen: drive every lane as a bus and list the objects that would stop it |
 | `OMSI_DEBUG_REPEATERS=1` | list the spline object rows whose start the map and the spline chain disagree about |
