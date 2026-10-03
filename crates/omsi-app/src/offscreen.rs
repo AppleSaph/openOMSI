@@ -365,6 +365,9 @@ pub(crate) fn run_offscreen(
         }
     }
     let mut ground_gap = crate::ground_gap::GroundGap::from_env();
+    if let Some(t) = traffic.as_ref() {
+        crate::ground_gap::check_lanes(&world, t);
+    }
     for i in 0..total_frames {
         let t_s = i as f32 * dt;
         if server {

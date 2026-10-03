@@ -203,3 +203,40 @@ impl GroundGap {
         }
     }
 }
+
+/// `OMSI_GROUND_LANES=1`: along every street lane of the loaded tiles, every metre, how far
+/// the drawn ground (from 3 m over the lane, as Omsi.exe's wheels ask it) lies over or under
+/// the lane's own height - what an AI car's wheels meet where it follows its lane.
+pub fn check_lanes(world: &World, traffic: &crate::traffic::Traffic) {
+    if omsi_cfg::env::var_os("OMSI_GROUND_LANES").is_none() {
+        return;
+    }
+    let mut hist = [0usize; 12];
+    let edges = [-1.0, -0.3, -0.1, -0.05, -0.02, 0.02, 0.05, 0.1, 0.3, 0.6, 1.0];
+    let (mut n, mut none) = (0usize, 0usize);
+    let mut places: Vec<(f64, DVec3)> = Vec::new();
+    for l in traffic.net.lanes.iter().filter(|l| l.kind == omsi_sim::traffic::LaneKind::Street && !l.invisible) {
+        let len = l.length();
+        let mut s = 0.5f32;
+        while s < len {
+            let (p, _) = l.at(s);
+            s += 1.0;
+            let Some(d) = crate::scene::drawn_ground(&world.terrains, &world.surfaces, p.x, p.y, p.z + 3.0) else {
+                none += 1;
+                continue;
+            };
+            n += 1;
+            let off = d - p.z;
+            let k = edges.iter().position(|e| off < *e).unwrap_or(edges.len());
+            hist[k] += 1;
+            if !(-0.1..=0.6).contains(&off) && !places.iter().any(|q| (q.1 - p).truncate().length() < 15.0) && places.len() < 400 {
+                places.push((off, p));
+            }
+        }
+    }
+    log::info!("lane ground: {n} lane points with drawn ground, {none} without; drawn minus lane height by bins <-1, -1..-0.3, -0.3..-0.1, -0.1..-0.05, -0.05..-0.02, -0.02..0.02, 0.02..0.05, 0.05..0.1, 0.1..0.3, 0.3..0.6, 0.6..1, >1: {hist:?}");
+    places.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
+    for (off, p) in places.iter().take(25) {
+        log::info!("  lane at ({:.1}, {:.1}, {:.2}): drawn ground {off:+.2} m", p.x, p.y, p.z);
+    }
+}
