@@ -4,6 +4,36 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.1.1302 - 2026-10-03
+
+### Fixes
+- The Drive page's map no longer fills with the interface's words after a game or a lost
+  graphics device: the launcher kept the map's texture number from its old device, and a
+  number past the new device's textures was drawn with the font atlas.
+- The game starts again on every system: Steam's rich presence ([#996](https://github.com/openOMSI-Project/openOMSI/pull/996)) is built only where
+  its library exists (Windows x64, Linux x64, macOS), the library is put beside the program
+  (also for the servers and a Linux build, which could not find it), and Android, Windows ARM64
+  and macOS build again (0.1.1246 was not released because of it).
+- The window losing the focus or being minimised lets go of every key, button and mouse
+  steering held, and takes no input until it is back; a minimised game runs at 30 fps.
+
+### Merged pull requests
+- Voice chat in sessions through GreenTeaSpeak, players heard where they are [#1102](https://github.com/openOMSI-Project/openOMSI/pull/1102) - with a
+  key handshake between the game and the plugin (a web page can no longer drive it), the voice
+  server's id required, and the plugin putting the user's name and channel back.
+- Resumed sessions keep the bus displays and the timetable's place, and the IBIS moves on to
+  the next trip [#1087](https://github.com/openOMSI-Project/openOMSI/pull/1087).
+- The server's notifications over the navigator [#974](https://github.com/openOMSI-Project/openOMSI/pull/974), a duty given by the server [#985](https://github.com/openOMSI-Project/openOMSI/pull/985),
+  a fresh hello after the WebSocket is made again [#980](https://github.com/openOMSI-Project/openOMSI/pull/980), the paint the bus wears now seen by
+  the other players [#1022](https://github.com/openOMSI-Project/openOMSI/pull/1022).
+- Controllers: latching switches [#1060](https://github.com/openOMSI-Project/openOMSI/pull/1060), Linux wheels no longer buzz [#1042](https://github.com/openOMSI-Project/openOMSI/pull/1042); one key between
+  cabin and outside [#1007](https://github.com/openOMSI-Project/openOMSI/pull/1007).
+- Rendering: the render origin no longer flips while the camera is near it [#1126](https://github.com/openOMSI-Project/openOMSI/pull/1126), the
+  ICU400 sign controller shows its text [#993](https://github.com/openOMSI-Project/openOMSI/pull/993), fewer meshes turned inside out [#1105](https://github.com/openOMSI-Project/openOMSI/pull/1105);
+  Chinese AI car plates [#1002](https://github.com/openOMSI-Project/openOMSI/pull/1002); Volvo Wright rear doors [#1125](https://github.com/openOMSI-Project/openOMSI/pull/1125).
+- Tile loading diagnostics [#1111](https://github.com/openOMSI-Project/openOMSI/pull/1111), cloudflared without console windows [#1001](https://github.com/openOMSI-Project/openOMSI/pull/1001), Simplified
+  Chinese [#1028](https://github.com/openOMSI-Project/openOMSI/pull/1028), the radio documented [#1124](https://github.com/openOMSI-Project/openOMSI/pull/1124), the release history filled in [#1130](https://github.com/openOMSI-Project/openOMSI/pull/1130).
+
 ## 0.1.1246 - 2026-10-03
 
 ### AI traffic
