@@ -272,8 +272,8 @@ impl Launcher {
             _ => {}
         }
         if let Some(step) = p.split(':').nth(1).and_then(|s| s.parse::<usize>().ok()) {
-            // (the Drive page's second part is which of its two tabs: drive:1 the map)
-            app.drive.tab = step.min(1);
+            // (the Drive page's second part is which of its three steps: drive:2 the map)
+            app.drive.tab = step.min(2);
             // (the Controls and Settings pages' second part is their tab: controls:1 the game
             // controllers, settings:3 Sound)
             app.pages.controls_tab = step;
@@ -1131,10 +1131,10 @@ impl Launcher {
         self.map_rect = Some(r);
         let status = self.mapview.status();
         match (self.map_tex, status.is_empty()) {
-            (Some(tex), true) => self.ui.image(r, tex, 0.0),
+            (Some(tex), true) => self.ui.image(r, tex, RADIUS),
             _ => {
                 self.ui.solid(r);
-                self.ui.p().rect(r, omsi_ui::Color::rgba(13, 13, 13, 1.0));
+                self.ui.p().rounded(r, RADIUS, omsi_ui::Color::rgba(13, 13, 13, 1.0));
                 let t = if status.is_empty() { "Loading…" } else { status };
                 self.ui.text_in(t, Rect::new(r.x, r.y + r.h * 0.5 - 12.0, r.w, 24.0), 13.5, Weight::Regular, TEXT_FAINT, Align::Center);
             }
@@ -1174,9 +1174,10 @@ impl Launcher {
         self.preview_rect = Some(r);
         self.showroom.focus_x = focus.clamp(0.2, 0.95);
         match (self.preview_tex, self.showroom.has_picture()) {
-            (Some(tex), true) => self.ui.image(r, tex, 0.0),
+            (Some(tex), true) => self.ui.image(r, tex, RADIUS),
             _ => {
                 self.ui.solid(r);
+                self.ui.p().rounded(r, RADIUS, FIELD);
                 let t = if self.showroom.error.is_some() { "No preview" } else { "Loading…" };
                 self.ui.text_in(t, Rect::new(r.x, r.y + r.h * 0.5 - 12.0, r.w, 24.0), 13.0, Weight::Regular, TEXT_FAINT, Align::Center);
             }

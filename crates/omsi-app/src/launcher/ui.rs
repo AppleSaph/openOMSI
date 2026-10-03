@@ -450,15 +450,6 @@ impl Ui {
         p.rounded_border(r, RADIUS, 1.0, EDGE);
     }
 
-    /// A panel a picture lies behind (the bus on the Drive page's first tab): the same sheet,
-    /// letting what is behind it show through a little. Square and without an outline, because
-    /// it reaches the page's own edges - the tab row above it and the column's left - where a
-    /// rounded corner would read as the tabs' and a line would be drawn over the picture.
-    pub fn panel_soft(&mut self, r: Rect) {
-        self.solid(r);
-        self.p().rect(r, PANEL.alpha(0.86));
-    }
-
     /// A section heading inside a panel: an accent tick and the title in capitals.
     pub fn heading(&mut self, r: Rect, title: &str, icon: Option<&str>) -> Rect {
         let _ = icon;
@@ -942,12 +933,6 @@ impl Ui {
         let content = body(self, Rect::new(r.x, r.y - off, r.w, r.h));
         self.pop_clip();
         self.scroll_keep(name, r, content);
-    }
-
-    /// The offset a scrolling view's content is drawn at, for a view whose rows the caller
-    /// draws itself (`scroll_keep` must be called after them, as `scroll_area` does).
-    pub fn scroll_offset(&self, name: &str) -> f32 {
-        self.scroll.get(&id_of(name)).copied().unwrap_or(0.0)
     }
 
     /// The scrolling of such a view: the bar, the wheel, and its own easing towards where it
