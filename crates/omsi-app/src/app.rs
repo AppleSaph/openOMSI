@@ -348,7 +348,6 @@ impl App {
         #[cfg(not(target_os = "android"))]
         if self.steam.is_none() {
             self.steam = crate::steam::Steam::start();
-            log::info!("Steam API initialized");
         }
 
         // --size sets the window's size in points as well (1600x900 unless given)
