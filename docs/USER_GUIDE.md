@@ -433,6 +433,7 @@ Environment variables, all off unless set. The useful ones:
 | `OMSI_FLEET_IDLE=s`, `OMSI_FLEET_AHEAD=min` | how long an unused vehicle set is kept, how far ahead the fleet is read |
 | `OMSI_NO_BC=1`, `OMSI_NO_TEXCOMPRESS=1`, `OMSI_KEEP_ALLOCATOR=1` | textures as RGBA, no compression of loose pictures, no allocator restart |
 | `OMSI_NO_SHADOWS`, `OMSI_NO_CORONAS`, `OMSI_NO_ENVMAP`, `OMSI_NO_BUMP`, `OMSI_NO_CULL`, `OMSI_ENV_PHOTO=0` | leave one part of the picture out for an A/B |
+| `OMSI_NO_SURF=1` | roads without the bumps of their textures' `.surf` maps (A/B) |
 | `OMSI_NO_PUDDLE_REFLECTIONS=1` | leave wet-road scene reflections out for a screenshot or performance comparison |
 | `OMSI_DEBUG_ENHANCED`, `OMSI_DEBUG_SKY`, `OMSI_DEBUG_EXPOSURE`, `OMSI_METER=…` | the enhanced renderer's lamps, sky, adaptation and metering |
 | `OMSI_DEBUG_TRAFFIC`, `OMSI_DEBUG_PAX`, `OMSI_DEBUG_PHYSICS`, `OMSI_DEBUG_LAN`, `OMSI_DEBUG_IBIS`, `OMSI_DEBUG_VARS=a,b` | why a car, a passenger, a wheel, a peer, an IBIS or a script variable does what it does |
