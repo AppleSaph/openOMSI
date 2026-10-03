@@ -262,7 +262,15 @@ impl Devices {
         // without gilrs's default filters: its dead zone took 10 % of every axis - on a
         // wheel of 1800 degrees, 90 degrees either side of the middle did nothing - and its
         // jitter filter held back small movements; the settings' dead zone is the only one
-        let gilrs = gilrs::GilrsBuilder::new().with_default_filters(false).build().map_err(|e| log::info!("game controllers: {e}")).ok();
+        // Linux: gilrs takes a wheel with periodic effects for a rumbling gamepad and starts
+        // a rumble effect on it every 50 ms, even at strength 0 - a HID PID wheel's motor
+        // kicks on every start and the wheel buzzes. A wheel's forces go through evdev_ff,
+        // so gilrs's force feedback stays off while one is connected.
+        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        let gilrs_ff = !crate::evdev_ff::wheel_connected();
+        #[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
+        let gilrs_ff = true;
+        let gilrs = gilrs::GilrsBuilder::new().with_default_filters(false).with_force_feedback(gilrs_ff).build().map_err(|e| log::info!("game controllers: {e}")).ok();
         #[cfg(windows)]
         let di = hwnd.and_then(|h| crate::dinput::DirectInput::new(h, ff));
         #[cfg(not(windows))]
