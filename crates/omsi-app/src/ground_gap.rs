@@ -160,6 +160,10 @@ impl GroundGap {
         }
         if e.2 == 0 {
             stats.bodies += 1;
+            log::debug!(target: "omsi::ground_gap", "body {key}: {}", ty.def.path.display());
+            if let Some(f) = self.file.as_mut() {
+                let _ = writeln!(f, "# body {key} {}", ty.def.path.display());
+            }
         }
         *e = (e.1, position.z, e.2 + 1);
     }
@@ -178,7 +182,8 @@ impl GroundGap {
                 if centre.is_some_and(|p| (p - v.position).truncate().length() > self.radius) {
                     continue;
                 }
-                if !matches!(c.body.kind, omsi_sim::ai_motion::MotionKind::Road) {
+                // (a car out of view keeps its animations as they were, and is not drawn)
+                if !matches!(c.body.kind, omsi_sim::ai_motion::MotionKind::Road) || !v.ai_visuals {
                     continue;
                 }
                 let id = c.id * 8;
@@ -277,6 +282,42 @@ pub fn check_lanes(world: &World, traffic: &crate::traffic::Traffic) {
     }
     for (p, d) in &levels {
         log::info!("  lanes over lanes at ({:.0}, {:.0}): upper at {:.1} m, {d:.1} m over the lower", p.x, p.y, p.z);
+    }
+    // cracks: points along the wheel tracks (1 m either side of the lanes, every 10 cm)
+    // where the wheels' ground drops more than 5 cm below what it is 3 cm around them on
+    // all four sides - a ray through a gap between two faces of the road
+    let (mut tried, mut cracks) = (0usize, 0usize);
+    let mut crack_at: Vec<(DVec3, f64)> = Vec::new();
+    for l in traffic.net.lanes.iter().filter(|l| l.kind == omsi_sim::traffic::LaneKind::Street && !l.invisible) {
+        let len = l.length();
+        let mut s = 0.05f32;
+        while s < len {
+            let (p, hdg) = l.at(s);
+            s += 0.1;
+            let h = (hdg as f64).to_radians();
+            let right = DVec3::new(h.cos(), -h.sin(), 0.0);
+            for side in [-1.0, 1.0] {
+                let w = p + right * side;
+                tried += 1;
+                let g = |x: f64, y: f64| crate::scene::drive_probe(&world.terrains, &world.surfaces, x, y, p.z + 1.0).below;
+                let Some(here) = g(w.x, w.y) else { continue };
+                let around: Vec<f64> = [(0.03, 0.0), (-0.03, 0.0), (0.0, 0.03), (0.0, -0.03)].iter().filter_map(|(dx, dy)| g(w.x + dx, w.y + dy)).collect();
+                if around.len() == 4 {
+                    let lo = around.iter().cloned().fold(f64::MAX, f64::min);
+                    let hi = around.iter().cloned().fold(f64::MIN, f64::max);
+                    if hi - lo < 0.02 && lo - here > 0.05 {
+                        cracks += 1;
+                        if crack_at.len() < 30 {
+                            crack_at.push((w, lo - here));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    log::info!("lane cracks: {cracks} of {tried} wheel-track points fall through a gap in the road ({:.4}%)", cracks as f64 * 100.0 / tried.max(1) as f64);
+    for (w, d) in crack_at.iter().take(10) {
+        log::info!("  crack at ({:.2}, {:.2}, {:.2}): {d:.2} m down", w.x, w.y, w.z);
     }
     log::info!("lane wheels: the wheels' ground (from 3 m over the lane) minus lane height, same bins: {wheel_hist:?}");
     wheel_places.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));

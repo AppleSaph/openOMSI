@@ -2291,6 +2291,31 @@ pub(crate) fn run_offscreen(
             }
         }
     }
+    // OMSI_PROBE_GRID=x,y,half,step: the wheels' ground on a square grid around (x, y), as
+    // rows of centimetres relative to the middle ('.' where it is the same, '#' where the
+    // ground there is more than 5 cm lower: a gap in the road the wheels fall through)
+    if let Ok(spec) = omsi_cfg::env::var("OMSI_PROBE_GRID") {
+        let v: Vec<f64> = spec.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+        if v.len() >= 4 {
+            let (cx, cy, half, step) = (v[0], v[1], v[2], v[3].max(0.001));
+            let mid = scene::drive_probe(&world.terrains, &world.surfaces, cx, cy, 1e6).below.unwrap_or(0.0);
+            let n = (half / step).round() as i64;
+            for j in (-n..=n).rev() {
+                let row: String = (-n..=n)
+                    .map(|i| {
+                        let (x, y) = (cx + i as f64 * step, cy + j as f64 * step);
+                        match scene::drive_probe(&world.terrains, &world.surfaces, x, y, mid + 1.0).below {
+                            Some(z) if z < mid - 0.05 => '#',
+                            Some(z) if (z - mid).abs() <= 0.02 => '.',
+                            Some(_) => '+',
+                            None => ' ',
+                        }
+                    })
+                    .collect();
+                log::info!("grid {:.3}: {row}", cy + j as f64 * step);
+            }
+        }
+    }
     // OMSI_PROBE=x0,y0,x1,y1[,n]: print the terrain height and the road surface height
     // along a line, to see where the ground comes through a road
     if let Ok(spec) = omsi_cfg::env::var("OMSI_PROBE") {
