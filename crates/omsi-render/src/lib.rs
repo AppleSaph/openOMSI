@@ -7485,9 +7485,11 @@ impl Renderer {
                 stage_t = now;
             }
         };
-        // render origin: the camera position rounded to 100 m so it only moves occasionally
-        let ro = (camera.position / 100.0).floor() * 100.0;
-        self.set_render_origin(scene, ro);
+        // render origin: the camera position rounded to 100 m, kept while the camera stays near it
+        if (camera.position - scene.render_origin).abs().max_element() > 200.0 {
+            self.set_render_origin(scene, (camera.position / 100.0).floor() * 100.0);
+        }
+        let ro = scene.render_origin;
         // The window's 3D picture may be drawn smaller and scaled up to it (render scale):
         // from here on `width` and `height` are the size of the picture, `full_*` the
         // window's (the HUD is drawn at that size). Mirrors keep their own size.
@@ -9177,7 +9179,7 @@ impl Renderer {
         // the visible batches contain no moisture-tagged surface (a showroom, bare terrain).
         let puddles_on = puddles_wanted
             && main_batches.iter().any(|b| scene.materials[b.material as usize].uniform.params2[2] > 0.0)
-            && self.prepare_puddle_reflections(width, height, camera, aspect, projection, &cu, lighting);
+            && self.prepare_puddle_reflections(width, height, camera, aspect, projection, &cu, lighting, ro);
         if puddles_on {
             // (the vehicle the camera is in is drawn into the puddles' picture as well)
             let all: Vec<Batch>;

@@ -511,6 +511,7 @@ impl Renderer {
         projection: Option<Mat4>,
         cu: &CameraUniform,
         lighting: &Lighting,
+        ro: DVec3,
     ) -> bool {
         if self.puddles.is_none()
             || self.ao.is_none()
@@ -558,7 +559,6 @@ impl Renderer {
         } else {
             1.0
         };
-        let ro = (camera.position / 100.0).floor() * 100.0;
         let origins = vehicle_origins(lighting, camera);
         let mut parts = [<VehicleBox as bytemuck::Zeroable>::zeroed(); 4];
         for (part, (o, h, bb)) in parts
