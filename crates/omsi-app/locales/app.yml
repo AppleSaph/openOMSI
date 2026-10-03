@@ -19222,6 +19222,7 @@ _version: 2
   es: "Conducción"
   fr: "Conduite"
   pt-pt: "Condução"
+  zh: "操控"
 "Camera":
   ru: "Камера"
   de: "Kamera"
@@ -19231,6 +19232,7 @@ _version: 2
   es: "Cámara"
   fr: "Caméra"
   pt-pt: "Câmara"
+  zh: "视角"
 "Sound":
   ru: "Звук"
   de: "Ton"
@@ -19240,6 +19242,7 @@ _version: 2
   es: "Sonido"
   fr: "Son"
   pt-pt: "Som"
+  zh: "声音"
 "Gameplay":
   ru: "Игровой процесс"
   de: "Spielablauf"
@@ -19249,6 +19252,7 @@ _version: 2
   es: "Jugabilidad"
   fr: "Jouabilité"
   pt-pt: "Jogabilidade"
+  zh: "玩法设置"
 "General":
   ru: "Общие"
   de: "Allgemein"
@@ -19258,6 +19262,7 @@ _version: 2
   es: "General"
   fr: "Général"
   pt-pt: "Geral"
+  zh: "通用设置"
 "Display":
   ru: "Экран"
   de: "Anzeige"
@@ -19267,6 +19272,7 @@ _version: 2
   es: "Pantalla"
   fr: "Affichage"
   pt-pt: "Ecrã"
+  zh: "屏幕"
 "Keyboard & mouse":
   ru: "Клавиатура и мышь"
   de: "Tastatur & Maus"
@@ -19276,6 +19282,7 @@ _version: 2
   es: "Teclado y ratón"
   fr: "Clavier et souris"
   pt-pt: "Teclado e rato"
+  zh: "键盘与鼠标"
 "Outside views":
   ru: "Внешние виды"
   de: "Außenansichten"
@@ -19285,6 +19292,7 @@ _version: 2
   es: "Vistas exteriores"
   fr: "Vues extérieures"
   pt-pt: "Vistas exteriores"
+  zh: "外部视角"
 "Change the keys":
   ru: "Изменить клавиши"
   de: "Tasten ändern"
@@ -20779,6 +20787,7 @@ _version: 2
 "The game is running":
   pt: "O jogo está em execução"
   pt-pt: "O jogo está em execução"
+  zh: "游戏运行中"
 
 "Type the server's address (an IP, a name or a link)":
   pt: "Digite o endereço do servidor (um IP, um nome ou um link)"
@@ -21279,142 +21288,177 @@ _version: 2
 "Real-time sync":
   pt: "Sincronização em tempo real"
   pt-pt: "Sincronização em tempo real"
+  zh: "实时时间同步"
 
 "The game follows your device's date and time":
   pt: "O jogo segue a data e a hora do seu dispositivo"
   pt-pt: "O jogo segue a data e a hora do seu dispositivo"
+  zh: "游戏会跟随你的设备的日期与时间"
 
 "Date and time":
   pt: "Data e hora"
   pt-pt: "Data e hora"
+  zh: "日期与时间"
 
 "Synchronized with the real time":
   pt: "Sincronizado com a hora real"
   pt-pt: "Sincronizado com a hora real"
+  zh: "与实时时间同步"
 
 "Exact time":
   pt: "Hora exata"
   pt-pt: "Hora exata"
+  zh: "修改时间"
 
 "Press Enter to change, Esc to cancel":
   pt: "Pressione Enter para alterar e Esc para cancelar"
   pt-pt: "Prima Enter para alterar e Esc para cancelar"
+  zh: "按 Enter 更改，按 Esc 取消"
 
 "Change the current time (Press Enter to change)":
   pt: "Alterar o horário atual (pressione Enter para alterar)"
   pt-pt: "Alterar a hora atual (prima Enter para alterar)"
+  zh: "修改当前时间（按 Enter 更改）"
 
 "Hour":
   pt: "Hora"
   pt-pt: "Hora"
+  zh: "小时"
 
 "Set the hour of the day directly":
   pt: "Define diretamente a hora do dia"
   pt-pt: "Define diretamente a hora do dia"
+  zh: "直接设置当前小时"
 
 "Minute":
   pt: "Minuto"
   pt-pt: "Minuto"
+  zh: "分钟"
 
 "Set the minute directly":
   pt: "Define diretamente o minuto"
   pt-pt: "Define diretamente o minuto"
+  zh: "直接设置当前分钟"
 
 "Jump to this time of day.":
   pt: "Avança diretamente para este horário."
   pt-pt: "Avança diretamente para esta hora."
+  zh: "跳转到该时段"
 
 "Move the clock so that the vehicle is on time":
   pt: "Ajusta o relógio para que o veículo fique no horário"
   pt-pt: "Ajusta o relógio para que o veículo fique a horas"
+  zh: "调整时间，使车辆准点"
 
 "How fast the world's clock runs":
   pt: "Velocidade do relógio do mundo"
   pt-pt: "Velocidade do relógio do mundo"
+  zh: "全局时间倍速"
 
 "METAR sync":
   pt: "Sincronização METAR"
   pt-pt: "Sincronização METAR"
+  zh: "同步 METAR 天气数据"
 
 "The weather follows the real METAR report":
   pt: "O clima segue o relatório METAR real"
   pt-pt: "A meteorologia segue o relatório METAR real"
+  zh: "天气数据根据真实 METAR 数据同步"
 
 "METAR source":
   pt: "Fonte METAR"
   pt-pt: "Fonte METAR"
+  zh: "METAR 数据源"
 
 "The airport whose METAR report the weather follows.":
   pt: "Aeroporto cujo relatório METAR define o clima."
   pt-pt: "Aeroporto cujo relatório METAR define a meteorologia."
+  zh: "天气数据将跟随该机场的 METAR 数据"
 
 "Preset":
   pt: "Predefinição"
   pt-pt: "Predefinição"
+  zh: "天气预设配置"
 
 "A ready-made weather":
   pt: "Condição climática predefinida"
   pt-pt: "Condição meteorológica predefinida"
+  zh: "现成天气方案"
 
 "The kind of clouds in the sky.":
   pt: "Tipo de nuvens no céu."
   pt-pt: "Tipo de nuvens no céu."
+  zh: "天空中的云类型"
 
 "Visibility":
   pt: "Visibilidade"
   pt-pt: "Visibilidade"
+  zh: "能见度"
 
 "How far one can see; less is fog.":
   pt: "Distância de visibilidade; valores menores criam neblina."
   pt-pt: "Distância de visibilidade; valores menores criam nevoeiro."
+  zh: "能见度；数值越低，雾越大"
 
 "Precipitation":
   pt: "Precipitação"
   pt-pt: "Precipitação"
+  zh: "降水"
 
 "Rain or snow.":
   pt: "Chuva ou neve."
   pt-pt: "Chuva ou neve."
+  zh: "雨或雪"
 
 "Precipitation strength":
   pt: "Intensidade da precipitação"
   pt-pt: "Intensidade da precipitação"
+  zh: "降水强度"
 
 "How hard it rains or snows.":
   pt: "Intensidade da chuva ou neve."
   pt-pt: "Intensidade da chuva ou neve."
+  zh: "雨雪的强弱程度"
 
 "Wet roads":
   pt: "Ruas molhadas"
   pt-pt: "Estradas molhadas"
+  zh: "路面湿滑"
 
 "How wet the roads are now (they dry in the sun, wet in the rain).":
   pt: "Quanto as ruas estão molhadas agora (secam ao sol e molham com a chuva)."
   pt-pt: "Quanto as estradas estão molhadas agora (secam ao sol e molham com a chuva)."
+  zh: "当前路面湿润程度（晴天变干，雨天变湿）。"
 
 "Temperature":
   pt: "Temperatura"
   pt-pt: "Temperatura"
+  zh: "温度"
 
 "The air temperature.":
   pt: "Temperatura do ar."
   pt-pt: "Temperatura do ar."
+  zh: "空气温度"
 
 "Wind speed":
   pt: "Velocidade do vento"
   pt-pt: "Velocidade do vento"
+  zh: "风速"
 
 "How fast the wind blows; it drives the clouds.":
   pt: "Velocidade do vento; ele move as nuvens."
   pt-pt: "Velocidade do vento; ele move as nuvens."
+  zh: "风吹得多快，它影响着云移动"
 
 "Wind direction":
   pt: "Direção do vento"
   pt-pt: "Direção do vento"
+  zh: "风向"
 
 "The direction of the wind in degrees (0 is north).":
   pt: "Direção do vento em graus (0 é norte)."
   pt-pt: "Direção do vento em graus (0 é norte)."
+  zh: "风的方向，单位为度（0度表示北）"
 
 "Open":
   pt: "Abrir"
@@ -21443,6 +21487,7 @@ _version: 2
 "Start options":
   pt: "Opções de início"
   pt-pt: "Opções de início"
+  zh: "选项"
 
 "Saved servers":
   pt: "Servidores salvos"
