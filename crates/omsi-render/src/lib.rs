@@ -746,6 +746,12 @@ impl Material {
             || self.env_mask == Some(id)
             || self.bump.map(|b| b.0) == Some(id)
     }
+
+    /// `[matl_transmap]` was given, its file there or not (the shader's
+    /// `has_transmap_declared`).
+    pub fn transmap_declared(&self) -> bool {
+        (self.uniform.params2[3] + 0.5) as u32 & 2 != 0
+    }
 }
 
 /// The material manager's settings beyond the maps of `add_material_all`: depth handling,
@@ -5974,9 +5980,12 @@ impl Renderer {
     /// Envir_Brightness` on their transmapped body and roof (`[matl_alpha] 1`), which is 0
     /// at night, and scaled by it the whole roof went at dusk - with alpha to coverage
     /// under MSAA the colour pass drew none of its samples - while in OMSI it stays.
-    pub fn clamp_slot_alpha(alpha: f32, material_alpha: AlphaMode) -> f32 {
+    /// Except a blended slot with a declared `[matl_transmap]`: Omsi.exe's transmap stage
+    /// (0x7ffeb7) replaces the diffuse alpha that `[alphascale]` scaled (0x7feb8f).
+    pub fn clamp_slot_alpha(alpha: f32, material_alpha: AlphaMode, transmap_declared: bool) -> f32 {
         match material_alpha {
             AlphaMode::Opaque | AlphaMode::Test => 1.0,
+            AlphaMode::Blend if transmap_declared => 1.0,
             AlphaMode::Blend => alpha,
         }
     }
@@ -5999,7 +6008,9 @@ impl Renderer {
                 .materials
                 .get(k)
                 .and_then(|id| scene.materials.get(*id))
-                .map_or(requested, |m| Self::clamp_slot_alpha(requested, m.alpha));
+                .map_or(requested, |m| {
+                    Self::clamp_slot_alpha(requested, m.alpha, m.transmap_declared())
+                });
             changed |= *a != v;
             *a = v;
         }
@@ -11783,6 +11794,88 @@ mod tests {
     }
 
     #[test]
+    fn declared_transmap_ignores_slot_alpha() {
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = wgpu::Backends::NOOP;
+        descriptor.backend_options.noop = wgpu::NoopBackendOptions { enable: true };
+        let instance = wgpu::Instance::new(descriptor);
+        let renderer = pollster::block_on(Renderer::new_with(
+            &instance,
+            None,
+            Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+            RenderOptions {
+                msaa: 1,
+                shadow_size: 1024,
+                ..Default::default()
+            },
+        ))
+        .expect("noop renderer");
+        let mut scene = renderer.new_scene();
+        let blended =
+            |scene: &mut Scene, transmap: Option<(TextureId, bool)>, extra: MaterialExtra| {
+                renderer.add_material_extra(
+                    scene,
+                    None,
+                    AlphaMode::Blend,
+                    [1.0; 4],
+                    true,
+                    transmap,
+                    None,
+                    None,
+                    None,
+                    [0.0; 3],
+                    extra,
+                )
+            };
+        // declared, its file missing: no transmap texture bound
+        let declared = blended(
+            &mut scene,
+            None,
+            MaterialExtra {
+                transmap_declared: true,
+                ..Default::default()
+            },
+        );
+        let map = renderer.add_blank_texture(&mut scene, 1, 1);
+        let bound = blended(&mut scene, Some((map, true)), MaterialExtra::default());
+        // another bit of the same flags, no transmap
+        let metal = blended(
+            &mut scene,
+            None,
+            MaterialExtra {
+                metal_ok: true,
+                ..Default::default()
+            },
+        );
+        let plain = blended(&mut scene, None, MaterialExtra::default());
+        assert_eq!(scene.materials[metal].uniform.params2[3], 4.0);
+        let flags: Vec<bool> = [declared, bound, metal, plain]
+            .iter()
+            .map(|&m| scene.materials[m].transmap_declared())
+            .collect();
+        assert_eq!(flags, [true, true, false, false]);
+        let corner = [Vec3::ZERO, Vec3::X, Vec3::Y];
+        let data = MeshData {
+            positions: corner.repeat(4),
+            normals: vec![Vec3::Z; 12],
+            uvs: vec![glam::Vec2::ZERO; 12],
+            indices: (0..12).collect(),
+            ranges: (0..4).map(|s| (s * 3, 3, s)).collect(),
+            ..Default::default()
+        };
+        let mesh = renderer.add_mesh(&mut scene, &data);
+        let i = renderer.add_instance(
+            &mut scene,
+            mesh,
+            DVec3::ZERO,
+            Mat4::IDENTITY,
+            vec![declared, bound, metal, plain],
+        );
+        renderer.set_params(&mut scene, i, &[0.0, 0.0, 0.35, 0.35], true, &[]);
+        assert_eq!(scene.instances[i].slot_alpha, vec![1.0, 1.0, 0.35, 0.35]);
+    }
+
+    #[test]
     fn omsi_render_phases_are_monotonic_and_complete() {
         assert_eq!(
             RenderPhase::DRAW_ORDER.map(|phase| phase as usize),
@@ -12239,12 +12332,30 @@ mod tests {
     }
 
     #[test]
-    fn opaque_materials_ignore_dynamic_alpha() {
-        assert_eq!(Renderer::clamp_slot_alpha(0.0, AlphaMode::Opaque), 1.0);
-        assert_eq!(Renderer::clamp_slot_alpha(0.35, AlphaMode::Opaque), 1.0);
-        assert_eq!(Renderer::clamp_slot_alpha(0.0, AlphaMode::Test), 1.0);
-        assert_eq!(Renderer::clamp_slot_alpha(0.35, AlphaMode::Test), 1.0);
-        assert_eq!(Renderer::clamp_slot_alpha(0.85, AlphaMode::Blend), 0.85);
+    fn opaque_and_transmapped_materials_ignore_dynamic_alpha() {
+        assert_eq!(
+            Renderer::clamp_slot_alpha(0.0, AlphaMode::Opaque, false),
+            1.0
+        );
+        assert_eq!(
+            Renderer::clamp_slot_alpha(0.35, AlphaMode::Opaque, false),
+            1.0
+        );
+        assert_eq!(Renderer::clamp_slot_alpha(0.0, AlphaMode::Test, false), 1.0);
+        assert_eq!(
+            Renderer::clamp_slot_alpha(0.35, AlphaMode::Test, false),
+            1.0
+        );
+        assert_eq!(
+            Renderer::clamp_slot_alpha(0.85, AlphaMode::Blend, false),
+            0.85
+        );
+        assert_eq!(Renderer::clamp_slot_alpha(0.0, AlphaMode::Blend, true), 1.0);
+        assert_eq!(
+            Renderer::clamp_slot_alpha(0.0, AlphaMode::Opaque, true),
+            1.0
+        );
+        assert_eq!(Renderer::clamp_slot_alpha(0.0, AlphaMode::Test, true), 1.0);
     }
 }
 
