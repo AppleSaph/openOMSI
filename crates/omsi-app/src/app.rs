@@ -393,7 +393,16 @@ impl App {
         }
         let window = match given {
             Some(w) => w,
-            None => Arc::new(event_loop.create_window(attrs).expect("window")),
+            // (no display to open it on, a compositor that refuses it: said so, not a panic
+            // report about "window")
+            None => match event_loop.create_window(attrs) {
+                Ok(w) => Arc::new(w),
+                Err(e) => {
+                    fatal_message(&format!("The game cannot open its window: {e}"));
+                    crate::platform::exit(event_loop);
+                    return;
+                }
+            },
         };
         let mut renderer = match window_renderer(&mut self.instance, &window, self.settings.render_options()) {
             Ok(r) => r,
