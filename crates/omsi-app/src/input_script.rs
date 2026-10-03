@@ -611,7 +611,11 @@ impl App {
     /// vehicle for each of them.
     pub(crate) fn tick_lan(&mut self, dt: f32) {
         let walker = self.walker_pose();
-        let Some(lan) = self.lan.as_mut() else { return };
+        let Some(lan) = self.lan.as_mut() else {
+            // (the session is over: the plugin is told so)
+            self.voice = None;
+            return;
+        };
         let duty = self
             .duty
             .as_ref()
@@ -696,14 +700,17 @@ impl App {
             self.voice = None;
             return;
         };
-        if !self.settings.voice_chat {
+        // (a dedicated server has nobody to talk at its place; a joining game that lost
+        // its host is in no session to talk in)
+        if !self.settings.voice_chat || self.args.server.is_some() || !lan.connected {
             self.voice = None;
             return;
         }
         let v = self.voice.get_or_insert_with(|| crate::voice::Voice::new(crate::voice::DEFAULT_PORT));
         match lan.role {
             omsi_net::Role::Host => {
-                if v.server().is_none() {
+                // (once: hosted() reads voice.cfg)
+                if !v.known() {
                     v.set_server(crate::voice::hosted());
                 }
             }
