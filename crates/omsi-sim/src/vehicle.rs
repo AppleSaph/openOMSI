@@ -1728,8 +1728,8 @@ impl VehicleInstance {
                     self.put(w[0], rw.rotation_deg.to_radians());
                     self.put(w[1], rw.rpm);
                     // (each axle's own angle: OMSI turns every axle towards the centre of
-                    // the bend on the `[rot_pnt_long]` line)
-                    self.put(w[2], rw.steer);
+                    // the bend on the `[rot_pnt_long]` line - one angle for both sides)
+                    self.put(w[2], rb.axle_steer(ai * 2 + si));
                     // `Axle_Suspension_*` is the wheel's travel *relative to the body*, and
                     // the stock model.cfg moves the wheel down for a positive value
                     // (`origin_rot_y -90` + `anim_trans`, checked with OMSI_DEBUG_ANIM on
@@ -2161,9 +2161,8 @@ impl VehicleInstance {
             0.0
         };
         // `steer_deg` is the front wheel angle of a bicycle model turning about the
-        // `[rot_pnt_long]` line: every wheel ahead of that line points at the common turning
-        // centre (the inner one further than the outer, as with Ackermann steering), and
-        // every wheel rolls as far as its own track through the bend is long
+        // `[rot_pnt_long]` line: every axle ahead of that line points at the common turning
+        // centre, and every wheel rolls as far as its own track through the bend is long
         let (rot, wheelbase) = crate::ai_motion::rotation_point(&self.ty.def);
         let k = ai.steer_deg.to_radians().tan() / wheelbase;
         for (ai_idx, axle) in self.v_wheels.clone().iter().enumerate() {
@@ -2173,8 +2172,10 @@ impl VehicleInstance {
                 };
                 let arm = ws.long - rot;
                 let across = 1.0 - ws.lat * k;
+                // (the axle's angle, the same for both sides, as Omsi.exe hands it to the
+                // scripts: see `RigidBody::axle_steer`)
                 let steer = if arm > 0.5 {
-                    (arm * k).atan2(across).clamp(-1.2, 1.2)
+                    (arm * k).atan().clamp(-1.2, 1.2)
                 } else {
                     0.0
                 };
