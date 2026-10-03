@@ -1265,8 +1265,10 @@ impl VehicleInstance {
         }
     }
 
-    /// Restore a situation without running scripts against an incomplete host. Timetable
-    /// callbacks must be attached by the caller before the next simulation frame.
+    /// Restore a situation without running scripts against an incomplete host. Nothing is
+    /// ticked here: the caller attaches the timetable callbacks (`PlayerDuty::resume`) and
+    /// then runs the frames, the first of which rebuilds the displays from the restored
+    /// state. Returns how many numeric and string variables the program knew.
     pub fn restore_script_state(
         &mut self,
         vars: &[(String, f32)],
@@ -1296,10 +1298,13 @@ impl VehicleInstance {
                 t.last_text = None;
             }
         }
-        // Stock bitmap matrices compare these with the IBIS before rebuilding their
-        // backing bitmap. The bitmap is not in an .osn, so the saved comparison cache
-        // cannot describe this instance's fresh textures. Text/roller displays keep all
-        // their saved state; no destination or power trigger is fired here.
+        // The stock bitmap matrices - Script/Matrix.osc of the MAN_SD200/SD202 and
+        // Matrix_D.osc / VMatrix*.osc of the MAN_NL_NG (EN92, GN92) - redraw their
+        // script texture only when the IBIS line or terminus differs from
+        // Matrix_Nr_Last / Matrix_TerminusIndex_Last. The texture is not in an .osn, so
+        // the saved "last" values would leave this fresh instance's matrix blank: they
+        // are reset to force one redraw. Text/roller displays keep all their saved
+        // state; no destination or power trigger is fired here.
         if !self.host.script_textures.is_empty()
             && self.ty.program.macro_block("Matrix_frame").is_some()
         {
