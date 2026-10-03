@@ -4,6 +4,27 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.1.1231 - 2026-10-03
+
+### Launcher
+- The Drive page is laid out again, in three steps - the bus, the day and the weather, the map
+  and the duty. The column on the left is a solid panel; the bus or the map has a stage of its
+  own on the right, the roadbook beside the map, and a foot under it sums the choice up with
+  the buttons in a row. Nothing lies over the map or shows through a panel any more, the line
+  and tour rows have room for their text, stop names keep off each other and inside the map,
+  the lists stretch with the window, and the roadbook opens on your first trip.
+
+### Graphics and devices
+- OpenGL chips without storage buffers in the vertex shader (Intel HD 2500, Mali on GLES) draw
+  the scene from textures instead of failing to start (`OMSI_GPU_ARRAYS=textures` forces it). [#770](https://github.com/openOMSI-Project/openOMSI/issues/770) [#316](https://github.com/openOMSI-Project/openOMSI/issues/316)
+- The Vulkan and OpenGL interfaces are only started when DirectX 12 cannot draw, so their
+  loader no longer breaks a DirectX 12 start on dual-GPU laptops. [#1058](https://github.com/openOMSI-Project/openOMSI/issues/1058) [#1044](https://github.com/openOMSI-Project/openOMSI/issues/1044)
+- A chip without a DirectX 12 driver draws on its own Vulkan or OpenGL instead of Microsoft's
+  software renderer. [#770](https://github.com/openOMSI-Project/openOMSI/issues/770)
+- Script, text and HTML textures larger than the chip takes are halved until they fit.
+- A window the system cannot open ends with a message instead of a panic report.
+- A script value that is not a number no longer turns the bus to NaN and stops the game. [#1045](https://github.com/openOMSI-Project/openOMSI/issues/1045)
+
 ## 0.1.1223 - 2026-10-03
 
 ### Driving and controls
