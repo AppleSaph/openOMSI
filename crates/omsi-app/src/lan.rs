@@ -1683,7 +1683,17 @@ pub fn my_pose(
         id: 0,
         name: String::new(),
         bus: content_relative(&v.ty.def.path, &args.root),
-        paint: paint_name(args, &v.ty),
+        // (the scheme the bus wears now: one picked in the game's menu after the start too)
+        paint: match v.host.paint_scheme {
+            Some(Some(i)) => {
+                v.ty.paint_schemes
+                    .get(i)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default()
+            }
+            Some(None) => String::new(),
+            None => paint_name(args, &v.ty),
+        },
         line,
         destination,
         tour: String::new(),
@@ -2976,11 +2986,12 @@ pub fn tick(
         .map(|p| p.pose.clone())
         .collect();
     for pose in poses {
-        // another vehicle than before (the player changed buses): made again
+        // another vehicle than before (the player changed buses), or another paint scheme on
+        // it: made again
         if game
             .remotes
             .get(&pose.id)
-            .map(|rv| rv.last.bus != pose.bus)
+            .map(|rv| rv.last.bus != pose.bus || rv.last.paint != pose.paint)
             .unwrap_or(false)
         {
             if let Some(rv) = game.remotes.remove(&pose.id) {
