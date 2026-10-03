@@ -682,6 +682,13 @@ struct WsPath {
 
 static WS_PATH: std::sync::Mutex<Option<WsPath>> = std::sync::Mutex::new(None);
 
+/// Whether the joining game's WebSocket was made again since this was last asked.
+fn ws_came_back() -> bool {
+    static SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = WS_PATH.lock().ok().and_then(|w| w.as_ref()?._client.as_ref().map(|c| c.reconnects())).unwrap_or(0);
+    n != SEEN.swap(n, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Shut the gateway and the tunnel (its cloudflared process) down: at the end of the game.
 pub fn close_public_gateway() {
     let path = WS_PATH.lock().ok().and_then(|mut w| w.take());
@@ -2839,6 +2846,9 @@ pub fn tick(
     frame: &Frame,
 ) -> Vec<WorldUpdate> {
     let mut updates = Vec::new();
+    if lan.role == Role::Client && ws_came_back() {
+        lan.rehello();
+    }
     let mut mine = my_pose(game, player.as_deref(), args, duty, frame.riders);
     mine.tour = frame.tour.clone().unwrap_or_default();
     mine.walker = frame.walker;
