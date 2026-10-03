@@ -108,6 +108,35 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 - The website has a light theme (and a theme button), readable colours, and no sideways
   scrolling on phones.
 
+## 0.1.1147 - 2026-10-02
+
+### Mirrors
+- In the cab, Ctrl+M can put copies of the bus's mirrors over the picture; Ctrl+Shift+M opens
+  an editor to move, resize, add, aim and zoom them. Layouts are saved per bus. [#920](https://github.com/openOMSI-Project/openOMSI/pull/920)
+
+### LAN and chat
+- After a LAN connection times out, the client keeps trying the host and can rejoin without
+  restarting the game; `/reconnect` retries immediately. [#926](https://github.com/openOMSI-Project/openOMSI/pull/926)
+- Long chat messages wrap onto following rows instead of being cut with an ellipsis. [#969](https://github.com/openOMSI-Project/openOMSI/pull/969)
+- A dedicated server behind a local web gateway logs the player's forwarded address, so the
+  operator can distinguish clients that would otherwise all appear as loopback. [#962](https://github.com/openOMSI-Project/openOMSI/pull/962)
+
+### Radio
+- A bus radio display can show the station and song that are actually playing. A map can supply
+  its own stations in `radio.cfg` and give them frequencies by position on the map. [#945](https://github.com/openOMSI-Project/openOMSI/pull/945)
+
+### Graphics and textures
+- In Enhanced, a soaked road has puddles in patches instead of becoming one mirror from kerb
+  to kerb. [#950](https://github.com/openOMSI-Project/openOMSI/pull/950)
+- A missing scenery or spline texture can be found from another folder of the same content
+  type when the installation contains a matching image. [#912](https://github.com/openOMSI-Project/openOMSI/pull/912)
+- In Vanilla+, terrain under street lamps keeps its ground colour instead of getting a white
+  or beige veil at night. [#935](https://github.com/openOMSI-Project/openOMSI/pull/935)
+
+### Routes and input
+- Route numbers with symbols, such as `-10`, are kept as written from a HOF or manual input
+  and work on destination displays; the free route-number field accepts keyboard symbols. [#967](https://github.com/openOMSI-Project/openOMSI/pull/967)
+
 ## 0.1.1120 - 2026-10-02
 
 ### Passengers and doors
