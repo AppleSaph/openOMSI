@@ -413,6 +413,8 @@ pub struct LightObject {
 pub struct SplineType {
     pub def: Spline,
     pub dir: PathBuf,
+    /// The `.surf` map of each of `def.textures` (see [`surf_map`]).
+    pub surf: Vec<Option<Arc<omsi_geometry::HeightMap>>>,
 }
 
 #[derive(Debug, Default)]
@@ -617,8 +619,8 @@ pub struct StagedTile {
     /// The whole spline meshes, in the order of `splines`, until the tile is placed.
     meshes: Mutex<Option<Vec<Arc<MeshData>>>>,
     /// The `[heightprofile]` surfaces of the tile's splines (local to `origin`) with their
-    /// world bounds: what the wheels roll on.
-    drive: Vec<(MeshData, [f64; 4])>,
+    /// world bounds and `.surf` maps: what the wheels roll on.
+    drive: Vec<(MeshData, [f64; 4], Option<omsi_geometry::SurfFaces>)>,
     /// Lanes, taken when the tile is loaded for the first time.
     lanes: Mutex<Vec<Lane>>,
     /// The street lanes' points of the tile's splines, kept for good (what an object's box
@@ -1792,6 +1794,42 @@ pub fn texture_dirs(root: &Path, content_dir: &Path) -> Vec<PathBuf> {
     }
     dirs.push(omsi_cfg::resolve_path(root, "Texture"));
     dirs
+}
+
+/// The `.surf` map of a texture: a picture named after the texture as the content asks for
+/// it, plus `.surf` (`str_kopfgr01.bmp.surf`, also beside a `.dds`), in the texture's folder.
+/// Its red channel is the bumpiness of a road drawn with the texture ([`HeightMap`]), which
+/// OMSI 2 lays under the wheels (#886). Loaded once per file.
+///
+/// [`HeightMap`]: omsi_geometry::HeightMap
+pub fn surf_map(texture: &str, dirs: &[&Path]) -> Option<Arc<omsi_geometry::HeightMap>> {
+    static MEMO: std::sync::OnceLock<Mutex<HashMap<PathBuf, Option<Arc<omsi_geometry::HeightMap>>>>> = std::sync::OnceLock::new();
+    // OMSI_NO_SURF: every road as smooth as before (A/B)
+    if omsi_cfg::env::var_os("OMSI_NO_SURF").is_some() {
+        return None;
+    }
+    let found = omsi_texture::find_texture(texture, dirs)?;
+    let dir = found.parent()?;
+    let req = texture.trim().replace('\\', "/");
+    let base = req.rsplit('/').next().unwrap_or(&req).to_string();
+    let found_name = found.file_name()?.to_string_lossy().into_owned();
+    let path = [base, found_name]
+        .iter()
+        .map(|n| omsi_cfg::resolve_path(dir, &format!("{n}.surf")))
+        .find(|p| p.is_file())?;
+    let memo = MEMO.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(m) = memo.lock().get(&path) {
+        return m.clone();
+    }
+    let map = match omsi_texture::decode_file(&path) {
+        Ok(img) => omsi_geometry::HeightMap::from_rgba(img.width as usize, img.height as usize, &img.rgba).map(Arc::new),
+        Err(e) => {
+            log::warn!("{e}");
+            None
+        }
+    };
+    memo.lock().insert(path, map.clone());
+    map
 }
 
 pub struct World {
@@ -3070,10 +3108,11 @@ impl World {
             .ok()
             .map(|def| {
                 omsi_geometry::register_half_cant_width(rel, &def);
-                Arc::new(SplineType {
-                    dir: path.parent().map(|p| p.to_path_buf()).unwrap_or_default(),
-                    def,
-                })
+                let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                let dirs = texture_dirs(&self.root, &dir);
+                let dirs: Vec<&Path> = dirs.iter().map(|p| p.as_path()).collect();
+                let surf = def.textures.iter().map(|t| surf_map(&t.file, &dirs)).collect();
+                Arc::new(SplineType { dir, def, surf })
             });
         self.spline_types
             .lock()
@@ -3698,7 +3737,7 @@ impl World {
                 let hp = omsi_geometry::build_height_profile_mesh(&st.def, &curve, s.mirror, origin);
                 if !hp.is_empty() {
                     let b = mesh_bounds(&hp, &Mat4::IDENTITY, origin);
-                    out.drive.push((hp, b));
+                    out.drive.push((hp, b, None));
                 }
             }
             let mesh = build_spline_mesh(&st.def, &curve, s.mirror, origin);
@@ -3775,7 +3814,7 @@ impl World {
                 };
                 // (every spline the game draws: Omsi.exe asks them all, roads or not)
                 if !heightprofile_ground() {
-                    out.drive.push((shape.clone(), bounds));
+                    out.drive.push((shape.clone(), bounds, omsi_geometry::SurfFaces::of(&mesh, &st.surf)));
                 }
                 let drivable = st.def.paths.iter().any(|pd| pd.kind == 0 || pd.kind == 1);
                 let overlay = !st.def.profiles.is_empty()
@@ -5116,10 +5155,11 @@ impl World {
                         );
                     }
                     // what the wheels roll on: the splines' height profiles
-                    for (hp, b) in &q.drive {
+                    for (hp, b, surf) in &q.drive {
                         if !outside(b) {
-                            ts.add_height_profiles(
+                            ts.add_spline_drive(
                                 hp,
+                                surf.as_ref(),
                                 q.origin,
                                 tx,
                                 ty,
@@ -5209,12 +5249,17 @@ impl World {
                             });
                             ts.rasterize_kind(mesh, &pose.rot, pose.pos, tx, ty, true);
                             if Some(k) == ground_mesh {
-                                ts.add_drive_mesh(
+                                // (its textures' `.surf` maps: cobbled junctions shake the bus too)
+                                let dirs = texture_dirs(&self.root, &ot.model_dir);
+                                let dirs: Vec<&Path> = dirs.iter().map(|p| p.as_path()).collect();
+                                let maps: Vec<_> = ot.meshes.get(k).map(|m| m.1.iter().map(|m| surf_map(&m.texture, &dirs)).collect()).unwrap_or_default();
+                                ts.add_drive_mesh_surf(
                                     mesh,
                                     &pose.rot,
                                     pose.pos,
                                     tx,
                                     ty,
+                                    omsi_geometry::SurfFaces::of(mesh, &maps).as_ref(),
                                 );
                                 wheel_meshes += 1;
                             }
@@ -7903,7 +7948,7 @@ impl World {
                 .iter()
                 .map(|s| s.shape.heap_bytes())
                 .sum::<usize>()
-                + st.drive.iter().map(|d| d.0.heap_bytes()).sum::<usize>()
+                + st.drive.iter().map(|d| d.0.heap_bytes() + d.2.as_ref().map_or(0, |s| s.heap_bytes())).sum::<usize>()
                 + st.base_terrain.heights.capacity() * 4;
             staged_bytes += st
                 .meshes
@@ -12582,19 +12627,19 @@ mod tests {
             textures: vec![SplineTexture { file: file.into(), ..Default::default() }],
             ..Default::default()
         };
-        let ty = Arc::new(SplineType { def: def("curb.dds"), dir: PathBuf::new() });
-        let other = Arc::new(SplineType { def: def("other.dds"), dir: PathBuf::new() });
-        let other_dir = Arc::new(SplineType { def: def("curb.dds"), dir: PathBuf::from("another_pack") });
+        let ty = Arc::new(SplineType { def: def("curb.dds"), dir: PathBuf::new(), surf: Vec::new() });
+        let other = Arc::new(SplineType { def: def("other.dds"), dir: PathBuf::new(), surf: Vec::new() });
+        let other_dir = Arc::new(SplineType { def: def("curb.dds"), dir: PathBuf::from("another_pack"), surf: Vec::new() });
         let mut tested = def("curb.dds");
         tested.textures[0].alpha = 1;
-        let tested = Arc::new(SplineType { def: tested, dir: PathBuf::new() });
+        let tested = Arc::new(SplineType { def: tested, dir: PathBuf::new(), surf: Vec::new() });
         let mut blended = def("curb.dds");
         blended.textures[0].alpha = 2;
-        let blended = Arc::new(SplineType { def: blended, dir: PathBuf::new() });
+        let blended = Arc::new(SplineType { def: blended, dir: PathBuf::new(), surf: Vec::new() });
         let mut compatible = def("curb.dds");
         compatible.path = PathBuf::from("another_profile.sli");
         compatible.textures.push(SplineTexture { file: "unused-grass.dds".into(), ..Default::default() });
-        let compatible = Arc::new(SplineType { def: compatible, dir: PathBuf::new() });
+        let compatible = Arc::new(SplineType { def: compatible, dir: PathBuf::new(), surf: Vec::new() });
         let mesh = |x: f32, length: f32| Arc::new(MeshData {
             positions: vec![glam::Vec3::new(x, 0.0, 0.0), glam::Vec3::new(x + length, 0.0, 0.0), glam::Vec3::new(x, 1.0, 0.0)],
             normals: vec![glam::Vec3::Z; 3],
