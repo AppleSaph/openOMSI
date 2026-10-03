@@ -109,6 +109,16 @@ impl Eye {
                 .cos(),
         }
     }
+
+    /// A wider picture than the camera's own (a triple screen's side panels): the tangents
+    /// of its half-angles, horizontal and vertical.
+    pub fn widened(mut self, extent: Option<(f64, f64)>) -> Eye {
+        if let Some((tan_x, tan_y)) = extent {
+            let half_diag = tan_x.hypot(tan_y).atan();
+            self.cos_half = self.cos_half.min((half_diag + 10f64.to_radians()).min(89f64.to_radians()).cos());
+        }
+        self
+    }
 }
 
 /// A bus as the passengers know it.

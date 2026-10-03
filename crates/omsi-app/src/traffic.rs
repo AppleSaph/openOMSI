@@ -422,6 +422,16 @@ impl Viewer {
         }
     }
 
+    /// A wider picture than the camera's own (a triple screen's side panels): the tangents
+    /// of its half-angles, horizontal and vertical. The size limit stays the camera's.
+    pub fn with_extent(mut self, extent: Option<(f64, f64)>) -> Viewer {
+        if let Some((tan_x, tan_y)) = extent {
+            self.tan_x = self.tan_x.max(tan_x);
+            self.tan_y = self.tan_y.max(tan_y);
+        }
+        self
+    }
+
     /// The renderer's culling as well (`RenderOptions::min_obj_size`, `max_obj_dist`).
     pub fn with_culling(mut self, min_size: f32, max_dist: f32) -> Viewer {
         self.min_size = min_size.max(0.0) as f64;

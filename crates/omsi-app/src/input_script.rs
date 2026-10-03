@@ -3840,17 +3840,41 @@ impl App {
         if let Some(ray) = self.vr.as_ref().and_then(|vr| vr.cursor_ray(self.cursor.0, self.cursor.1, size)) {
             return (ray.0, ray.1, ray.2 * 6.0);
         }
-        if self.settings.triple.enabled && !self.settings.vr_requested() {
-            let rig = self.settings.triple.zoomed(
-                size.0,
-                size.1,
-                self.view_zoom.get(&self.view).copied().unwrap_or(1.0),
-            );
+        if let Some(rig) = self.triple_rig(size) {
             let (o, d, spread) = rig.cursor_ray(cam, self.cursor, size);
             return (o, d, spread * 6.0);
         }
         let (o, d) = cursor_ray(cam, self.cursor.0, self.cursor.1, size.0 as f32, size.1 as f32);
         (o, d, pixel_angle(cam, size.1 as f32) * 6.0)
+    }
+
+    /// The triple screen's rig as drawn this frame (the view's zoom applied), while it is on
+    /// and no headset is asked for.
+    pub(crate) fn triple_rig(&self, size: (u32, u32)) -> Option<omsi_render::TripleScreen> {
+        (self.settings.triple.enabled && !self.settings.vr_requested()).then(|| {
+            self.settings.triple.zoomed(size.0, size.1, self.view_zoom.get(&self.view).copied().unwrap_or(1.0))
+        })
+    }
+
+    /// The desktop ray under the cursor for placing and editing on the ground: the window's
+    /// own projection, or the triple screen panel's under the cursor.
+    pub(crate) fn world_cursor_ray(&self, cam: &Camera, size: (u32, u32)) -> (glam::DVec3, glam::Vec3) {
+        match self.triple_rig(size) {
+            Some(rig) => {
+                let (o, d, _) = rig.cursor_ray(cam, self.cursor, size);
+                (o, d)
+            }
+            None => cursor_ray(cam, self.cursor.0, self.cursor.1, size.0 as f32, size.1 as f32),
+        }
+    }
+
+    /// With a triple screen, the frustum around all three panels for "nothing appears or
+    /// vanishes in sight": tangents of its half-angles, horizontal and vertical (None: the
+    /// window's own view is the whole picture).
+    pub(crate) fn sight_extent(&self, cam: &Camera, size: (u32, u32)) -> Option<(f64, f64)> {
+        let rig = self.triple_rig(size)?;
+        let (tx, ty) = rig.view_extent(cam, size.0, size.1);
+        Some((tx as f64, ty as f64))
     }
 
     pub(crate) fn update_hover(&mut self) {

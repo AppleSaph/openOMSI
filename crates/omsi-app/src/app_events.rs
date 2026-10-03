@@ -520,6 +520,9 @@ impl ApplicationHandler for App {
                 self.drive_streaming();
                 *self.profile.entry("streaming").or_default() += __t.elapsed().as_secs_f64();
                 let __t = Instant::now();
+                // (with a triple screen, all of its three panels are in sight)
+                let sight = self.camera.as_ref().zip(self.surface.as_ref())
+                    .and_then(|(c, s)| self.sight_extent(c, (s.config.width, s.config.height)));
                 if let (Some(t), Some(w), Some(r), Some(scene)) = (
                     self.traffic.as_mut(),
                     self.world.as_ref(),
@@ -546,6 +549,7 @@ impl ApplicationHandler for App {
                         t,
                         self.camera.as_ref(),
                         aspect,
+                        sight,
                         fog,
                         &self.clock,
                         self.humans.as_ref(),
@@ -1194,6 +1198,8 @@ impl ApplicationHandler for App {
                 self.tick_on_foot(if self.paused { 0.0 } else { dt });
                 self.sync_remote_walkers();
                 let __t = Instant::now();
+                let sight = self.camera.as_ref().zip(self.surface.as_ref())
+                    .and_then(|(c, s)| self.sight_extent(c, (s.config.width, s.config.height)));
                 if let (Some(h), Some(w), Some(r), Some(scene)) = (
                     self.humans.as_mut(),
                     self.world.as_ref(),
@@ -1234,7 +1240,7 @@ impl ApplicationHandler for App {
                         h.eye = Some(humans::Eye::of(
                             cam,
                             s.config.width as f32 / s.config.height.max(1) as f32,
-                        ));
+                        ).widened(sight));
                     }
                     // (the other LAN players' buses, for their riders to sit in)
                     h.set_remote_buses(self.remotes.remotes.iter().map(|(id, r)| (*id, r.vehicle())));

@@ -127,6 +127,29 @@ impl TripleScreen {
         })
     }
 
+    /// Tangents of the widest horizontal and vertical half-angles the three panels show,
+    /// measured from the centre camera's axis (capped at 85°): the frustum the whole rig
+    /// covers, for "nothing appears or vanishes in sight".
+    pub fn view_extent(&self, camera: &Camera, width: u32, height: u32) -> (f32, f32) {
+        let cap = 85f32.to_radians().tan();
+        let (f, r, u) = (camera.forward(), camera.right(), camera.up());
+        let mut extent = (0.0f32, 0.0f32);
+        for v in self.views(camera, width, height) {
+            let inv = (v.projection * Mat4::look_to_rh(Vec3::ZERO, v.camera.forward(), v.camera.up())).inverse();
+            for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let d = inv.project_point3(Vec3::new(x, y, 0.0)).normalize_or_zero();
+                let z = d.dot(f);
+                let (tx, ty) = if z > 1e-3 {
+                    ((d.dot(r) / z).abs().min(cap), (d.dot(u) / z).abs().min(cap))
+                } else {
+                    (cap, cap)
+                };
+                extent = (extent.0.max(tx), extent.1.max(ty));
+            }
+        }
+        extent
+    }
+
     pub fn cursor_ray(
         &self,
         camera: &Camera,
@@ -261,6 +284,19 @@ mod tests {
             assert_eq!(v.camera.position, cam.position);
         }
     }
+    #[test]
+    fn view_extent_covers_the_side_panels() {
+        let cam = Camera { roll: 0.0, pitch: 0.0, ..camera() };
+        let rig = TripleScreen::default();
+        let (tx, ty) = rig.view_extent(&cam, 5760, 1080);
+        // the centre panel alone: 300 mm either side at 650 mm
+        assert!(tx > 300.0 / 650.0 * 2.0, "{tx}");
+        assert!(ty >= rig.views(&cam, 5760, 1080)[1].projection.y_axis.y.recip() - 1e-4);
+        // a flat row: the outer edges at 900 mm either side
+        let flat = TripleScreen { left_angle_deg: 0.0, right_angle_deg: 0.0, ..rig };
+        assert!((flat.view_extent(&cam, 5760, 1080).0 - 900.0 / 650.0).abs() < 1e-3);
+    }
+
     #[test]
     fn bezel_hides_a_gap_and_eye_height_shifts_horizon() {
         let cam = camera();
