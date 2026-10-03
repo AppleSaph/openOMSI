@@ -364,6 +364,7 @@ pub(crate) fn run_offscreen(
             l.clock_speed = *speed;
         }
     }
+    let mut ground_gap = crate::ground_gap::GroundGap::from_env();
     for i in 0..total_frames {
         let t_s = i as f32 * dt;
         if server {
@@ -895,6 +896,9 @@ pub(crate) fn run_offscreen(
                 }
             }
         }
+        if let Some(g) = ground_gap.as_mut() {
+            g.frame(&world, t_s, player.as_ref().map(|p| &p.vehicle), traffic.as_ref());
+        }
         if let Some(h) = humans_off.as_mut() {
             // keep density and time_of_day up to date every tick, as app_events.rs does
             // (stop_target = enter_mean * density; without this it stays at the startup
@@ -1210,6 +1214,9 @@ pub(crate) fn run_offscreen(
             }
             None => log::warn!("--follow: car {id} not found"),
         }
+    }
+    if let Some(g) = ground_gap.take() {
+        g.report();
     }
     if let Some(t) = traffic.as_mut() {
         t.sync(&world, &renderer, &mut scene);

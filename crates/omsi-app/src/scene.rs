@@ -2334,6 +2334,38 @@ fn probe_tile(
     }
 }
 
+/// What is drawn at world (x, y) under `top`: the highest face of the splines and surface
+/// objects (as lifted for drawing) and the terrain where it is not cut away - the picture's
+/// ground, without any of the wheel rules of [`drive_probe`] (`OMSI_GROUND_GAP` measures the
+/// tyres against it).
+pub fn drawn_ground(
+    terrains: &RwLock<HashMap<(i32, i32), Arc<Terrain>>>,
+    surfaces: &RwLock<HashMap<(i32, i32), Arc<TileSurface>>>,
+    x: f64,
+    y: f64,
+    top: f64,
+) -> Option<f64> {
+    let key = tile_key(x, y);
+    let lx = (x - key.0 as f64 * tile_size()) as f32;
+    let ly = (y - key.1 as f64 * tile_size()) as f32;
+    let surface = surfaces.read().get(&key).cloned();
+    let terrain = terrains.read().get(&key).cloned();
+    let mut best: Option<f32> = None;
+    if let Some(s) = surface.as_deref() {
+        let a = s.drive.probe(lx, ly, top as f32).below;
+        let b = s.drive.probe_walls(lx, ly, top as f32).below;
+        best = a.into_iter().chain(b).reduce(f32::max);
+    }
+    if let Some(t) = terrain.as_deref() {
+        let h = omsi_geometry::terrain_height(t, lx, ly);
+        let cut = surface.as_deref().is_some_and(|s| s.cut_at(lx, ly, h, surface_flush()));
+        if !cut && h <= top as f32 {
+            best = Some(best.map_or(h, |b| b.max(h)));
+        }
+    }
+    best.map(|z| z as f64)
+}
+
 /// How far a road face may lie under drawn ground before it counts as buried (m): far more
 /// than the ground poking through the asphalt that the road is there to keep out.
 const BURIED_FACE: f32 = 1.0;
