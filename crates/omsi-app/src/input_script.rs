@@ -2613,7 +2613,7 @@ impl App {
             return true;
         }
         let (Some(cam), Some(s), Some(world)) = (self.camera.as_ref(), self.surface.as_ref(), self.world.clone()) else { return true };
-        let (o, d, _) = self.cockpit_cursor_ray(cam, (s.config.width, s.config.height));
+        let (o, d) = self.world_cursor_ray(cam, (s.config.width, s.config.height));
         let ed = self.editor.as_mut().unwrap();
         // (the copy being edited stays the one dragged while it is under the cursor)
         let on_added = ed.editing_added.and_then(|k| ed.added.get(k)).map(|a| {
@@ -2636,7 +2636,7 @@ impl App {
             return;
         }
         let (Some(cam), Some(s), Some(world)) = (self.camera.as_ref(), self.surface.as_ref(), self.world.clone()) else { return };
-        let (o, d, _) = self.cockpit_cursor_ray(cam, (s.config.width, s.config.height));
+        let (o, d) = self.world_cursor_ray(cam, (s.config.width, s.config.height));
         let Some(hit) = crate::placing::ground_hit(&world, o, d.as_dvec3(), 400.0) else { return };
         let (Some(r), Some(scene), Some(ed)) = (self.renderer.as_ref(), self.scene.as_mut(), self.editor.as_mut()) else { return };
         if let Some(m) = ed.drag_to(&world, r, scene, hit) {

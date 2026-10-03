@@ -2865,7 +2865,7 @@ pub(crate) fn run_offscreen(
         panels.push(&mut scene, &world, viewport[2], viewport[3], (0.0, 0.0));
         crate::ui::shift_overlays(&mut scene, start, viewport[0]);
     }
-    let pixels = if settings.triple.enabled {
+    let pixels = if settings.triple.enabled && !settings.vr_requested() {
         renderer.render_triple_to_image(&mut scene, w, h, &camera, &lighting, &settings.triple)?
     } else {
         renderer.render_to_image(&mut scene, w, h, &camera, &lighting)?
