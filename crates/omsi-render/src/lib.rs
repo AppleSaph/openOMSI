@@ -216,6 +216,9 @@ struct AoTargets {
 struct SsaoUniform {
     inv_proj: [[f32; 4]; 4],
     params: [f32; 4],
+    /// xy: the projection's off-centre shift (0 for the window's own symmetric frustum;
+    /// a headset eye or a triple screen's side panel has one)
+    shift: [f32; 4],
 }
 
 #[repr(C)]
@@ -8936,6 +8939,7 @@ impl Renderer {
                     width.div_ceil(2) as f32,
                     height.div_ceil(2) as f32,
                 ],
+                shift: [proj.z_axis.x, proj.z_axis.y, 0.0, 0.0],
             };
             self.queue
                 .write_buffer(&self.ao_buf, 0, bytemuck::bytes_of(&u));
