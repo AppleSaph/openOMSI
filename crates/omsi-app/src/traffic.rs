@@ -6209,20 +6209,15 @@ impl Traffic {
         ))];
         let h = heading.to_radians();
         let fwd = DVec3::new(h.sin(), h.cos(), 0.0);
-        let (mut origin, mut lead) = (pos, ty.clone());
-        for (t, _) in self.trailer_chain(ty) {
-            let back = lead
-                .def
-                .coupling_back
-                .as_ref()
-                .map(|c| c.pos[1])
-                .unwrap_or(-4.0);
-            let front = t
-                .def
-                .coupling_front
-                .as_ref()
-                .map(|c| c.pos[1])
-                .unwrap_or(4.0);
+        let (mut origin, mut lead, mut lead_rev) = (pos, ty.clone(), false);
+        for (t, rev) in self.trailer_chain(ty) {
+            let (back, front) = match omsi_sim::vehicle::coupling_offsets(&lead, lead_rev, &t, rev) {
+                Some((back, front)) => (back, front),
+                None => (
+                    lead.def.coupling_back.as_ref().map(|c| c.pos[1]).unwrap_or(-4.0),
+                    t.def.coupling_front.as_ref().map(|c| c.pos[1]).unwrap_or(4.0),
+                ),
+            };
             origin += fwd * (back - front) as f64;
             bodies.push(grown(omsi_sim::collision::Obb::from_box(
                 t.def.bounding_box.unwrap_or(DEFAULT_BOX),
@@ -6230,6 +6225,7 @@ impl Traffic {
                 heading,
             )));
             lead = t;
+            lead_rev = rev;
         }
         let reach = bodies
             .iter()
