@@ -5029,7 +5029,11 @@ impl Renderer {
                 // 1 unlit (0.9 a mirror's own picture); 0.25 lit by everything but the map's
                 // lamps; 0.15 a tree, not lit by the map's lamps in the vanilla picture
                 if mirror { 0.9 } else if unlit { 1.0 } else if lm_mapped { 0.35 } else if extra.no_map_lights { 0.25 } else if extra.tree { 0.15 } else { 0.0 },
-                if transmap.is_some() { 1.0 } else { 0.0 },
+                // a [matl_transmap] whose file is missing still takes the alpha stage: Omsi.exe
+                // sets a NULL texture there, which D3D9 samples as alpha 1, so the slot is as
+                // opaque as its transmap says - not as see-through as the diffuse texture's
+                // alpha, a reflection mask on car bodies (traffic half transparent)
+                if transmap.is_some() || extra.transmap_declared { 1.0 } else { 0.0 },
                 if transmap.map(|t| t.1).unwrap_or(false) {
                     1.0
                 } else {
