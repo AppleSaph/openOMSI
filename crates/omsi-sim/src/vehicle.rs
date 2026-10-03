@@ -19,6 +19,54 @@ fn script_speed(speed_kmh: f32) -> f32 {
     if speed_kmh.abs() < 0.01 { 0.0 } else { speed_kmh }
 }
 
+// A vehicle pack may contain many tiny trim meshes and only a few large body/interior
+// meshes. When the mesh vote is close, use capped triangle counts as a tie-breaker instead
+// of letting every tiny mesh carry the same weight.
+const WINDING_EVIDENCE_CAP: usize = 4096;
+
+fn keep_authored_winding(
+    forward_meshes: usize,
+    backward_meshes: usize,
+    forward_weight: usize,
+    backward_weight: usize,
+) -> bool {
+    if forward_meshes > backward_meshes {
+        return true;
+    }
+    if forward_meshes == 0 || backward_meshes == 0 {
+        return false;
+    }
+    let counts_close = forward_meshes.saturating_mul(5) >= backward_meshes.saturating_mul(4);
+    let forward_clearly_heavier =
+        forward_weight.saturating_mul(10) >= backward_weight.saturating_mul(11);
+    counts_close && forward_clearly_heavier
+}
+
+#[derive(Default, Debug)]
+struct WindingVotes {
+    forward: usize,
+    backward: usize,
+    forward_weight: usize,
+    backward_weight: usize,
+}
+
+impl WindingVotes {
+    fn record(&mut self, forward: bool, triangles: usize) {
+        let weight = triangles.min(WINDING_EVIDENCE_CAP);
+        if forward {
+            self.forward += 1;
+            self.forward_weight += weight;
+        } else {
+            self.backward += 1;
+            self.backward_weight += weight;
+        }
+    }
+
+    fn keep_authored(&self) -> bool {
+        keep_authored_winding(self.forward, self.backward, self.forward_weight, self.backward_weight)
+    }
+}
+
 /// Built-in variables every road vehicle has (`program/varlist_roadvehicle.txt` + generated).
 pub fn builtin_vars(root: &Path) -> Vec<String> {
     let mut v: Vec<String> =
@@ -336,7 +384,7 @@ impl VehicleType {
         let mut missing_packs: Vec<(String, usize)> = Vec::new();
         // (by the vehicle pack each mesh comes from, see `winding_pack`)
         let mut turned: Vec<(usize, String)> = Vec::new();
-        let mut votes: std::collections::HashMap<String, (usize, usize)> = std::collections::HashMap::new();
+        let mut votes: std::collections::HashMap<String, WindingVotes> = std::collections::HashMap::new();
         if !model.lods.is_empty() {
             let start = model.lods[0].first_mesh;
             let end = model
@@ -377,8 +425,7 @@ impl VehicleType {
                         let skin = if skin.iter().any(|b| b.def_index.is_some()) { skin } else { Vec::new() };
                         let pack = winding_pack(&p);
                         match omsi_geometry::positive_det_faces_forward(&m) {
-                            Some(true) => votes.entry(pack.clone()).or_default().0 += 1,
-                            Some(false) => votes.entry(pack.clone()).or_default().1 += 1,
+                            Some(forward) => votes.entry(pack.clone()).or_default().record(forward, m.triangles.len()),
                             None => {}
                         }
                         if omsi_geometry::turns_round(&m) {
@@ -415,8 +462,7 @@ impl VehicleType {
         // exporter does: the same Atron machine inside out in some buses only (#977, #1054).
         let mut kept = 0;
         for (i, pack) in &turned {
-            let (forward, backward) = votes.get(pack).copied().unwrap_or_default();
-            if forward > backward {
+            if votes.get(pack).is_some_and(WindingVotes::keep_authored) {
                 omsi_geometry::reverse_winding(&mut meshes[*i].data);
                 meshes[*i].keep_winding = true;
                 kept += 1;
@@ -5116,5 +5162,52 @@ mod grip_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod winding_exporter_tests {
+    use super::{keep_authored_winding, winding_pack, WindingVotes, WINDING_EVIDENCE_CAP};
+    use std::path::Path;
+
+    #[test]
+    fn borrowed_pack_evidence_stays_separate_and_capped() {
+        let body = winding_pack(Path::new("/omsi/Vehicles/Bus/model/body.o3d"));
+        let borrowed = winding_pack(Path::new("/omsi/Vehicles/Bus/model/../../Display/model/display.o3d"));
+        let mut votes: std::collections::HashMap<String, WindingVotes> = std::collections::HashMap::new();
+        for _ in 0..4 {
+            votes.entry(body.clone()).or_default().record(true, usize::MAX);
+        }
+        for _ in 0..5 {
+            votes.entry(body.clone()).or_default().record(false, 2);
+        }
+        votes.entry(borrowed.clone()).or_default().record(false, 100);
+        assert!(votes[&body].keep_authored());
+        assert_eq!(votes[&body].forward_weight, 4 * WINDING_EVIDENCE_CAP);
+        assert!(!votes[&borrowed].keep_authored());
+        let local_display = winding_pack(Path::new("/omsi/Vehicles/Display/model/display.o3d"));
+        assert_eq!(borrowed, local_display);
+    }
+
+    #[test]
+    fn empty_or_inconclusive_votes_keep_default() {
+        assert!(!WindingVotes::default().keep_authored());
+        assert!(!keep_authored_winding(0, 5, 0, 10));
+        assert!(!keep_authored_winding(5, 5, 10, 10));
+    }
+
+    #[test]
+    fn close_mesh_count_can_use_triangle_evidence() {
+        assert!(keep_authored_winding(64, 74, 91_597, 79_544));
+    }
+
+    #[test]
+    fn clear_backward_majority_is_not_overridden() {
+        assert!(!keep_authored_winding(40, 80, 120_000, 60_000));
+    }
+
+    #[test]
+    fn forward_majority_keeps_existing_behaviour() {
+        assert!(keep_authored_winding(80, 40, 1, 1));
     }
 }
