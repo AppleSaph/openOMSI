@@ -13046,6 +13046,19 @@ mod material_tests {
         ));
     }
 
+    /// The ICU400 controller's screen layer: a script texture as its transmap declares one.
+    #[test]
+    fn script_transmap_is_declared() {
+        let text = "[mesh]\nscreen.o3d\n\n[matl]\nScreen.dds\n0\n[matl_transmap]\n\\S:1\n[alphascale]\nsignController_alphaScale\n[matl_alpha]\n2\n\n[matl]\nPlain.dds\n0\n";
+        let m = omsi_model::Model::parse(&omsi_cfg::CfgFile::from_str("model.cfg", text));
+        let mats = &m.meshes[0].materials;
+        let screen = mats.iter().find(|d| d.texture == "Screen.dds").unwrap();
+        let plain = mats.iter().find(|d| d.texture == "Plain.dds").unwrap();
+        assert_eq!(screen.transmap.as_deref(), Some("\\S:1"));
+        assert!(material_extra(&[screen], None, None, [0.0; 4]).transmap_declared);
+        assert!(!material_extra(&[plain], None, None, [0.0; 4]).transmap_declared);
+    }
+
     #[test]
     fn material_extra_from_commands() {
         let glass = MaterialDef {

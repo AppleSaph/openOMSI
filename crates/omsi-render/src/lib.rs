@@ -5830,18 +5830,17 @@ impl Renderer {
     }
 
     /// A dynamic alpha value is never allowed to fade an opaque body panel; only
-    /// blended materials without a transmap follow the script value. An alpha-tested slot
-    /// is cut out by its texture or transmap alone: the Thüringer Wald buses put `[alphascale]
+    /// blended materials follow the script value. An alpha-tested slot is cut out by its
+    /// texture or transmap alone: the Thüringer Wald buses put `[alphascale]
     /// Envir_Brightness` on their transmapped body and roof (`[matl_alpha] 1`), which is 0
     /// at night, and scaled by it the whole roof went at dusk - with alpha to coverage
     /// under MSAA the colour pass drew none of its samples - while in OMSI it stays.
-    /// A blended slot with a `[matl_transmap]` ignores the script value too: Omsi.exe's
-    /// transmap stage takes the transmap's alpha alone (0x7ffeb7), replacing the one
-    /// `[alphascale]` scaled (0x7feb8f).
-    pub fn clamp_slot_alpha(alpha: f32, material_alpha: AlphaMode, transmap: bool) -> f32 {
+    /// Except a blended slot with a declared `[matl_transmap]`: Omsi.exe's transmap stage
+    /// (0x7ffeb7) replaces the diffuse alpha that `[alphascale]` scaled (0x7feb8f).
+    pub fn clamp_slot_alpha(alpha: f32, material_alpha: AlphaMode, transmap_declared: bool) -> f32 {
         match material_alpha {
             AlphaMode::Opaque | AlphaMode::Test => 1.0,
-            AlphaMode::Blend if transmap => 1.0,
+            AlphaMode::Blend if transmap_declared => 1.0,
             AlphaMode::Blend => alpha,
         }
     }
@@ -11410,32 +11409,56 @@ mod tests {
         ))
         .expect("noop renderer");
         let mut scene = renderer.new_scene();
-        // (declared, its file missing: no transmap texture bound)
-        let transmapped = renderer.add_material_extra(
+        let blended =
+            |scene: &mut Scene, transmap: Option<(TextureId, bool)>, extra: MaterialExtra| {
+                renderer.add_material_extra(
+                    scene,
+                    None,
+                    AlphaMode::Blend,
+                    [1.0; 4],
+                    true,
+                    transmap,
+                    None,
+                    None,
+                    None,
+                    [0.0; 3],
+                    extra,
+                )
+            };
+        // declared, its file missing: no transmap texture bound
+        let declared = blended(
             &mut scene,
             None,
-            AlphaMode::Blend,
-            [1.0; 4],
-            true,
-            None,
-            None,
-            None,
-            None,
-            [0.0; 3],
             MaterialExtra {
                 transmap_declared: true,
                 ..Default::default()
             },
         );
-        let plain = renderer.add_material(&mut scene, None, AlphaMode::Blend, [1.0; 4], true);
-        assert!(scene.materials[transmapped].transmap_declared());
-        assert!(!scene.materials[plain].transmap_declared());
+        let map = renderer.add_blank_texture(&mut scene, 1, 1);
+        let bound = blended(&mut scene, Some((map, true)), MaterialExtra::default());
+        // another bit of the same flags, no transmap
+        let metal = blended(
+            &mut scene,
+            None,
+            MaterialExtra {
+                metal_ok: true,
+                ..Default::default()
+            },
+        );
+        let plain = blended(&mut scene, None, MaterialExtra::default());
+        assert_eq!(scene.materials[metal].uniform.params2[3], 4.0);
+        let flags: Vec<bool> = [declared, bound, metal, plain]
+            .iter()
+            .map(|&m| scene.materials[m].transmap_declared())
+            .collect();
+        assert_eq!(flags, [true, true, false, false]);
+        let corner = [Vec3::ZERO, Vec3::X, Vec3::Y];
         let data = MeshData {
-            positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::ZERO, Vec3::X, Vec3::Y],
-            normals: vec![Vec3::Z; 6],
-            uvs: vec![glam::Vec2::ZERO; 6],
-            indices: vec![0, 1, 2, 3, 4, 5],
-            ranges: vec![(0, 3, 0), (3, 3, 1)],
+            positions: corner.repeat(4),
+            normals: vec![Vec3::Z; 12],
+            uvs: vec![glam::Vec2::ZERO; 12],
+            indices: (0..12).collect(),
+            ranges: (0..4).map(|s| (s * 3, 3, s)).collect(),
             ..Default::default()
         };
         let mesh = renderer.add_mesh(&mut scene, &data);
@@ -11444,10 +11467,10 @@ mod tests {
             mesh,
             DVec3::ZERO,
             Mat4::IDENTITY,
-            vec![transmapped, plain],
+            vec![declared, bound, metal, plain],
         );
-        renderer.set_params(&mut scene, i, &[0.0, 0.35], true, &[]);
-        assert_eq!(scene.instances[i].slot_alpha, vec![1.0, 0.35]);
+        renderer.set_params(&mut scene, i, &[0.0, 0.0, 0.35, 0.35], true, &[]);
+        assert_eq!(scene.instances[i].slot_alpha, vec![1.0, 1.0, 0.35, 0.35]);
     }
 
     #[test]
@@ -11868,6 +11891,11 @@ mod tests {
             0.85
         );
         assert_eq!(Renderer::clamp_slot_alpha(0.0, AlphaMode::Blend, true), 1.0);
+        assert_eq!(
+            Renderer::clamp_slot_alpha(0.0, AlphaMode::Opaque, true),
+            1.0
+        );
+        assert_eq!(Renderer::clamp_slot_alpha(0.0, AlphaMode::Test, true), 1.0);
     }
 }
 
