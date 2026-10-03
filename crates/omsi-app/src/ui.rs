@@ -53,8 +53,11 @@ impl TextCache {
     /// its size.
     fn label(&mut self, r: &Renderer, scene: &mut Scene, text: &str, px: u32, color: [u8; 4]) -> Label {
         let color = [color[0], color[1], color[2], outline_for(color, if self.flat { 1.0 } else { self.backdrop })];
-        // (in the interface's language: the menu, the notes, the windows)
-        let text = &*omsi_ui::tr(text);
+        // (in the interface's language: the menu, the notes, the windows; a letter and its
+        // combining mark as one, as macOS gives file names - the weather "Eiseska\u{308}lte"
+        // showed a box after its "a" in the menu's list)
+        let text = omsi_ui::tr(text);
+        let text = &*omsi_ui::text::composed(&text);
         let key = (text.to_string(), px, color);
         if let Some(l) = self.labels.get_mut(&key) {
             l.used = self.frame;
@@ -85,6 +88,7 @@ impl TextCache {
     }
 
     fn width_in(&self, base: &FontVec, text: &str, px: f32) -> f32 {
+        let text = omsi_ui::text::composed(text);
         let mut w = 0.0;
         let mut prev: Option<(ab_glyph::GlyphId, *const FontVec)> = None;
         for c in text.chars() {
